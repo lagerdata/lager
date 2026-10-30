@@ -28,6 +28,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 | `AuthRequired { box_host, auth_url, message }` | Box 受网关保护，而且没有可用的凭据 |
 | `Config(String)` | 客户端侧的配置问题 |
 | `Stream(String)` | 流式会话（UART 或 RTT）失败 |
+| `UartInUse { message, held_by }` | 另一个会话占用了该 UART Net 或其串行设备 |
 
 ## 变体参考
 
@@ -178,11 +179,15 @@ configuration error: {msg}
 
 ### `Stream(String)`
 
-UART 或 RTT 会话失败：该 Net 已被另一个会话占用、设备消失，或者会话意外关闭。
+UART 或 RTT 会话失败：设备消失，或者会话意外关闭。RTT 会话也会在这里报告另一个会话占用了它的端口。
 
 ```text
 streaming session error: {msg}
 ```
+
+### `UartInUse { message, held_by }`
+
+UART 会话无法启动，因为另一个会话占用了该 Net 或其串行设备。如果那个会话本应已经结束，请把 `held_by` 传给 `lager.release_uart_session()`，然后重新打开。`held_by` 指明要释放的 Net（Box 0.49.0 或更高版本）。当两个 Net 共用一台设备时，它指的是另一个 Net。
 
 ## 匹配
 

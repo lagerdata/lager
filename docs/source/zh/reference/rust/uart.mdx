@@ -11,10 +11,10 @@ UART 会话基于 Socket.IO，因此它位于一个 cargo feature 之后：
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8", features = ["uart"] }
+lager = { package = "lager-net", version = "0.9", features = ["uart"] }
 ```
 
-`uart` feature 隐含启用 `blocking`。它没有异步版本。
+`uart` feature 隐含启用 `blocking`。要使用 `AsyncUart`，请同时启用 `uart` 和 `async`。`AsyncLagerBox::uart()` 和 `uart_with()` 会打开它，它的方法与 `Uart` 相同，其中 `read`、`wait_for`、`write` 和 `stop` 需要 `.await`。
 
 ## 句柄
 
@@ -26,8 +26,22 @@ let mut uart = lager.uart("uart1")?;
 ```
 
 <Note>
-  `uart()` 是唯一返回 `Result` 的句柄构造方法。其他每个 Net 句柄在您调用方法之前都是静止的，而 `uart()` 会连接会话并立即开始流式传输，因此它在这一步就可能失败。
+  `uart()` 和 `uart_with()` 是仅有的返回 `Result` 的句柄构造方法。其他每个 Net 句柄在您调用方法之前都是静止的，而它们会连接会话并立即开始流式传输，因此在这一步就可能失败。
 </Note>
+
+要让本次会话使用不同的串口设置，请传入一个 `UartConfig`：
+
+```rust
+use lager::{Parity, UartConfig};
+
+let mut uart = lager.uart_with("uart1", &UartConfig {
+    baudrate: Some(921_600),
+    parity: Some(Parity::None),
+    ..Default::default()
+})?;
+```
+
+保留为 `None` 的字段沿用 Net 保存的设置，保存的 Net 本身不会被修改。
 
 ## 方法
 
@@ -43,6 +57,27 @@ let mut uart = lager.uart("uart1")?;
 | `write()` | 向设备写入原始字节 |
 | `write_str()` | 向设备写入一个字符串 |
 | `stop()` | 干净地停止，并关闭 Box 上的该端口 |
+
+## 类型
+
+### `UartConfig`
+
+```rust
+pub struct UartConfig {
+    pub baudrate: Option<u32>,
+    pub bytesize: Option<u8>,
+    pub parity: Option<Parity>,      // None, Even, Odd, Mark, Space
+    pub stopbits: Option<StopBits>,  // One, OnePointFive, Two
+    pub xonxoff: Option<bool>,
+    pub rtscts: Option<bool>,
+    pub dsrdtr: Option<bool>,
+    pub opost: Option<bool>,
+}
+```
+
+### `UartSession`
+
+`lager.uart_sessions()` 为每个占用 Net 的会话返回一个 `UartSession`，包含 `netname`、`device_path`、`sid`、`heartbeat_age_seconds`、`client_connected` 和 `reader_alive`。
 
 ## 方法参考
 
@@ -75,6 +110,14 @@ let mut uart = lager.uart("uart1")?;
 ### `stop() -> Result<()>`
 
 干净地停止，并关闭 Box 上的该端口。它会消耗掉该会话。把会话 drop 掉同样会停止它，但 `stop()` 会把错误暴露出来。
+
+### `LagerBox::uart_sessions() -> Result<Vec<UartSession>>`
+
+列出占用 Net 的会话，并附带存活状态的详细信息。需要 Box 软件 0.46.0 或更高版本。较旧的 Box 会返回 `Error::UnsupportedByBox`。
+
+### `LagerBox::release_uart_session(name: &str) -> Result<Vec<String>>`
+
+强制释放占用某个 Net 的会话。需要 Box 软件 0.46.0 或更高版本。
 
 ## 示例
 
@@ -113,6 +156,19 @@ println!("status during reflash: {:?}", uart.last_status());
 assert!(String::from_utf8_lossy(&banner).contains("ready"));
 ```
 
+### 释放被泄漏会话占用的 Net
+
+```rust
+use lager::Error;
+
+match lager.uart("uart1") {
+    Err(Error::UartInUse { held_by: Some(net), .. }) => {
+        lager.release_uart_session(&net)?;
+    }
+    other => { other?; }
+}
+```
+
 ## 受支持的硬件
 
 | 适配器 | 备注 |
@@ -124,7 +180,7 @@ assert!(String::from_utf8_lossy(&banner).contains("ready"));
 
 ## 说明
 
-- **Box 独占该端口，并且每个 Net 或设备只允许一个会话。** 第二个打开者会得到 `Error::Stream`，说明该端口已被占用。这也包括您自己上一个测试泄漏下来的会话 —— 请调用 `stop()`。
+- **Box 独占该端口，并且每个 Net 或设备只允许一个会话。** 第二个打开者会得到 `Error::UartInUse`。这也包括您自己上一个测试泄漏下来的会话 —— 请调用 `stop()`。`held_by` 指明要释放的 Net（Box 0.49.0 或更高版本）。当两个 Net 共用一台设备时，它指的是另一个 Net。
 - 连接确认的超时是 15 秒；超过它是 `Error::Timeout`。
 - 字节是原始的。没有行规程、不处理回显、也不做编码转换；`wait_for` 是按字节工作的。
 - 会话会在 Socket.IO 握手时带上网关 bearer 令牌，因此受网关保护的 Box 无需额外配置。

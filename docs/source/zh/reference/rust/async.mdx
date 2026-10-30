@@ -9,7 +9,7 @@ description: AsyncLagerBox，以及它与阻塞客户端究竟有哪些差异
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8", default-features = false, features = ["async"] }
+lager = { package = "lager-net", version = "0.9", default-features = false, features = ["async"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -43,11 +43,12 @@ async fn rail_comes_up() -> lager::Result<()> {
 | 全部 Net 类型、全部 Box 查询、安全限值 | 有 | 有 |
 | 加锁、心跳、解锁 | 有 | 有 |
 | `lock_guard()` 和 `BoxLockGuard` | 有 | **无** |
-| `uart()` 会话 | 有 | **无** |
-| `debug.rtt()` 和 `RttStream` | 有 | **无** |
-| `debug.rtt_interactive()` | 有 | **无** |
+| `uart()` 会话 | 有 | 有，即 `AsyncUart` |
+| `debug.rtt()` | `RttStream`（`std::io::Read`） | `AsyncRttStream`（`tokio::io::AsyncRead`） |
+| `debug.rtt_interactive()` | 有 | 有，即 `AsyncRttSession` |
+| `Scope::capture()` 和 `Scope::stream()` | 有 | **无** |
 
-`uart` 和 `rtt` 这两个 feature 都隐含启用 `blocking`，因此启用它们就会把阻塞客户端拉进来，无论您是否想要。
+`uart`、`rtt` 和 `scope-trace` 这几个 feature 都隐含启用 `blocking`，因此启用它们就会把阻塞客户端拉进来，无论您是否想要。`AsyncUart` 需要 `uart` 和 `async` 两个 feature，`AsyncRttSession` 需要 `rtt` 和 `async`，`AsyncRttStream` 只需要 `async`。
 
 <Note>
   异步客户端上没有 RAII 式的锁守卫。请显式地取锁和释放锁，并确保错误路径上也会执行释放。
@@ -55,12 +56,12 @@ async fn rail_comes_up() -> lager::Result<()> {
 
 ## 两者并用
 
-没有什么会阻止您在测试套件中需要并行的部分使用异步客户端，而在 UART 或 RTT 会话上使用阻塞客户端：
+没有什么能阻止您在套件的并行部分使用异步客户端，而在示波器波形采集上使用阻塞客户端：
 
 ```rust
 let lager = AsyncLagerBox::from_env()?;         // fan out reads
-let blocking = lager::LagerBox::from_env()?;    // for the UART session
-let mut uart = blocking.uart("uart1")?;
+let blocking = lager::LagerBox::from_env()?;    // for the scope trace
+let capture = blocking.scope("scope1-ch1").capture()?;
 ```
 
 ## 并发

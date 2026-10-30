@@ -33,6 +33,15 @@ let router = lager.router("router1");
 | `block_internet()` | Drop all forwarded traffic |
 | `remove_firewall_rules()` | Remove every Lager-added firewall rule |
 | `reboot()` | Reboot the router |
+| `security_profiles()`, `create_security_profile()`, `create_open_security_profile()`, `update_security_profile_password()`, `delete_security_profile()` | Wireless security profiles |
+| `configure_wireless()`, `set_interface_disabled()` | Wireless and interface settings |
+| `wait_for_ready()`, `wait_for_wireless_ready()` | Wait for the router or a wireless interface |
+| `enable_dhcp()`, `disable_dhcp()`, `set_dhcp_lease_time()` | DHCP server |
+| `add_bandwidth_limit()`, `remove_bandwidth_limits()` | Bandwidth limits |
+| `add_firewall_rule()`, `block_dns()`, `block_port()` | Firewall rules |
+| `access_list()`, `add_access_list_entry()`, `remove_access_list_entry()`, `clear_access_list()` | The wireless access list |
+| `reset_to_defaults()` | Put the router back to a `RouterBaseline` |
+| `rest_get()` | Read a RouterOS REST path |
 | `command()` | Generic escape hatch for any other router action |
 
 ## Types
@@ -91,19 +100,17 @@ Change the broadcast SSID.
 ### `command(action: &str, params: serde_json::Value) -> Result<serde_json::Value>`
 
 The generic escape hatch: invoke any other router action by name with raw JSON
-parameters. This is how you reach DNS blocking, port blocking, bandwidth limits,
-DHCP control, security profiles and access lists. None of these have a typed wrapper
-in this crate yet.
+parameters. Every action this page lists has a typed method, so use this only for an
+action a newer box adds.
+
+### `add_bandwidth_limit(target: &str, max_limit: &str, queue_name: Option<&str>) -> Result<serde_json::Value>`
+
+Limit a target's bandwidth.
 
 ```rust
-use serde_json::json;
-
-router.command("block_dns", json!({}))?;
-router.command("block_port", json!({ "port": 8883, "protocol": "tcp" }))?;
-router.command("add_bandwidth_limit", json!({
-    "target": "192.168.88.0/24",
-    "max_limit": "1M/1M",
-}))?;
+router.block_dns()?;
+router.block_port(8883, "tcp")?;
+router.add_bandwidth_limit("192.168.88.0/24", "1M/1M", None)?;
 ```
 
 ## Examples
@@ -136,16 +143,11 @@ outcome?;
 ### Squeeze the bandwidth and check an OTA still completes
 
 ```rust
-use serde_json::json;
-
-router.command("add_bandwidth_limit", json!({
-    "target": "192.168.88.50",
-    "max_limit": "256k/256k",
-}))?;
+router.add_bandwidth_limit("192.168.88.50", "256k/256k", None)?;
 
 // ... trigger the OTA and wait for it ...
 
-router.command("remove_bandwidth_limits", json!({}))?;
+router.remove_bandwidth_limits()?;
 ```
 
 ## Supported Hardware

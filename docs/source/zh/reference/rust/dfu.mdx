@@ -37,10 +37,11 @@ pub struct DfuOptions {
     pub alt: Option<u32>,               // alternate setting
     pub dfuse_address: Option<String>,  // "0x08000000:leave"
     pub reset: bool,                    // reset after download
+    pub timeout_seconds: Option<u32>,   // box default 120, maximum 600
 }
 ```
 
-`Default` 会选中总线上唯一的那台 DFU 设备。接了不止一台时，`dfu-util` 会因为无法确定而报错，而不是靠猜，所以请指名一台。
+`Default` 会选中总线上唯一的那台 DFU 设备。接了不止一台时，`dfu-util` 会因为无法确定而报错，而不是靠猜，所以请指名一台。`timeout_seconds` 设置 Box 允许 `dfu-util` 运行多久，crate 会相应放宽其 HTTP 超时。
 
 ### `DfuDevice`
 

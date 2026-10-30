@@ -43,6 +43,18 @@ channel net. Everything else belongs to the instrument, and works through either
 | `run()`, `single()`, `stop()` | either | Continuous acquisition, one acquisition, or stop |
 | `force_trigger()` | either | Trigger now |
 | `autoscale()` | either | Let the instrument pick scale, timebase and trigger |
+| `capabilities()` | either | The instrument's channels, limits and optional features |
+| `state()` | either | Every control setting in one request |
+| `capture_mode()`, `trigger_source()`, `trigger_slope()`, `trigger_level()` | either | Read one trigger setting |
+| `set_trigger_holdoff()`, `trigger_holdoff()` | either | Trigger holdoff (s) |
+| `set_acquisition()`, `acquisition()` | either | Normal, average or peak acquisition |
+| `set_roll()`, `roll()` | either | Roll mode |
+| `set_display()`, `display()` | either | Persistence, XY, zoom, math trace and FFT pane |
+| `fft()` | either | The strongest spectral peaks of a channel |
+| `set_cursors()`, `cursors()`, `clear_cursors()` | either | Set, read or clear the cursors |
+| `measure_cursors()` | either | Read the cursors' positions and the differences between them |
+| `capture()`, `capture_timeout()` | either | The latest capture's samples (feature `scope-trace`) |
+| `stream()` | either | Every capture from now on (feature `scope-trace`) |
 | `command()` | either | Any other scope action, with raw JSON params |
 
 ## Types
@@ -84,6 +96,26 @@ own spelling.
 
 `measure_all()` returns a `Measurements` with one `Option<f64>` field for each
 quantity. `Measurements::get(Measurement)` reads one of them.
+
+### `ScopeCapture`
+
+`capture()` and `ScopeStream::next_capture()` return one capture:
+
+| Item | Description |
+|---|---|
+| `seq` | The capture's sequence number |
+| `sample_interval_ns` | Time between samples (ns) |
+| `pre_trigger_samples`, `post_trigger_samples` | Samples before and after the trigger |
+| `samples_per_channel` | Samples in each channel |
+| `channels` | One `TraceChannel` for each channel: `label`, `coupling`, `scale_v_per_count`, `offset_v` |
+| `volts('A')` | One channel's samples in volts |
+| `counts('A')` | One channel's raw samples |
+| `time_axis()` | Each sample's time, in seconds from the trigger |
+| `triggered()` | Whether this capture came from a trigger |
+| `overflowed('A')` | Whether the channel went over range |
+| `sample_rate_hz()`, `duration_s()` | The capture's rate and length |
+
+`volts()` and `counts()` return `None` for a channel that is not in the capture.
 
 ## Method Reference
 
@@ -129,16 +161,55 @@ ch1.trigger_edge(&EdgeTrigger {
 `TriggerMode::Single` arms the scope for one acquisition, as on a bench scope. The box
 refuses a call with no field set.
 
+### `capture() -> Result<ScopeCapture>`
+
+Fetch the scope's latest capture. If it has none, it takes one now, so start the scope
+first with `run()` or `single()`. Needs the `scope-trace` feature:
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.9", features = ["scope-trace"] }
+```
+
+```rust
+ch1.single()?;
+let capture = ch1.capture()?;
+
+let volts = capture.volts('A').expect("channel A is on");
+let times = capture.time_axis();
+println!("{} samples at {} Hz", volts.len(), capture.sample_rate_hz());
+assert!(volts.iter().all(|v| v.abs() < 3.6), "over range at {:?}", times.first());
+```
+
+`capture_timeout(timeout)` waits for the time you give it. Without a capture by then,
+it fails with `Error::Timeout`.
+
+### `stream() -> Result<ScopeStream>`
+
+Subscribe to every capture from now on. A slow reader gets the newest capture rather
+than a backlog, so it sees a lower frame rate. Read with
+`next_capture(timeout: Duration)`, and end with `close()`. Dropping the stream also
+closes it.
+
+```rust
+use std::time::Duration;
+
+let mut stream = ch1.stream()?;
+for _ in 0..10 {
+    let capture = stream.next_capture(Duration::from_secs(5))?;
+    assert!(capture.triggered());
+}
+stream.close();
+```
+
 ### `command(action: &str, params: Value) -> Result<Value>`
 
-Run a scope action that has no typed method, and return its `value`. Examples are
-`capabilities`, `get_state`, `set_acquire`, `set_trigger_holdoff`, `set_roll`, `fft`
-and the cursor actions.
+Run a scope action that has no typed method, and return its `value`.
 
 ```rust
 use serde_json::json;
 
-ch1.command("set_trigger_holdoff", json!({ "seconds": 0.001 }))?;
+ch1.command("get_state", json!({}))?;
 ```
 
 ## Examples
@@ -183,9 +254,12 @@ assert!((hz - 32_768.0).abs() < 50.0, "clock at {hz} Hz");
   `Error::UnsupportedByBox`.
 - Each call allows 45 s. The box limits one scope command to 30 s, so the box's own
   timeout error arrives before the crate stops waiting.
-- **Trace capture is not on the HTTP API.** The waveform streams from the box's
-  oscilloscope daemon to the `/scope` page in a browser. To assert on a waveform
-  rather than a measurement, use the Python API or the CLI for that part.
+- **Trace capture needs a scope that streams.** `capture()` and `stream()` use the
+  WebSocket behind the box's `/scope` page. They work on PicoScope nets, and on Rigol
+  MSO5000 nets with an HDMI capture card paired (box software 0.57.0 or later). On a
+  Rigol with no capture card, the box refuses the request, which gives `Error::Box`.
+- `capture()` and `stream()` are on the blocking client only, and need a plain
+  `http://` box URL.
 - Logic-analyzer nets have no Rust handle, because the box has no `logic` role on
   `/net/command`. The work list is in
   [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).

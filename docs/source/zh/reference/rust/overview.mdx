@@ -28,7 +28,7 @@ Lager Rust crate 让嵌入式开发者以一等公民的方式访问 Lager Net�
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8" }
+lager = { package = "lager-net", version = "0.9" }
 ```
 
 该 crate 需要 Rust **1.75** 或更高版本，基于 2021 edition 构建。
@@ -70,13 +70,14 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | --- | --- | --- |
 | `blocking` | 是 | 基于 [`ureq`](https://crates.io/crates/ureq) 的 `LagerBox` —— 依赖树极小，不需要 tokio |
 | `async` | 否 | 基于 [`reqwest`](https://crates.io/crates/reqwest)/tokio 的 `AsyncLagerBox`；方法相同，加 `.await` |
-| `uart` | 否 | 通过 Box 的 Socket.IO `/uart` 命名空间进行 `Uart` 流式会话 |
-| `rtt` | 否 | 通过 Box 的 Socket.IO 命名空间进行 RTT 日志流式传输，用于读取运行中目标的 `defmt` 输出 |
+| `uart` | 否 | 通过 Box 的 Socket.IO `/uart` 命名空间进行 `Uart` 流式会话；同时启用 `async` 时还有 `AsyncUart` |
+| `rtt` | 否 | 通过 Box 的 Socket.IO 命名空间进行 RTT 日志流式传输，用于读取运行中目标的 `defmt` 输出；同时启用 `async` 时还有 `AsyncRttSession` |
+| `scope-trace` | 否 | 示波器波形样本：`Scope::capture()` 和 `Scope::stream()` |
 
 两种客户端执行的是完全相同的请求构造器和响应解析器，因此这两条传输路径不会各自跑偏。
 
 ```toml
-lager = { package = "lager-net", version = "0.8", features = ["async"] }
+lager = { package = "lager-net", version = "0.9", features = ["async"] }
 ```
 
 ## 错误
@@ -93,6 +94,7 @@ lager = { package = "lager-net", version = "0.8", features = ["async"] }
 | `UnsupportedByBox` | HTTP 501：Box 镜像早于该端点；请更新 Box |
 | `AuthRequired` | Box 的网关需要 bearer 令牌，而当前没有可用的令牌 |
 | `NotSupportedByBox` | 为兼容性而保留；没有任何 Net 类型会返回它 |
+| `UartInUse` | 另一个会话占用了该 UART Net 或其串行设备 |
 
 ## 要求
 
@@ -100,7 +102,7 @@ lager = { package = "lager-net", version = "0.8", features = ["async"] }
 - Rust 1.75 或更高版本。
 
 <Note>
-示波器波形采集和逻辑分析仪 Net 还没有进入 Box HTTP API。`Scope` 覆盖了示波器的其他所有功能：通道、时基、触发、采集控制和测量。待办清单记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
+逻辑分析仪 Net 还没有进入 Box HTTP API。待办清单记录在该 crate 的 [`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md) 中。
 </Note>
 
 ## 参考

@@ -28,6 +28,9 @@ let battery = lager.battery("battery1");
 | `set_current_limit()` | 设置输出电流限值 |
 | `set_model()` | 按型号加载一个预定义的电池模型 |
 | `set_mode()` | 选择静态或动态仿真 |
+| `models()` | 列出模拟器上的电池模型 |
+| `export_model()` | 读取一个模型的数据点 |
+| `create_model()` | 把模型写入一个槽位 |
 | `set_ovp()` / `set_ocp()` | 设置保护跳闸 |
 | `clear_ovp()` / `clear_ocp()` / `clear()` | 清除跳闸 |
 | `enable()` / `disable()` | 打开或关闭仿真的电池组 |
@@ -106,6 +109,22 @@ battery.set_soc(20.0)?;   // nearly flat
 ### `set_mode(mode: BatteryMode) -> Result<()>`
 
 在 `Static` 和 `Dynamic` 之间切换。
+
+### `models() -> Result<Vec<BatteryModelEntry>>`
+
+列出模拟器上的模型。每个 `BatteryModelEntry` 有 `slot` 和 `name`。
+
+### `export_model(slot: u8) -> Result<BatteryModel>`
+
+读取一个槽位。`BatteryModel` 有 `slot` 和 `points`，每个 `BatteryModelPoint` 有 `voc` 和 `resistance`。
+
+### `create_model(slot: u8, voc: &[f64], resistance: &[f64]) -> Result<()>`
+
+把模型写入一个槽位。
+
+<Warning>
+  `create_model` 会覆盖该槽位。仪器无法删除或保护模型。
+</Warning>
 
 ### `enable() -> Result<()>` 和 `disable() -> Result<()>`
 

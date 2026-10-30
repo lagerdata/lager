@@ -29,6 +29,9 @@ let battery = lager.battery("battery1");
 | `set_current_limit()` | Set the output current limit |
 | `set_model()` | Load a predefined battery model by part number |
 | `set_mode()` | Choose static or dynamic simulation |
+| `models()` | List the simulator's battery models |
+| `export_model()` | Read a model's points |
+| `create_model()` | Write a model to a slot |
 | `set_ovp()` / `set_ocp()` | Set protection trips |
 | `clear_ovp()` / `clear_ocp()` / `clear()` | Clear trips |
 | `enable()` / `disable()` | Turn the simulated pack on or off |
@@ -110,6 +113,23 @@ Load one of the instrument's predefined battery models.
 ### `set_mode(mode: BatteryMode) -> Result<()>`
 
 Switch between `Static` and `Dynamic`.
+
+### `models() -> Result<Vec<BatteryModelEntry>>`
+
+List the models on the simulator. Each `BatteryModelEntry` has `slot` and `name`.
+
+### `export_model(slot: u8) -> Result<BatteryModel>`
+
+Read one slot. A `BatteryModel` has `slot` and `points`, and each `BatteryModelPoint`
+has `voc` and `resistance`.
+
+### `create_model(slot: u8, voc: &[f64], resistance: &[f64]) -> Result<()>`
+
+Write a model to a slot.
+
+<Warning>
+  `create_model` overwrites the slot. The instrument cannot delete or protect a model.
+</Warning>
 
 ### `enable() -> Result<()>` and `disable() -> Result<()>`
 

@@ -22,6 +22,8 @@ let supply = lager.supply("supply1");
 | `name()` | The net name this handle addresses |
 | `set_voltage()` | Set the output voltage setpoint |
 | `set_current()` | Set the output current limit |
+| `set_voltage_with()`, `set_current_with()` | Set a setpoint and OCP/OVP limits in one request |
+| `set_mode()` | Switch a Keithley 2281S back to power-supply mode |
 | `enable()` | Turn the output on |
 | `disable()` | Turn the output off |
 | `set_ovp()` | Set and enable over-voltage protection |
@@ -75,6 +77,25 @@ instrument, as `Error::Box` with a message naming the limit. The message reads
 ### `set_current(amps: f64) -> Result<()>`
 
 Set the current limit. Reaching it is what moves a supply from CV into CC mode.
+
+### `set_voltage_with(volts: f64, limits: &ProtectionLimits) -> Result<()>` and `set_current_with(amps: f64, limits: &ProtectionLimits) -> Result<()>`
+
+Set a setpoint and any of the limits in one request. Each limit you give is also
+enabled, as with `set_ocp()` and `set_ovp()`.
+
+```rust
+use lager::ProtectionLimits;
+
+supply.set_voltage_with(3.3, &ProtectionLimits {
+    ocp: Some(0.5),
+    ovp: Some(3.6),
+})?;
+```
+
+### `set_mode() -> Result<()>`
+
+Switch a Keithley 2281S into power-supply mode after it was used as a battery
+simulator. It does nothing on other supplies.
 
 ### `enable() -> Result<()>` and `disable() -> Result<()>`
 

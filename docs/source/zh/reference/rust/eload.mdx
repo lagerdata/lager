@@ -42,11 +42,15 @@ pub enum EloadMode { Cc, Cv, Cr, Cp }
 
 ```rust
 pub struct EloadState {
-    pub mode: Option<String>,              // "cc" / "cv" / "cr" / "cp"
+    pub mode: Option<String>,              // "CC" / "CV" / "CR" / "CW"
     pub input_enabled: Option<bool>,
     pub measured_voltage: Option<f64>,     // V
     pub measured_current: Option<f64>,     // A
     pub measured_power: Option<f64>,       // W
+    pub current_setting: Option<f64>,      // A, in CC mode
+    pub voltage_setting: Option<f64>,      // V, in CV mode
+    pub resistance_setting: Option<f64>,   // ohms, in CR mode
+    pub power_setting: Option<f64>,        // W, in constant-power mode
 }
 ```
 

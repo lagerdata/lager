@@ -52,11 +52,14 @@ panel.set_irradiance(800.0)?;
 **Returns:** `f64` — the value that the instrument actually applied. The instrument can
 clamp the requested value.
 
-### `set_resistance(ohms: f64) -> Result<f64>`
+### `set_resistance(ohms: f64) -> Result<Option<f64>>`
 
 Set the dynamic panel resistance, the ratio that shapes the knee of the curve.
 
-**Returns:** the applied value.
+**Returns:** the resistance after the call, or `None` when the box cannot compute it
+(Isc at or below 0, or an unparseable instrument reply). A failed set returns the
+unchanged resistance rather than an error, so compare the result with the value you
+set.
 
 ### `irradiance()`, `mpp_current()`, `mpp_voltage()`, `resistance()`, `temperature()`, `voc()`
 
@@ -93,6 +96,8 @@ panel.stop()?;
 
 ## Notes
 
+- `resistance()` returns `Option<f64>`, and is `None` when the box cannot compute the
+  panel resistance.
 - **Every solar action re-asserts PV mode on the instrument before doing its work**,
   including the reads. That makes even `voc()` slow. This net type therefore has
   the widest timeout budgets in the crate: 120 seconds for `set()` and `stop()`, and

@@ -21,6 +21,8 @@ let supply = lager.supply("supply1");
 | `name()` | 该句柄所指向的 Net 名称 |
 | `set_voltage()` | 设置输出电压设定值 |
 | `set_current()` | 设置输出电流限值 |
+| `set_voltage_with()`、`set_current_with()` | 在一个请求中设置设定值和 OCP/OVP 限值 |
+| `set_mode()` | 把 Keithley 2281S 切回电源模式 |
 | `enable()` | 打开输出 |
 | `disable()` | 关闭输出 |
 | `set_ovp()` | 设置并启用过压保护 |
@@ -71,6 +73,23 @@ supply.set_voltage(3.3)?;
 ### `set_current(amps: f64) -> Result<()>`
 
 设置电流限值。正是达到这个限值，才会让电源从 CV 模式进入 CC 模式。
+
+### `set_voltage_with(volts: f64, limits: &ProtectionLimits) -> Result<()>` 和 `set_current_with(amps: f64, limits: &ProtectionLimits) -> Result<()>`
+
+在一个请求中设置设定值和任意限值。给出的每个限值也会被启用，与 `set_ocp()` 和 `set_ovp()` 相同。
+
+```rust
+use lager::ProtectionLimits;
+
+supply.set_voltage_with(3.3, &ProtectionLimits {
+    ocp: Some(0.5),
+    ovp: Some(3.6),
+})?;
+```
+
+### `set_mode() -> Result<()>`
+
+在 Keithley 2281S 用作电池模拟器之后，把它切换到电源模式。在其他电源上不起作用。
 
 ### `enable() -> Result<()>` 和 `disable() -> Result<()>`
 
