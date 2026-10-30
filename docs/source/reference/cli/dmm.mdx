@@ -1,0 +1,100 @@
+---
+title: DMM
+description: Take bench digital multimeter readings
+---
+
+Take one reading from a bench digital multimeter (DMM) net. Each call sets the function, range and integration time, then reads. A reading never depends on the front panel or a previous caller.
+
+## Syntax
+
+```bash
+lager dmm [NETNAME] [FUNCTION] [OPTIONS]
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `NETNAME` | DMM net name (optional if a default is set with `lager defaults add --dmm-net`) |
+| `FUNCTION` | Measurement function (default `dcv`); see the table below |
+
+With a default net set, a single function argument reads the default net: `lager dmm res` measures resistance on it. A DMM net with the same name as a function takes precedence.
+
+| Function | Measures | Unit |
+|----------|----------|------|
+| `dcv` / `acv` | DC / AC voltage | V |
+| `dci` / `aci` | DC / AC current | A |
+| `res` / `fres` | 2-wire / 4-wire resistance | ohm |
+| `cont` | Continuity | ohm |
+| `diode` | Diode forward voltage | V |
+| `freq` / `period` | Frequency / period | Hz / s |
+| `cap` | Capacitance | F |
+| `temp` | Temperature | degC |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--range FULL_SCALE` | Fixed range in base units (`20` = 20 V, `2e-6` = 2 uF), or `auto` (default) |
+| `--nplc N` | Integration time in power-line cycles; `dcv`, `dci`, `res` and `fres` only |
+| `--sensor PROBE` | Temperature probe for `temp`: `rtd:pt100`, `rtd:pt1000`, `ther:b`/`e`/`j`/`k`/`n`/`r`/`s`/`t` |
+| `--errors` | Read and clear the meter's error queue instead of measuring |
+| `--idn` | Print the meter's `*IDN?` reply instead of measuring |
+| `--box TEXT` | Lager Box name or IP address |
+| `--json` | Emit a JSON object instead of formatted text |
+
+The box refuses a range, NPLC value or sensor the meter does not support, and lists the valid values. It never rounds to the nearest setting.
+
+## Output
+
+```bash
+$ lager dmm VBAT --box my-lager-box
+3.300124 V
+
+$ lager dmm VBAT dcv --range 20 --nplc 10 --json --box my-lager-box
+{"netname": "VBAT", "function": "dcv", "value": 3.300124, "unit": "V", "overload": false}
+```
+
+An over-range reading prints `OVERLOAD`, and an open continuity or diode input prints `OPEN`. With `--json` both give `"value": null, "overload": true`.
+
+## Supported Hardware
+
+| Device | Ranges | NPLC |
+|--------|--------|------|
+| Siglent SDM3065X | DCV 200 mV-1000 V, ACV 200 mV-750 V, DCI/ACI 200 uA-10 A, resistance 200 ohm-100 Mohm, capacitance 2 nF-100 mF | 0.005, 0.05, 0.5, 1, 10, 100 |
+
+The continuity range is 2 kohm and the diode range is 2 V. Frequency, period and temperature take no range.
+
+## Adding a DMM net
+
+A USB-connected meter shows up in `lager instruments` and is added like any other net:
+
+```bash
+lager nets add VBAT dmm 1 USB0::0xF4EC::0x1203::<serial>::INSTR --box my-lager-box
+```
+
+A LAN-connected meter is not found by the USB scan. Add it with [`lager nets add-batch`](/source/reference/cli/nets#add-batch):
+
+```json
+[{"name": "VBAT", "role": "dmm", "channel": "1",
+  "instrument": "Siglent_SDM3065X", "address": "TCPIP::192.168.1.60::INSTR"}]
+```
+
+## Examples
+
+```bash
+# 4-wire resistance on the 2 kOhm range, slowest integration
+lager dmm RSENSE fres --range 2000 --nplc 100 --box my-lager-box
+
+# Quiescent current
+lager dmm IQ dci --range 2e-3 --box my-lager-box
+
+# PT100 temperature
+lager dmm TPROBE temp --sensor rtd:pt100 --box my-lager-box
+
+# Resistance on the default DMM net
+lager dmm res --box my-lager-box
+
+# List DMM nets
+lager dmm --box my-lager-box
+```

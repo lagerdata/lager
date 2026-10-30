@@ -60,6 +60,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `clear-ovp`/`clear-ocp` return an error. Its measured values update about
   every 0.35 s, so a reading taken sooner after a setpoint change shows the
   old value.
+- **Bench multimeters are supported, starting with the Siglent SDM3065X.** A new
+  `dmm` net role and `lager dmm NET [FUNCTION]` take one reading of DC/AC volts or
+  current, 2- or 4-wire resistance, continuity, diode, frequency, period,
+  capacitance or temperature, with optional `--range`, `--nplc` and `--sensor`;
+  Python scripts use `Net.get(name, NetType.DMM).measure(...)`.
 
 ### Fixed
 

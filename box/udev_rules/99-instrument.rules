@@ -153,6 +153,10 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="2230", MODE="0660", GROUP="lager"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0451", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0451", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
+# Siglent SDM3065X Digital Multimeter: VID=0xf4ec, PID=0x1203
+SUBSYSTEM=="usb", ATTRS{idVendor}=="f4ec", ATTRS{idProduct}=="1203", MODE="0660", GROUP="lager"
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="f4ec", ATTRS{idProduct}=="1203", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
+
 # ============================================================================
 # CAMERAS
 # ============================================================================

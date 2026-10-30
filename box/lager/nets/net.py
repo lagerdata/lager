@@ -660,6 +660,10 @@ class Net:
                 if role == NetType.Thermocouple:
                     return PhidgetThermocouple(name, _norm_pin(item), _get_location(item))
 
+                if role == NetType.DMM:
+                    from ..measurement.dmm.dispatcher import make_net
+                    return make_net(name, item)
+
                 if role == NetType.Hsm:
                     from ..security.hsm.yubihsm2 import YubiHsm2
                     return YubiHsm2(name, item.get('address'))

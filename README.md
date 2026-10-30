@@ -5,9 +5,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/lager-cli)](https://pypi.org/project/lager-cli/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Hardware test automation.** Drive real instruments and embedded targets — power
-supplies, oscilloscopes, debug probes, I2C/SPI/UART, USB hubs — from your laptop
-or from CI, over the network.
+**Hardware test automation.** Drive real instruments and embedded targets from your
+laptop or from CI, over the network: power supplies, oscilloscopes, multimeters, debug
+probes, I2C/SPI/UART and USB hubs.
 
 ```bash
 pip install lager-cli
@@ -136,6 +136,7 @@ For the detailed component and directory layout, see
 | Electronic loads | Rigol |
 | Oscilloscopes and logic analyzers | Rigol, Pico Technology |
 | Power and energy measurement | Yoctopuce, Joulescope, Nordic Semiconductor (PPK2) |
+| Multimeters | Siglent |
 | Temperature | Phidgets |
 | I2C, SPI, ADC, DAC, and GPIO | LabJack (T7, U3), Total Phase Aardvark, FTDI FT232H, Measurement Computing USB-202 |
 | Debug probes | SEGGER J-Link, ST-Link, Raspberry Pi Debug Probe, FTDI (FT232H, FT2232H, FT4232H), CMSIS-DAP |

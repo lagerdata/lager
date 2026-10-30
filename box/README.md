@@ -18,7 +18,7 @@ box/
     instrument_wrappers/  # Low-level instrument drivers (Keithley, Keysight, Rigol, EA)
     io/                   # ADC, DAC, GPIO (LabJack T7)
     mcp/                  # MCP server for AI agent integration (port 8100)
-    measurement/          # Oscilloscope, thermocouple, watt meter
+    measurement/          # Oscilloscope, DMM, thermocouple, watt meter
     nets/                 # Net/device/mux framework (hardware abstraction)
     power/                # Power supply, battery emulator, solar sim, eload
     protocols/            # UART, BLE, WiFi, I2C, SPI

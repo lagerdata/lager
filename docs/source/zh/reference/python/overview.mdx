@@ -36,6 +36,7 @@ from lager import Net, NetType  # Convenience import for Net and NetType
 | `NetType.ADC` | 模数转换器 | LabJack T7、LabJack U3、MCC USB-202 |
 | `NetType.DAC` | 数模转换器 | LabJack T7、LabJack U3、MCC USB-202 |
 | `NetType.Thermocouple` | 温度传感器 | Phidget |
+| `NetType.DMM` | 台式万用表 | Siglent SDM3065X |
 | `NetType.Rotation` | 旋转编码器 | Phidget |
 | `NetType.WattMeter` | 功率计 | Yocto-Watt、Joulescope JS220 |
 | `NetType.UART` | 串行通信 | USB 串口 |
@@ -205,6 +206,7 @@ print("Test complete")
 | [逻辑分析仪](/source/zh/reference/python/logic) | 数字信号采集与协议解码 |
 | [ADC](./adc) | 模数转换 |
 | [热电偶](./tc) | 温度测量 |
+| [DMM](/source/reference/python/dmm) | 台式万用表读数 |
 
 ### I/O 与通信
 

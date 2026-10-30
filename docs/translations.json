@@ -22,7 +22,7 @@
     "reference/cli/custom.mdx": "0003709e1df9f093c671ca8342d40d6a5ce97580624a6a50b41e4eefb49c444f",
     "reference/cli/dac.mdx": "3dc7b220d8a0997f4f8245d7c93d0d0a1a832e27df44dbe1654b33ef982c7630",
     "reference/cli/debug.mdx": "c01e01c4a0c110bb0e721d8a8d283d60a791b8d3b4a728b6e27cb2dfb54a9128",
-    "reference/cli/defaults.mdx": "5a88df59049e64c21eb74970e3af7c23b09397909afc8521708bfb07bbb9f212",
+    "reference/cli/defaults.mdx": "e47b4bcd8c87d10f6143b981fcb6d278eb0c5a66499f7358d9437460febb0535",
     "reference/cli/devenv.mdx": "54d2a5ad0657c0ba815b82b5a99d9190dffb661b169d5abf69f3ff7587cc98dd",
     "reference/cli/diagnose.mdx": "2e3f803d571167bf4c57ed5a6e2bf7ee5ed7e35c06b6f52115f23a627368d249",
     "reference/cli/drivers.mdx": "069518f7c9369e116499469c28875fff4a66b0942df99ea63c92199285996195",
@@ -43,8 +43,8 @@
     "reference/cli/logic.mdx": "c790363f0f231bf13855e9225c5d356a9c13396e7407cbdfdf99acbcff5589a8",
     "reference/cli/login.mdx": "6672f3d909010ad6ee0714e0915e517c56ce14116c1684a17e084b0acf556221",
     "reference/cli/logs.mdx": "58c78cde4104ee64c8151ffb52b80d40074af49cb3d77524eef59a0601139dac",
-    "reference/cli/nets.mdx": "1eab5af90a6e5171d758fd95470e08b430ddbb93f6deb6b228fe0d8180934018",
-    "reference/cli/overview.mdx": "de08fe2fb34fc1da85e3239b098acfcfea7f4ac3960808c035d0f518da0c623b",
+    "reference/cli/nets.mdx": "5ce71e2b1d9523d10a5b519675084f6eb685f037527310ded0119c0c9cc9d7a3",
+    "reference/cli/overview.mdx": "f74e98f3d2ae111c354c919127e43904f628b75db1691a9b6cd727b4d194e402",
     "reference/cli/python.mdx": "abd57a2f6024ad8193a1903aa143d6d24de0cb995d6c35c43699c1e37cf0fd65",
     "reference/cli/router.mdx": "a755022b1164c8ed5406aa156be80ba132384a82d6a29b581673a21d95aebb98",
     "reference/cli/scope.mdx": "8e578533b91ad40e48741246005b4dbbea2f55e7bd1a3194682df5d48cb29205",
@@ -77,8 +77,8 @@
     "reference/python/gpio.mdx": "a2baecec753a08cbec03ebdbdb587a27ad3eacadb4a8256a003d5525ce94c005",
     "reference/python/i2c.mdx": "103be76823a61d4e95491c6083c0cfebcb533d374e163366a2ee89d664f9cbc4",
     "reference/python/logic.mdx": "f1993dd9e07eaaec94b7c2872f92a09f312d3d79d9a34a3ff4556eb8d30d57f0",
-    "reference/python/net.mdx": "9f06a2e7ead03a4d7a34d49626705c5720bf53c01493dc35bf5a9a50060a33d2",
-    "reference/python/overview.mdx": "bd3b68d23f3588c84f6608be4c433ad26e81553827ab2da1fcfe67ff4ce48c8c",
+    "reference/python/net.mdx": "ca770dd54c682cc46420c2e5dffc28035adb75e9ee346d89e137b314e5d9e142",
+    "reference/python/overview.mdx": "e77ad881e30f1a92c854f9aca2494b0dd0811a351f95e218b4b337d46c7b8764",
     "reference/python/router.mdx": "c2289a9f316d624a7f4d1e38bc32bd3981a65f61b696ae56eb7645d1cb94762b",
     "reference/python/scope.mdx": "f0184f5d46a17ab7f90985520bd59aad4b2eb682cc35b6861a1d949d7dc436e6",
     "reference/python/serial.mdx": "0eb4559ccfaa708d402f452ccc696598cba79f1597d6a0c33824a267a4264d8b",
@@ -123,6 +123,6 @@
     "reference/rust/watt.mdx": "e16f8048a2fcfa6d65d6b58eb45d31b86c2aa5e0c2692f15ac28e4083b6b2afe",
     "reference/rust/webcam.mdx": "0ba114adbb0a26ad4489860fe03073b320bf24fbe853bcb3c49cd8aa9a10315f",
     "reference/rust/wifi.mdx": "fa98f6490833b51083616a5f164d6303b133f7ab246cb495912dc6414886930a",
-    "supported-instruments/supported-instruments.mdx": "da55023192906b043f9077d82b16e9f966e5cdf4fc39e752d8cc2ac89f50be83"
+    "supported-instruments/supported-instruments.mdx": "61bc209b5aa9e754a2ca4144c46da41e4f31a7a89c1504999cef6b8e83bec0b8"
   }
 }

@@ -34,6 +34,7 @@ class NetType(Enum):
     EnergyAnalyzer = auto()
     Router = auto()
     Hsm = auto()
+    DMM = auto()
 
     @classmethod
     def from_role(cls, role):
@@ -69,6 +70,7 @@ class NetType(Enum):
             'router': cls.Router,
             'mikrotik': cls.Router,
             'hsm': cls.Hsm,
+            'dmm': cls.DMM,
         }
         return mapping[role]
 
@@ -100,5 +102,6 @@ class NetType(Enum):
             self.EnergyAnalyzer: None,
             self.Router: None,
             self.Hsm: None,
+            self.DMM: None,
         }
         return mapping[self]

@@ -66,6 +66,7 @@ from .commands.measurement.gpo import gpo
 from .commands.measurement.scope import scope
 from .commands.measurement.logic import logic
 from .commands.measurement.thermocouple import thermocouple
+from .commands.measurement.dmm import dmm
 from .commands.measurement.watt import watt
 from .commands.measurement.energy import energy
 
@@ -137,7 +138,7 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
         ("Debug & development", ["debug", "python", "arm", "devenv", "exec"]),
         ("Power", ["supply", "battery", "solar", "eload"]),
         ("Measurement & I/O", ["scope", "logic", "energy", "adc", "dac",
-                                "gpi", "gpo", "thermocouple", "watt"]),
+                                "gpi", "gpo", "thermocouple", "dmm", "watt"]),
         ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
                             "router"]),
         ("Security", ["hsm"]),
@@ -261,6 +262,7 @@ cli.add_command(hello)
 cli.add_command(diagnose)
 cli.add_command(arm)
 cli.add_command(thermocouple)
+cli.add_command(dmm)
 cli.add_command(watt)
 cli.add_command(energy)
 cli.add_command(hsm)

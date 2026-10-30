@@ -178,6 +178,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Plugable_USB_Hub":  {"vid": "2230", "pid": "5411", "net_type": ["usb"]},
     # eload
     "Rigol_DL3021":      {"vid": "1ab1", "pid": "0e11", "net_type": ["eload"]},
+    # dmm. PID 0x1203 is from a plain SDM3065X. Older Siglent firmware
+    # enumerates as 0xee38, which is shared with other Siglent instruments and
+    # so is not matched here. The driver checks *IDN? on open either way.
+    "Siglent_SDM3065X":  {"vid": "f4ec", "pid": "1203", "net_type": ["dmm"]},
     # camera — ``_by_camera`` below detects any USB video class camera, so an
     # entry here is only needed to give a model its own name; the rest are
     # listed as ``GENERIC_WEBCAM_NAME``.
@@ -386,6 +390,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     # downstream tier's four external sockets are exposed.
     "Plugable_USB_Hub":       {"usb": ["1", "2", "3", "4"]},
     "Rigol_DL3021":           {"eload": ["1"]},
+    "Siglent_SDM3065X":       {"dmm": ["1"]},
     "Yocto_Watt":             {"watt-meter": ["0"]},
     "Joulescope_JS220":       {"watt-meter": ["0"], "energy-analyzer": ["0"]},
     "Nordic_PPK2":            {"watt-meter": ["0"], "energy-analyzer": ["0"]},

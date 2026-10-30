@@ -11,6 +11,7 @@ This package groups measurement-related CLI commands:
 - gpo: Set GPIO output level
 - scope: Control oscilloscope settings
 - logic: Control logic analyzer channels and triggers
+- dmm: Take a bench multimeter reading
 - thermocouple: Read thermocouple temperature
 - watt: Read power from watt meter net
 
@@ -24,6 +25,7 @@ from .gpi import gpi
 from .gpo import gpo
 from .scope import scope
 from .logic import logic
+from .dmm import dmm
 from .thermocouple import thermocouple
 from .watt import watt
 
@@ -34,6 +36,7 @@ __all__ = [
     "gpo",
     "scope",
     "logic",
+    "dmm",
     "thermocouple",
     "watt",
 ]

@@ -140,7 +140,7 @@ def display_help() -> None:
 
     categories = [
         ("Power", "supply, battery, solar, eload", "Power equipment control"),
-        ("Measurement", "adc, dac, gpi, gpo, scope, logic, thermocouple, watt", "Measurements and I/O"),
+        ("Measurement", "adc, dac, gpi, gpo, scope, logic, dmm, thermocouple, watt", "Measurements and I/O"),
         ("Communication", "uart, ble, wifi, usb", "Communication protocols"),
         ("Development", "debug, arm, python, devenv", "Embedded development"),
         ("Box", "hello, status, boxes, instruments, nets, ssh", "Box management"),
