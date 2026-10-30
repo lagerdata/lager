@@ -190,6 +190,8 @@ class TestTheManifestClaimsNothingItHasNotChecked:
     @pytest.mark.parametrize("component, license_name, notice", [
         ("LabJack LJM", "MIT", "vendor/labjack-ljm.txt"),
         ("Phidget22", "BSD-3-Clause", "vendor/libphidget22.txt"),
+        ("uldaq", "MIT", "vendor/uldaq.txt"),
+        ("Exodriver", "MIT", "vendor/labjack-exodriver.txt"),
     ])
     def test_a_read_vendor_license_names_the_notice_the_image_ships(
             self, component, license_name, notice):
@@ -269,6 +271,21 @@ class TestTheDockerfileShipsThem:
                  if keyword == "RUN" and "labjack_ljm_installer.run" in body]
         assert ("install -D -m 0644 /usr/local/share/LabJack/license.txt "
                 "/usr/share/licenses/lager/vendor/labjack-ljm.txt") in ljm
+
+    @pytest.mark.parametrize("tree, ships", [
+        ("/tmp/uldaq",
+         "install -D -m 0644 /tmp/uldaq/LICENSE /usr/share/licenses/lager/vendor/uldaq.txt"),
+        ("/tmp/exodriver",
+         "grep -q 'Permission is hereby granted' /usr/share/licenses/lager/vendor/labjack-exodriver.txt"),
+    ])
+    def test_a_source_build_ships_its_notice_before_the_tree_goes(self, tree, ships):
+        # MIT requires the notice in every copy, and the source tree that holds
+        # it is removed in the same RUN. Both steps fail the build if a new tag
+        # stops providing the text.
+        [build] = [body for keyword, body in _instructions(DOCKERFILE.read_text())
+                   if keyword == "RUN" and f"rm -rf {tree}" in body]
+        assert ships in build
+        assert build.index(ships) < build.index(f"rm -rf {tree}")
 
     def test_no_licenses_label_is_asserted_for_the_whole_image(self):
         # org.opencontainers.image.licenses describes ALL the software in an

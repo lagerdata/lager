@@ -97,6 +97,9 @@ RUN arch="$(dpkg --print-architecture)" \
 # build time or dropping the library -- upstream has not released since 2022.
 #
 # flex/bison stay in this layer only (autoreconf); not needed at runtime.
+#
+# MIT, so the notice has to travel with the library, and the source tree does
+# not stay in the image. `install` fails the build if a new tag drops LICENSE.
 RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-dev flex bison \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& git clone --depth 1 --branch v1.2.1 https://github.com/mccdaq/uldaq.git /tmp/uldaq \
@@ -106,6 +109,7 @@ RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-
 	&& make \
 	&& make install \
 	&& ldconfig \
+	&& install -D -m 0644 /tmp/uldaq/LICENSE /usr/share/licenses/lager/vendor/uldaq.txt \
 	&& rm -rf /tmp/uldaq
 
 # LabJack LJM SDK, downloaded at build time. MIT; the library bundles Boost
@@ -142,12 +146,18 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 # and upstream's default branch is currently ahead of its newest tag, which
 # means the version string would keep reading 2.7.0 while the code moved.
 # Bump this deliberately.
+#
+# MIT, and the repository has no license file: the text is the last section of
+# its README. The grep fails the build if a new tag moves it.
 # See: https://support.labjack.com/docs/exodriver-downloads-for-ud-series-linux-and-macos-
 RUN git clone --depth 1 --branch v2.7.0 https://github.com/labjack/exodriver.git /tmp/exodriver \
 	&& cd /tmp/exodriver/liblabjackusb \
 	&& make \
 	&& make install \
 	&& ldconfig \
+	&& mkdir -p /usr/share/licenses/lager/vendor \
+	&& sed -n '/^LICENSE$/,$p' /tmp/exodriver/README > /usr/share/licenses/lager/vendor/labjack-exodriver.txt \
+	&& grep -q 'Permission is hereby granted' /usr/share/licenses/lager/vendor/labjack-exodriver.txt \
 	&& rm -rf /tmp/exodriver \
 	&& ls /usr/local/lib/liblabjackusb.so*
 
