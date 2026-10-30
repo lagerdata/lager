@@ -213,8 +213,8 @@ streaming session error: {msg}
 
 ### `UartInUse { message, held_by }`
 
-A UART session could not start because another session holds the net or its serial
-device. If that session should be gone, pass `held_by` to
+A UART session cannot start when another session holds the net or its serial device.
+To end a session that you no longer need, pass `held_by` to
 `lager.release_uart_session()` and open again. `held_by` names the net to release (box
 0.49.0 or later). When two nets share one device, that is the other net.
 
