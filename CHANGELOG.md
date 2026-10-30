@@ -47,6 +47,21 @@ Write one bullet per change, in one to three sentences: what changed for a user,
     the mode the device reports (`blufiDeviceMode`).
   - **`custom_data` on `/blufi/command`** sends bytes to the device and, with
     `reply_timeout`, returns what it sends back (`blufiCustomData`).
+- **Any USB video class camera can be a webcam net.** Cameras no longer need to be on a list:
+  one Lager has no name for appears in `lager instruments` as `UVC_Camera` with its product
+  name, including a box's built-in camera. HDMI capture cards stay out. `lager nets add` needs
+  this CLI version or later to accept `UVC_Camera`; `lager nets add-all` and the nets TUI accept
+  it from older CLIs.
+
+### Fixed
+
+- **Webcam nets keep their camera when `/dev/video*` numbers change.** A net opened the number
+  saved with it, so a different plug-in order could start the wrong camera. It now finds its
+  camera from its address each time, and reports a missing camera instead of opening another.
+- **Two identical cameras can both be webcam nets.** A camera with no serial, or one sharing its
+  serial with another on the box, is now addressed by its USB port, as `usb-port:1-1.4`, and its
+  net follows the port. Two of these used to share an address, so `lager nets add` refused both.
+  A camera that was on a list but had no video node is no longer offered as a net.
 
 ## [0.61.0] - 2026-10-30
 

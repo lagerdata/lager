@@ -534,13 +534,12 @@ webcam.stop()
 | 视频设备 | `/dev/video*` 设备文件 |
 | OpenCV | 视频采集所需 |
 
-`lager nets add-all` 会为以下摄像头提供 Net：
+`lager nets add-all` 会为任何 USB 视频类（UVC）摄像头提供 Net。Lager 没有命名的型号会列为 `UVC_Camera`。HDMI 采集卡不会作为摄像头提供。
 
-- Logitech BRIO、BRIO HD、BRIO 4K Stream、4K Pro、C930e、C925e、C922 Pro、C920、C615、C270 和 StreamCam
-- ELP 全局快门摄像头（AR0234 传感器，USB ID `32e4:0234`）
+Net 每次启动时都会重新找到自己的摄像头，因此 `/dev/video*` 编号变化后仍可正常工作。
 
 <Note>
-ELP 全局快门摄像头每一台都报告相同的序列号 `01.00.00`。Lager 会把同一 Box 上的两台列为一台摄像头，带两个视频设备。请手动添加第二台摄像头的 Net，并指定它自己的 `/dev/video*` 设备。
+有些摄像头没有序列号，或与 Box 上其他摄像头序列号相同。Lager 会按 USB 端口为它们寻址，例如 `usb-port:1-1.4`。它们的 Net 跟随端口：如果把摄像头插到其他端口，Net 会报错。ELP 全局快门摄像头每一台都报告相同的序列号 `01.00.00`，因此同一 Box 上的两台会使用端口地址。
 </Note>
 
 ## 说明

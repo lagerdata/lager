@@ -99,9 +99,15 @@ def instruments(ctx, box: str | None) -> None:
         else:
             channels_str = "—"
 
+        # Every camera the box has no name for is listed as UVC_Camera, so
+        # its product string is what tells them apart.
+        name = dev.get("name", "—")
+        if name == "UVC_Camera" and dev.get("product"):
+            name = f"{name}\n{dev['product']}"
+
         table.add_row(
             [
-                dev.get("name", "—"),
+                name,
                 channels_str,
                 dev.get("address", "—"),
             ]
