@@ -12,7 +12,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -290,7 +291,16 @@ pub struct UsbTmc<B: Bulk> {
     tag: Tag,
     pub timeout: Duration,
     max_transfer: u32,
+    /// Transfers that have failed since the last one that worked.
+    failures: u32,
 }
+
+/// Failed transfers in a row after which the instrument counts as gone,
+/// so the hardware thread closes it and opens it again. libusb reports a
+/// wedged DS1054Z as timeouts, never as no device: one that stopped
+/// answering partway through booting timed out on every command for
+/// minutes, 5 s each, until it was reopened.
+const GONE_AFTER: u32 = 3;
 
 impl<B: Bulk> UsbTmc<B> {
     pub fn new(bulk: B) -> Self {
@@ -299,6 +309,30 @@ impl<B: Bulk> UsbTmc<B> {
             tag: Tag::default(),
             timeout: DEFAULT_TIMEOUT,
             max_transfer: READ_CHUNK,
+            failures: 0,
+        }
+    }
+
+    /// Count a transfer's outcome; the `GONE_AFTER`th failure in a row is
+    /// returned as `UnitGone`.
+    fn tally<T>(&mut self, result: Result<T>) -> Result<T> {
+        match result {
+            Ok(value) => {
+                self.failures = 0;
+                Ok(value)
+            }
+            Err(e) if e.downcast_ref::<UnitGone>().is_some() => Err(e),
+            Err(e) => {
+                self.failures += 1;
+                if self.failures < GONE_AFTER {
+                    return Err(e);
+                }
+                Err(UnitGone(format!(
+                    "the instrument stopped answering on USB: {} transfers in a row failed, the last with {e:#}",
+                    self.failures
+                ))
+                .into())
+            }
         }
     }
 
@@ -334,6 +368,7 @@ impl<B: Bulk> UsbTmc<B> {
         }
         tracing::warn!("the instrument answers nothing on USB; resetting its port");
         self.bulk.reset()?;
+        self.failures = 0;
         self.resync();
         Ok(())
     }
@@ -413,13 +448,21 @@ impl<B: Bulk> Scpi for UsbTmc<B> {
         }
         let tag = self.tag.next();
         let transfer = dev_dep_msg_out(tag, &payload);
-        self.bulk
+        let sent = self
+            .bulk
             .bulk_out(&transfer, self.timeout)
-            .with_context(|| format!("sending {command}"))?;
-        Ok(())
+            .with_context(|| format!("sending {command}"));
+        self.tally(sent).map(|_| ())
     }
 
     fn read_message(&mut self) -> Result<Vec<u8>> {
+        let read = self.read_whole_message();
+        self.tally(read)
+    }
+}
+
+impl<B: Bulk> UsbTmc<B> {
+    fn read_whole_message(&mut self) -> Result<Vec<u8>> {
         let mut message = Vec::new();
         // Bounded so a device that never says end of message cannot hold
         // the hardware thread forever.
@@ -599,19 +642,72 @@ impl Bulk for RusbBulk {
 const USBTMC_CLASS: u8 = 0xFE;
 const USBTMC_SUBCLASS: u8 = 0x03;
 
+/// How long an instrument that appears on USB after this process found
+/// none is left alone. A DS1054Z enumerates partway through booting and
+/// drops off the bus again about 10 s later; talked to in that window,
+/// even to read its serial, it froze, screen included, until power-cycled.
+/// Opened 80 s after it appeared, it worked.
+const BOOT_SETTLE: Duration = Duration::from_secs(30);
+
+/// Whether this process has found no matching instrument, and when it
+/// first saw each device since, by bus and address. A device re-enumerated
+/// gets a new address, so it counts as newly appeared.
+#[derive(Default)]
+struct Sightings {
+    absent: bool,
+    first_seen: Vec<((u8, u8), Instant)>,
+}
+
+static SIGHTINGS: Mutex<Sightings> = Mutex::new(Sightings {
+    absent: false,
+    first_seen: Vec::new(),
+});
+
+impl Sightings {
+    /// How much longer to leave the device at `key` alone, or `None` to
+    /// open it now. A device present since before any absence is opened at
+    /// once, as at daemon start.
+    fn boot_wait(&mut self, key: (u8, u8), now: Instant) -> Option<Duration> {
+        if !self.absent {
+            return None;
+        }
+        let first = match self.first_seen.iter().find(|(k, _)| *k == key) {
+            Some(&(_, at)) => at,
+            None => {
+                self.first_seen.push((key, now));
+                now
+            }
+        };
+        BOOT_SETTLE
+            .checked_sub(now.duration_since(first))
+            .filter(|left| !left.is_zero())
+    }
+}
+
 /// Open the USB-TMC interface of the instrument matching `vid`, `pid` and,
 /// when given, `serial`, and bring it back from wherever a crashed process
-/// left it.
+/// left it. One that has just appeared is refused until `BOOT_SETTLE` has
+/// passed, with an error saying how long is left.
 pub fn open_usb(vid: u16, pid: u16, serial: Option<&str>) -> Result<UsbTmc<RusbBulk>> {
     use rusb::UsbContext;
 
     let context = rusb::Context::new().context("starting libusb")?;
     let mut seen = Vec::new();
+    let mut booting = None;
     for device in context.devices().context("listing USB devices")?.iter() {
         let Ok(descriptor) = device.device_descriptor() else {
             continue;
         };
         if descriptor.vendor_id() != vid || descriptor.product_id() != pid {
+            continue;
+        }
+        let key = (device.bus_number(), device.address());
+        let wait = SIGHTINGS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .boot_wait(key, Instant::now());
+        if let Some(left) = wait {
+            booting = Some(left);
             continue;
         }
         let handle = device.open().map_err(usb_error).with_context(|| {
@@ -627,6 +723,18 @@ pub fn open_usb(vid: u16, pid: u16, serial: Option<&str>) -> Result<UsbTmc<RusbB
             }
         }
         return claim(device, handle, &descriptor);
+    }
+    if let Some(left) = booting {
+        bail!(
+            "a USB instrument {vid:04x}:{pid:04x} has just appeared; leaving it {} s more to finish booting",
+            left.as_secs() + 1
+        );
+    }
+    if seen.is_empty() {
+        SIGHTINGS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .absent = true;
     }
     bail!(not_attached(vid, pid, serial, &seen))
 }
@@ -885,6 +993,7 @@ impl DeviceLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::oscilloscope::unit_is_gone;
     use std::collections::VecDeque;
 
     #[test]
@@ -1162,6 +1271,54 @@ mod tests {
         scpi.settle().unwrap();
         assert_eq!(scpi.bulk.resets, 1);
         assert_eq!(scpi.query("*OPC?").unwrap(), "1");
+    }
+
+    #[test]
+    fn three_failed_transfers_in_a_row_mean_the_unit_is_gone() {
+        let mut scpi = tmc(vec![]);
+        scpi.bulk.dead = true;
+        assert!(!unit_is_gone(&scpi.write(":A").unwrap_err()));
+        assert!(!unit_is_gone(&scpi.write(":B").unwrap_err()));
+        assert!(unit_is_gone(&scpi.write(":C").unwrap_err()));
+    }
+
+    #[test]
+    fn a_transfer_that_works_starts_the_count_again() {
+        let mut scpi = tmc(vec![]);
+        scpi.bulk.dead = true;
+        scpi.write(":A").unwrap_err();
+        scpi.write(":B").unwrap_err();
+        scpi.bulk.dead = false;
+        scpi.write(":C").unwrap();
+        scpi.bulk.dead = true;
+        assert!(!unit_is_gone(&scpi.write(":D").unwrap_err()));
+    }
+
+    #[test]
+    fn an_instrument_present_from_the_start_is_opened_at_once() {
+        let mut sightings = Sightings::default();
+        assert_eq!(sightings.boot_wait((1, 7), Instant::now()), None);
+    }
+
+    #[test]
+    fn an_instrument_that_reappears_is_left_to_boot() {
+        let mut sightings = Sightings {
+            absent: true,
+            ..Sightings::default()
+        };
+        let appeared = Instant::now();
+        assert_eq!(sightings.boot_wait((1, 8), appeared), Some(BOOT_SETTLE));
+        let later = appeared + Duration::from_secs(10);
+        assert_eq!(
+            sightings.boot_wait((1, 8), later),
+            Some(BOOT_SETTLE - Duration::from_secs(10))
+        );
+        assert_eq!(sightings.boot_wait((1, 8), appeared + BOOT_SETTLE), None);
+        // Re-enumerated: a new address starts the wait again.
+        assert_eq!(
+            sightings.boot_wait((1, 9), appeared + BOOT_SETTLE),
+            Some(BOOT_SETTLE)
+        );
     }
 
     #[test]
