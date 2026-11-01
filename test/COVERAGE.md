@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3794 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5201 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3799 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5207 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9849** |
+| | **Total gated** | **9860** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,7 +500,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 341 files)
+### Local Unit Tests (`test/unit/` -- 342 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 185 files)
 
@@ -696,7 +696,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 132 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 133 files)
 
 | File | What it tests |
 |------|---------------|
@@ -756,6 +756,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_net_preflight.py` | Host-networking pre-flight: the ufw-allow parse against real `ufw status` output, refusal when the interface carrying the operator's own connection is not admitted, interface-scoped remediation rather than a blanket open, gateway port-collision refusal, and refusal when the box cannot be probed. Also that rules are read in ufw's first-match order, so an allow appended behind the blanket deny does not admit; address family and source scoping; and the refusal for an unreadable ufw, which names the exact `sudo -n <path> status` and prints a visudo-checked grant for a file Lager does not own |
 | `test_nets_add_ftdi_interface.py` | `lager nets add --interface`: the channel saved as `params.interface`, and refused for a channel the part lacks, an I2C/SPI net on a non-MPSSE channel, a non-FTDI instrument, and a debug net (pointed at the `@B` suffix). Also that the channel is part of a net's identity -- the same pin on two channels is two nets, no interface compares as A, a hand-saved `1` equals `B` -- that a second debug net on another channel suffix is accepted while a single-target probe keeps one, and that the CLI's channel tables agree with `box/lager/util/ftdi_url.py` |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
+| `test_nets_add_all_names.py` | `lager nets add-all` naming: a four-channel scope gets `oscilloscope1` and `scope1`-`scope4` with no duplicate, a name saved under another role is not reused, and a second scope continues the indices |
 | `test_nets_add_coverage.py` | `lager nets add` accepts the instruments the scanner detects (DP832, E36312A, SPD1168X, USB-202, Phidget, J-Link Base Compact) and refuses a U3's FIO0-FIO3 as custom pins; `add-batch` saves `params` (LabJack pins, FTDI channel) and a uart device path, and saves nothing when any record has an unknown key, a bad `params` value, an unsupported role or an ambiguous address |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find. Also that add-batch creates a Siglent SPD1168X `power-supply` net with an explicit instrument at a LAN or USB address and refuses other roles |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation. `--list` shows a cable's product and durable path (by-id, or by-path when the cable has no serial), and still renders records from boxes that predate those fields |

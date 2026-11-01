@@ -314,11 +314,15 @@ impl<B: Bulk> UsbTmc<B> {
     }
 
     /// Count a transfer's outcome; the `GONE_AFTER`th failure in a row is
-    /// returned as `UnitGone`.
-    fn tally<T>(&mut self, result: Result<T>) -> Result<T> {
+    /// returned as `UnitGone`. Only a reply read in full starts the count
+    /// again: a DS1054Z that stops answering can still take commands, and a
+    /// count reset by each `write` then never reached `GONE_AFTER`.
+    fn tally<T>(&mut self, result: Result<T>, answered: bool) -> Result<T> {
         match result {
             Ok(value) => {
-                self.failures = 0;
+                if answered {
+                    self.failures = 0;
+                }
                 Ok(value)
             }
             Err(e) if e.downcast_ref::<UnitGone>().is_some() => Err(e),
@@ -452,12 +456,12 @@ impl<B: Bulk> Scpi for UsbTmc<B> {
             .bulk
             .bulk_out(&transfer, self.timeout)
             .with_context(|| format!("sending {command}"));
-        self.tally(sent).map(|_| ())
+        self.tally(sent, false).map(|_| ())
     }
 
     fn read_message(&mut self) -> Result<Vec<u8>> {
         let read = self.read_whole_message();
-        self.tally(read)
+        self.tally(read, true)
     }
 }
 
@@ -642,45 +646,51 @@ impl Bulk for RusbBulk {
 const USBTMC_CLASS: u8 = 0xFE;
 const USBTMC_SUBCLASS: u8 = 0x03;
 
-/// How long an instrument that appears on USB after this process found
-/// none is left alone. A DS1054Z enumerates partway through booting and
+/// How long an instrument that appears on USB after this process first
+/// looked is left alone. A DS1054Z enumerates partway through booting and
 /// drops off the bus again about 10 s later; talked to in that window,
 /// even to read its serial, it froze, screen included, until power-cycled.
 /// Opened 80 s after it appeared, it worked.
 const BOOT_SETTLE: Duration = Duration::from_secs(30);
 
-/// Whether this process has found no matching instrument, and when it
-/// first saw each device since, by bus and address. A device re-enumerated
-/// gets a new address, so it counts as newly appeared.
+/// Each matching device this process has seen, by bus and address, with
+/// when it appeared: `None` for one already there at the first look. A
+/// device that re-enumerates, after a power cycle however short, gets a
+/// new address, so it counts as newly appeared even when this process never
+/// saw it gone, and even with another unit of the same model attached.
 #[derive(Default)]
 struct Sightings {
-    absent: bool,
-    first_seen: Vec<((u8, u8), Instant)>,
+    looked: bool,
+    devices: Vec<((u8, u8), Option<Instant>)>,
 }
 
 static SIGHTINGS: Mutex<Sightings> = Mutex::new(Sightings {
-    absent: false,
-    first_seen: Vec::new(),
+    looked: false,
+    devices: Vec::new(),
 });
 
 impl Sightings {
     /// How much longer to leave the device at `key` alone, or `None` to
-    /// open it now. A device present since before any absence is opened at
-    /// once, as at daemon start.
+    /// open it now. A device there at the first look is opened at once, as
+    /// at daemon start.
     fn boot_wait(&mut self, key: (u8, u8), now: Instant) -> Option<Duration> {
-        if !self.absent {
-            return None;
-        }
-        let first = match self.first_seen.iter().find(|(k, _)| *k == key) {
-            Some(&(_, at)) => at,
+        let appeared = match self.devices.iter().find(|(k, _)| *k == key) {
+            Some(&(_, appeared)) => appeared,
             None => {
-                self.first_seen.push((key, now));
-                now
+                let appeared = self.looked.then_some(now);
+                self.devices.push((key, appeared));
+                appeared
             }
-        };
+        }?;
         BOOT_SETTLE
-            .checked_sub(now.duration_since(first))
+            .checked_sub(now.duration_since(appeared))
             .filter(|left| !left.is_zero())
+    }
+
+    /// Every device on the bus has now been seen once; any found later is
+    /// one that appeared.
+    fn finish_look(&mut self) {
+        self.looked = true;
     }
 }
 
@@ -689,6 +699,15 @@ impl Sightings {
 /// left it. One that has just appeared is refused until `BOOT_SETTLE` has
 /// passed, with an error saying how long is left.
 pub fn open_usb(vid: u16, pid: u16, serial: Option<&str>) -> Result<UsbTmc<RusbBulk>> {
+    let opened = find_and_claim(vid, pid, serial);
+    SIGHTINGS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .finish_look();
+    opened
+}
+
+fn find_and_claim(vid: u16, pid: u16, serial: Option<&str>) -> Result<UsbTmc<RusbBulk>> {
     use rusb::UsbContext;
 
     let context = rusb::Context::new().context("starting libusb")?;
@@ -729,12 +748,6 @@ pub fn open_usb(vid: u16, pid: u16, serial: Option<&str>) -> Result<UsbTmc<RusbB
             "a USB instrument {vid:04x}:{pid:04x} has just appeared; leaving it {} s more to finish booting",
             left.as_secs() + 1
         );
-    }
-    if seen.is_empty() {
-        SIGHTINGS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .absent = true;
     }
     bail!(not_attached(vid, pid, serial, &seen))
 }
@@ -1283,30 +1296,43 @@ mod tests {
     }
 
     #[test]
-    fn a_transfer_that_works_starts_the_count_again() {
-        let mut scpi = tmc(vec![]);
+    fn a_reply_starts_the_count_again() {
+        let mut scpi = tmc(vec![(b"1\n".to_vec(), true)]);
         scpi.bulk.dead = true;
         scpi.write(":A").unwrap_err();
         scpi.write(":B").unwrap_err();
         scpi.bulk.dead = false;
-        scpi.write(":C").unwrap();
+        assert_eq!(scpi.query("*OPC?").unwrap(), "1");
         scpi.bulk.dead = true;
         assert!(!unit_is_gone(&scpi.write(":D").unwrap_err()));
     }
 
     #[test]
-    fn an_instrument_present_from_the_start_is_opened_at_once() {
-        let mut sightings = Sightings::default();
-        assert_eq!(sightings.boot_wait((1, 7), Instant::now()), None);
+    fn an_instrument_that_takes_commands_but_never_replies_is_gone() {
+        // Each query's command goes out; no reply ever comes back.
+        let mut scpi = tmc(vec![]);
+        assert!(!unit_is_gone(&scpi.query(":A?").unwrap_err()));
+        assert!(!unit_is_gone(&scpi.query(":B?").unwrap_err()));
+        assert!(unit_is_gone(&scpi.query(":C?").unwrap_err()));
     }
 
     #[test]
-    fn an_instrument_that_reappears_is_left_to_boot() {
-        let mut sightings = Sightings {
-            absent: true,
-            ..Sightings::default()
-        };
-        let appeared = Instant::now();
+    fn an_instrument_there_at_the_first_look_is_opened_at_once() {
+        let mut sightings = Sightings::default();
+        let start = Instant::now();
+        assert_eq!(sightings.boot_wait((1, 7), start), None);
+        sightings.finish_look();
+        assert_eq!(sightings.boot_wait((1, 7), start), None);
+    }
+
+    #[test]
+    fn an_instrument_that_appears_later_is_left_to_boot() {
+        let mut sightings = Sightings::default();
+        let start = Instant::now();
+        // Another unit of the same model, attached throughout.
+        assert_eq!(sightings.boot_wait((1, 7), start), None);
+        sightings.finish_look();
+        let appeared = start + Duration::from_secs(5);
         assert_eq!(sightings.boot_wait((1, 8), appeared), Some(BOOT_SETTLE));
         let later = appeared + Duration::from_secs(10);
         assert_eq!(
@@ -1314,6 +1340,7 @@ mod tests {
             Some(BOOT_SETTLE - Duration::from_secs(10))
         );
         assert_eq!(sightings.boot_wait((1, 8), appeared + BOOT_SETTLE), None);
+        assert_eq!(sightings.boot_wait((1, 7), later), None);
         // Re-enumerated: a new address starts the wait again.
         assert_eq!(
             sightings.boot_wait((1, 9), appeared + BOOT_SETTLE),

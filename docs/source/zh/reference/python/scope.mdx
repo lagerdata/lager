@@ -11,11 +11,11 @@ description: 用于示波器控制的 Python SDK
 
 ## 仪器支持
 
-同一个对象和同样的调用适用于 Rigol MSO5000、Rigol DS1000Z（DS1054Z、DS1074Z、DS1104Z）和 PicoScope（2000、2000a、3000a、4000a 或 5000a）。Box 上的示波器守护进程驱动这三种示波器。区别在底层：Rigol 通过 USB 接收 SCPI 命令，PicoScope 是带有厂商 SDK 的 USB 设备。
+同一个对象和同样的调用适用于三种示波器：Rigol MSO5000、Rigol DS1000Z（DS1054Z、DS1074Z、DS1104Z）和 PicoScope。PicoScope 可以是 2000、2000a、3000a、4000a 或 5000a。Box 上的示波器守护进程驱动这三种示波器。区别在底层：Rigol 通过 USB 接收 SCPI 命令，PicoScope 是带有厂商 SDK 的 USB 设备。
 
 DS1000Z 与 MSO5000 有以下不同：
 
-- **它的实时视图就是屏幕记录。** 它没有视频输出，因此串流的帧是示波器每个通道的 1200 点记录，通过全速 USB 读取，开启三个通道时约每秒 2.4 帧。不需要采集卡。
+- **它的实时视图就是屏幕记录。** 它没有视频输出，因此每个串流帧是示波器每个通道的 1200 点记录。通过全速 USB，开启三个通道时约每秒 2.4 帧。不需要采集卡。
 - **它没有数字通道、没有仪器上的光标，也没有滚动模式。** `scope.cursor` 的方法会抛出异常；`lager scope <net> cursor time` 和 `cursor volts` 仍然读取采集到的采样点。
 - **`autoscale()` 之后 5 到 25 s 内，时间测量显示为不可用。** 在测量稳定之前，示波器不报告频率或周期。
 
