@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Rigol DS1000Z series: DS1054Z, DS1074Z, DS1104Z (and their Plus
-//! versions), the MSO1000Z, and the two-channel DS1202Z-E.
+//! versions), the MSO1000Z, and the two-channel DS1202Z-E. Only the DS1054Z
+//! has been run. The USB catalog lists the `1ab1:04ce` parts; the DS1202Z-E
+//! is recognized by its `*IDN?` but may use another product ID, which the
+//! catalog does not list.
 //!
 //! Everything goes over SCPI. These scopes have no video output, so where
 //! the MSO5000 backend takes its live view from a capture card, this one

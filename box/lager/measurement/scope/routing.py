@@ -19,7 +19,8 @@ PICOSCOPE = "picoscope"
 RIGOL_MSO5000 = "rigol_mso5000"
 RIGOL_DS1000Z = "rigol_ds1000z"
 
-# DS1054Z, DS1104Z, MSO1104Z, DS1202Z-E, or the catalog's Rigol_DS1000Z.
+# DS1054Z, DS1104Z, MSO1104Z, DS1202Z-E, or the catalog's Rigol_DS1000Z. The
+# catalog lists only PID 04ce, so a DS1202Z-E may not be detected by a scan.
 _DS1000Z_MODEL = re.compile(r"(ds|mso)1(\d{3}|000)z")
 
 
