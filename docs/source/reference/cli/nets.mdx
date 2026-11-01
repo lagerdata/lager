@@ -368,6 +368,8 @@ Create all 7 nets on box <BOX_IP>? [y/N]:
 
 Before the list, `add-all` prints a warning for each device that it skips. It skips two devices of one model that report the same address. It also skips a single-output or mode-exclusive chip with no saved net. That chip offers more than one role, and `add-all` does not choose one for you.
 
+Each new net is named after its role, followed by the lowest index that no net on the box uses: `supply1`, `adc2`. A `power-supply` net uses `supply`. A `scope` net uses `oscilloscope`, so a four-channel scope gets `oscilloscope1` for the instrument and `scope1` to `scope4` for its channels.
+
 ### `add-batch`
 
 Create multiple nets from a JSON file for efficient bulk setup.

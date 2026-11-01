@@ -85,6 +85,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   answers with the one it used; before, it started both J-Link and OpenOCD with
   SWD whatever the request said. A net with its own OpenOCD config keeps the
   config's transport. The debug service's `/health` lists `connect_transport`.
+- **`lager nets add-all` no longer gives a scope's instrument net and its
+  channel 1 net the same name.** Both were `scope1`. The `scope` net is now
+  named `oscilloscope1` and the channels keep `scope1` to `scope4`, and no new
+  net reuses a name already saved on the box under another role.
 
 ## [0.61.0] - 2026-10-30
 
