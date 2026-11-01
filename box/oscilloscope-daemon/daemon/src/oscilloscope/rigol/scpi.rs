@@ -27,6 +27,10 @@ pub trait Scpi: Send {
     /// How long a read may wait for the instrument.
     fn set_timeout(&mut self, _timeout: Duration) {}
 
+    /// The most reply bytes to ask for in one transfer, where the link has
+    /// transfers (USB-TMC); a reply longer than this arrives over several.
+    fn set_max_transfer(&mut self, _bytes: u32) {}
+
     fn query(&mut self, command: &str) -> Result<String> {
         self.write(command)?;
         let reply = self.read_message()?;
@@ -185,9 +189,16 @@ const INITIATE_CLEAR: u8 = 5;
 const CHECK_CLEAR_STATUS: u8 = 6;
 const STATUS_SUCCESS: u8 = 0x01;
 const STATUS_PENDING: u8 = 0x02;
-/// Bytes asked for per `REQUEST_DEV_DEP_MSG_IN`. A screenshot runs to a few
-/// megabytes, so it arrives over several.
+/// Bytes asked for per `REQUEST_DEV_DEP_MSG_IN` unless `set_max_transfer`
+/// lowers it. A screenshot runs to a few megabytes, so it arrives over
+/// several.
 const READ_CHUNK: u32 = 1 << 20;
+/// The longest reply `read_message` takes before deciding the instrument
+/// will never end it.
+const MAX_MESSAGE_BYTES: usize = 64 << 20;
+/// Reads `read_transfer` discards ahead of a reply before giving up: more
+/// than the packets of one unread 500-byte DS1000Z transfer.
+const MAX_DISCARDED_READS: usize = 32;
 
 /// The `bTag` sequence: 1 to 255, never 0, wrapping.
 #[derive(Debug, Clone, Copy)]
@@ -265,6 +276,12 @@ pub trait Bulk: Send {
     /// instrument left holding a request it will never answer answers
     /// nothing after it either.
     fn recover(&mut self) {}
+
+    /// Reset the device's USB port and claim its interface again, for an
+    /// instrument that answers nothing at all.
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// USB-TMC over any pair of bulk endpoints.
@@ -272,6 +289,7 @@ pub struct UsbTmc<B: Bulk> {
     bulk: B,
     tag: Tag,
     pub timeout: Duration,
+    max_transfer: u32,
 }
 
 impl<B: Bulk> UsbTmc<B> {
@@ -280,19 +298,80 @@ impl<B: Bulk> UsbTmc<B> {
             bulk,
             tag: Tag::default(),
             timeout: DEFAULT_TIMEOUT,
+            max_transfer: READ_CHUNK,
         }
+    }
+
+    /// Get the instrument answering again after a process that died with
+    /// a query sent and its reply never asked for. A DS1000Z then answers
+    /// neither that query nor the next one: the first command after a
+    /// restart timed out. A throwaway `*OPC?` takes that loss, and a failed
+    /// read clears the instrument, so the second answers. Whether either did.
+    fn resync(&mut self) -> bool {
+        let timeout = self.timeout;
+        self.timeout = RESYNC_TIMEOUT;
+        let mut answered = false;
+        for attempt in 1..=2 {
+            match self.query("*OPC?") {
+                Ok(_) => {
+                    answered = true;
+                    break;
+                }
+                Err(e) => tracing::debug!(attempt, error = %e, "resyncing the USB-TMC link"),
+            }
+        }
+        self.timeout = timeout;
+        answered
+    }
+
+    /// `resync`, then a USB port reset when the instrument still answers
+    /// nothing. A DS1054Z plugged back in while the daemon kept trying to
+    /// open it timed out on bulk-out as well as bulk-in, through clears and
+    /// re-claims, for minutes; one port reset brought it back.
+    fn settle(&mut self) -> Result<()> {
+        if self.resync() {
+            return Ok(());
+        }
+        tracing::warn!("the instrument answers nothing on USB; resetting its port");
+        self.bulk.reset()?;
+        self.resync();
+        Ok(())
     }
 
     /// One reply transfer: what one `REQUEST_DEV_DEP_MSG_IN` returns.
     fn read_transfer(&mut self, into: &mut Vec<u8>) -> Result<bool> {
         let tag = self.tag.next();
-        let request = request_dev_dep_msg_in(tag, READ_CHUNK);
+        let request = request_dev_dep_msg_in(tag, self.max_transfer);
         self.bulk.bulk_out(&request, self.timeout)?;
 
         let packet = self.bulk.max_packet().max(64);
-        let mut buffer = vec![0u8; HEADER + READ_CHUNK as usize + packet];
-        let got = self.bulk.bulk_in(&mut buffer, self.timeout)?;
-        let header = parse_in_header(tag, &buffer[..got])?;
+        let mut buffer = vec![0u8; HEADER + self.max_transfer as usize + packet];
+        let mut got = self.bulk.bulk_in(&mut buffer, self.timeout)?;
+        // What arrives ahead of this reply's header is not this reply. A
+        // full-speed DS1000Z sends the zero-length packet that closes a
+        // transfer ending on a packet boundary only after the transfer has
+        // been read, so it turns up here; and it sends the unread rest of a
+        // reply whose reader died ahead of the next reply, through
+        // INITIATE_CLEAR and into the next process. Packets are discarded
+        // until this reply's header, which carries its tag, comes.
+        let mut discarded = 0;
+        let header = loop {
+            match parse_in_header(tag, &buffer[..got]) {
+                Ok(header) => break header,
+                Err(e) if discarded >= MAX_DISCARDED_READS => return Err(e),
+                Err(e) => {
+                    if got > 0 {
+                        tracing::debug!(
+                            bytes = got,
+                            error = %e,
+                            "discarding what came ahead of a reply"
+                        );
+                    }
+                    discarded += 1;
+                    got = self.bulk.bulk_in(&mut buffer, self.timeout)?;
+                }
+            }
+        };
         let mut have = got - HEADER;
         // A transfer ends at a short packet; one that filled the buffer
         // exactly is followed by more.
@@ -315,10 +394,16 @@ impl<B: Bulk> UsbTmc<B> {
 
 /// Long enough for a screenshot or a full waveform record over USB 2.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+/// An idle instrument answers `*OPC?` within milliseconds.
+const RESYNC_TIMEOUT: Duration = Duration::from_millis(500);
 
 impl<B: Bulk> Scpi for UsbTmc<B> {
     fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
+    }
+
+    fn set_max_transfer(&mut self, bytes: u32) {
+        self.max_transfer = bytes.clamp(1, READ_CHUNK);
     }
 
     fn write(&mut self, command: &str) -> Result<()> {
@@ -338,7 +423,7 @@ impl<B: Bulk> Scpi for UsbTmc<B> {
         let mut message = Vec::new();
         // Bounded so a device that never says end of message cannot hold
         // the hardware thread forever.
-        for _ in 0..64 {
+        while message.len() < MAX_MESSAGE_BYTES {
             match self.read_transfer(&mut message) {
                 Ok(true) => return Ok(message),
                 Ok(false) => {}
@@ -490,7 +575,24 @@ impl Bulk for RusbBulk {
     fn recover(&mut self) {
         tracing::warn!("a USB-TMC read failed part way; clearing the instrument");
         self.initiate_clear();
-        let _ = self.handle.clear_halt(self.ep_in);
+        self.clear_in_halt();
+        self.drain();
+    }
+
+    /// The reset returns both ends' data toggles to DATA0, so no clear is
+    /// needed after it. A device that re-enumerates instead has gone, and
+    /// the next open finds it again.
+    fn reset(&mut self) -> Result<()> {
+        let _ = self.handle.release_interface(self.interface);
+        self.handle
+            .reset()
+            .map_err(usb_error)
+            .context("resetting the instrument's USB port")?;
+        self.handle
+            .claim_interface(self.interface)
+            .map_err(usb_error)
+            .context("claiming the USB-TMC interface after a port reset")?;
+        Ok(())
     }
 }
 
@@ -593,7 +695,6 @@ fn claim(
                     .claim_interface(number)
                     .map_err(usb_error)
                     .context("claiming the USB-TMC interface")?;
-                let _ = handle.clear_halt(ep_in);
                 let _ = handle.clear_halt(ep_out);
                 let mut bulk = RusbBulk {
                     handle,
@@ -602,8 +703,12 @@ fn claim(
                     ep_out,
                     max_packet,
                 };
+                bulk.clear_in_halt();
                 bulk.initiate_clear();
-                return Ok(UsbTmc::new(bulk));
+                bulk.drain();
+                let mut tmc = UsbTmc::new(bulk);
+                tmc.settle()?;
+                return Ok(tmc);
             }
         }
     }
@@ -650,6 +755,56 @@ impl RusbBulk {
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = self.handle.clear_halt(self.ep_out);
+    }
+
+    /// Clear bulk-in only if it is halted. Clearing resets the host's data
+    /// toggle, and a DS1000Z does not reset its own: the host then takes the
+    /// scope's next packet for a repeat and drops it, so the next reply
+    /// loses its first 64 bytes, header and all.
+    fn clear_in_halt(&mut self) {
+        const GET_STATUS: u8 = 0x00;
+        const HALTED: u8 = 0x01;
+        let request_type = rusb::request_type(
+            rusb::Direction::In,
+            rusb::RequestType::Standard,
+            rusb::Recipient::Endpoint,
+        );
+        let mut status = [0u8; 2];
+        let read = self.handle.read_control(
+            request_type,
+            GET_STATUS,
+            0,
+            u16::from(self.ep_in),
+            &mut status,
+            Duration::from_secs(1),
+        );
+        // An endpoint whose status cannot be read is cleared as before.
+        if !matches!(read, Ok(2)) || status[0] & HALTED != 0 {
+            let _ = self.handle.clear_halt(self.ep_in);
+        }
+    }
+
+    /// Discard reply data still queued on bulk-in. A DS1000Z keeps the rest
+    /// of a reply nobody finished reading through INITIATE_CLEAR, and even
+    /// into the next process to open it, which then reads that data as the
+    /// header of its own first reply.
+    fn drain(&mut self) {
+        // A queued packet is there at once; 50 ms only bounds the wait when
+        // the pipe is already empty. 64 packets is more than a stalled
+        // transfer leaves behind.
+        let timeout = Duration::from_millis(50);
+        let mut buffer = vec![0u8; self.max_packet.max(64)];
+        let mut discarded = 0;
+        for _ in 0..64 {
+            match self.handle.read_bulk(self.ep_in, &mut buffer, timeout) {
+                // A zero-length packet may sit between two stale transfers.
+                Ok(n) => discarded += n,
+                Err(_) => break,
+            }
+        }
+        if discarded > 0 {
+            tracing::debug!(bytes = discarded, "discarded stale USB-TMC reply data");
+        }
     }
 }
 
@@ -836,6 +991,8 @@ mod tests {
     /// Bulk endpoints that answer each request with canned transfers.
     struct FakeBulk {
         sent: Vec<Vec<u8>>,
+        /// Every `REQUEST_DEV_DEP_MSG_IN`, header only.
+        requests: Vec<[u8; HEADER]>,
         /// Reply bodies and their end-of-message bit, one per request.
         replies: VecDeque<(Vec<u8>, bool)>,
         /// Pending bulk-in data for the current transfer.
@@ -844,11 +1001,24 @@ mod tests {
         /// A request is outstanding that the device will not answer.
         stuck: bool,
         recovered: usize,
+        /// Close a transfer that ends on a packet boundary with a
+        /// zero-length packet, read after the transfer, as a DS1000Z does.
+        zlp_on_boundary: bool,
+        zlp_due: bool,
+        /// Packets a dead reader left unread, sent ahead of anything else.
+        stale: VecDeque<Vec<u8>>,
+        /// Neither endpoint moves until a port reset.
+        dead: bool,
+        resets: usize,
     }
 
     impl Bulk for FakeBulk {
         fn bulk_out(&mut self, data: &[u8], _timeout: Duration) -> Result<usize> {
+            if self.dead {
+                bail!("Operation timed out");
+            }
             if data[0] == REQUEST_DEV_DEP_MSG_IN {
+                self.requests.push(data[..HEADER].try_into().unwrap());
                 let tag = data[1];
                 let Some((body, eom)) = self.replies.pop_front() else {
                     // Asked for a reply that never comes.
@@ -874,10 +1044,19 @@ mod tests {
             if self.stuck {
                 bail!("Operation timed out");
             }
+            if self.zlp_due {
+                self.zlp_due = false;
+                return Ok(0);
+            }
+            if let Some(packet) = self.stale.pop_front() {
+                buffer[..packet.len()].copy_from_slice(&packet);
+                return Ok(packet.len());
+            }
             let n = self.pending.len().min(self.packet).min(buffer.len());
             for slot in buffer.iter_mut().take(n) {
                 *slot = self.pending.pop_front().unwrap();
             }
+            self.zlp_due = self.zlp_on_boundary && n == self.packet && self.pending.is_empty();
             Ok(n)
         }
 
@@ -889,16 +1068,29 @@ mod tests {
             self.stuck = false;
             self.recovered += 1;
         }
+
+        fn reset(&mut self) -> Result<()> {
+            self.dead = false;
+            self.stuck = false;
+            self.resets += 1;
+            Ok(())
+        }
     }
 
     fn tmc(replies: Vec<(Vec<u8>, bool)>) -> UsbTmc<FakeBulk> {
         UsbTmc::new(FakeBulk {
             sent: Vec::new(),
+            requests: Vec::new(),
             replies: replies.into(),
             pending: VecDeque::new(),
             packet: 64,
             stuck: false,
             recovered: 0,
+            zlp_on_boundary: false,
+            zlp_due: false,
+            stale: VecDeque::new(),
+            dead: false,
+            resets: 0,
         })
     }
 
@@ -921,6 +1113,62 @@ mod tests {
         let block = scpi.query_block(":WAV:DATA?").unwrap();
         assert_eq!(block.len(), 300);
         assert_eq!(block[299], 299u16 as u8);
+    }
+
+    #[test]
+    fn a_zero_length_packet_after_a_full_transfer_is_skipped() {
+        // 12 header bytes and 116 of body: exactly two 64-byte packets.
+        let mut first = vec![b'x'; 115];
+        first.push(b'\n');
+        let mut scpi = tmc(vec![(first, true), (b"1\n".to_vec(), true)]);
+        scpi.bulk.zlp_on_boundary = true;
+        assert_eq!(scpi.query(":A?").unwrap().len(), 115);
+        assert_eq!(scpi.query(":B?").unwrap(), "1");
+        assert_eq!(scpi.bulk.recovered, 0);
+    }
+
+    #[test]
+    fn what_a_dead_reader_left_is_discarded_ahead_of_the_reply() {
+        let mut scpi = tmc(vec![(
+            b"RIGOL TECHNOLOGIES,DS1054Z,DS1ZA1,00.04.05\n".to_vec(),
+            true,
+        )]);
+        // The tail of an earlier reply, then a whole one tagged for a
+        // request this process never made.
+        scpi.bulk.stale.push_back(b"P2\n\0".to_vec());
+        let mut earlier = vec![DEV_DEP_MSG_IN, 200, !200, 0, 2, 0, 0, 0, EOM, 0, 0, 0];
+        earlier.extend_from_slice(b"1\n\0\0");
+        scpi.bulk.stale.push_back(earlier);
+        assert_eq!(
+            scpi.query("*IDN?").unwrap(),
+            "RIGOL TECHNOLOGIES,DS1054Z,DS1ZA1,00.04.05"
+        );
+        assert_eq!(scpi.bulk.recovered, 0);
+    }
+
+    #[test]
+    fn a_capped_link_asks_for_capped_transfers() {
+        let mut scpi = tmc(vec![(b"1\n".to_vec(), true)]);
+        scpi.set_max_transfer(500);
+        assert_eq!(scpi.query(":A?").unwrap(), "1");
+        let request = scpi.bulk.requests[0];
+        assert_eq!(u32::from_le_bytes(request[4..8].try_into().unwrap()), 500);
+    }
+
+    #[test]
+    fn an_instrument_that_answers_nothing_has_its_port_reset() {
+        let mut scpi = tmc(vec![(b"1\n".to_vec(), true), (b"1\n".to_vec(), true)]);
+        scpi.bulk.dead = true;
+        scpi.settle().unwrap();
+        assert_eq!(scpi.bulk.resets, 1);
+        assert_eq!(scpi.query("*OPC?").unwrap(), "1");
+    }
+
+    #[test]
+    fn an_instrument_that_answers_is_not_reset() {
+        let mut scpi = tmc(vec![(b"1\n".to_vec(), true)]);
+        scpi.settle().unwrap();
+        assert_eq!(scpi.bulk.resets, 0);
     }
 
     #[test]

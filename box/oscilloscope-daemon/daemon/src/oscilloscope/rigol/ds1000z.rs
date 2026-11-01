@@ -28,10 +28,11 @@ use protocol::{
     ScopeCapabilities, TriggerSlope,
 };
 
-use super::scpi::{DeviceLock, Scpi};
+use super::scpi::{DEFAULT_TIMEOUT, DeviceLock, Scpi};
 use super::{
-    MEASUREMENT_ITEMS, Settings, channel_index, check_errors, format_volts, letter,
-    measurement_item, parse_f64, read_settings, scope_measurement, screen_record,
+    MEASUREMENT_ITEMS, Messages, Settings, changes_cached_settings, channel_index, check_errors,
+    format_volts, letter, measurement_item, parse_f64, read_settings, scope_measurement,
+    screen_record,
 };
 use crate::oscilloscope::{Cursor, Oscilloscope};
 
@@ -49,6 +50,14 @@ const MAX_MEMORY_SAMPLES: u64 = 12_000_000;
 /// The least time between two live-view captures. A screen record is 1200
 /// bytes a channel, so the link is free most of the time for commands.
 const LIVE_VIEW_INTERVAL: Duration = Duration::from_millis(100);
+/// Reply bytes to ask for in one USB-TMC transfer. The scope sends at most
+/// 500 a transfer whatever is asked for, and asked for more than about 512,
+/// corrupts the transfers after the first: a byte of `:WAVeform:DATA?` comes
+/// back as 0x0A, and an ASCII record loses separators (firmware 00.04.05).
+const MAX_TRANSFER_BYTES: u32 = 500;
+/// `:AUToscale` takes about 5 s on a DS1054Z, where a reply is otherwise
+/// waited for `DEFAULT_TIMEOUT`, also 5 s.
+const AUTOSCALE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// What `*IDN?` says, for a DS1000Z-series model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +190,7 @@ impl RigolDs1000z {
     /// When the scope does not identify as a DS1000Z-series model, or does
     /// not answer the settings queries.
     pub fn with(mut scpi: Box<dyn Scpi>, lock: Option<DeviceLock>) -> Result<RigolDs1000z> {
+        scpi.set_max_transfer(MAX_TRANSFER_BYTES);
         // Anything a previous process left in the error queue would be
         // reported against the first command here.
         scpi.write("*CLS")?;
@@ -278,7 +288,24 @@ impl RigolDs1000z {
             .iter()
             .map(|&i| (i, self.settings.channels[i].coupling))
             .collect();
-        screen_record(self.link().as_mut(), &wanted)
+        screen_record(self.link().as_mut(), &wanted, Messages::OneEach)
+    }
+
+    /// `record`, marked triggered when the scope captured it on a trigger.
+    fn flagged_record(&self, channels: &[usize]) -> Result<CaptureFrame> {
+        let status = self.trigger_status()?;
+        let triggered = match self.settings.capture_mode {
+            // Stopped in single: on the trigger it was armed for. Still
+            // WAIT, the record is from before it was armed.
+            CaptureMode::Single => status == "STOP",
+            // TD: triggered. AUTO is a capture the scope made without one.
+            _ => status == "TD",
+        };
+        let mut frame = self.record(channels)?;
+        if triggered {
+            frame.flags |= FLAG_TRIGGERED;
+        }
+        Ok(frame)
     }
 
     fn trigger_status(&self) -> Result<String> {
@@ -581,15 +608,7 @@ impl Oscilloscope for RigolDs1000z {
         if enabled.is_empty() {
             bail!("no channel is enabled, so there is nothing to capture");
         }
-        let triggered = match self.settings.capture_mode {
-            CaptureMode::Single => true,
-            // TD: triggered. AUTO is a capture the scope made without one.
-            _ => self.trigger_status()? == "TD",
-        };
-        let mut frame = self.record(&enabled)?;
-        if triggered {
-            frame.flags |= FLAG_TRIGGERED;
-        }
+        let frame = self.flagged_record(&enabled)?;
         let mut work = self.work();
         work.last_capture = Some(Instant::now());
         if self.settings.capture_mode == CaptureMode::Single {
@@ -658,7 +677,7 @@ impl Oscilloscope for RigolDs1000z {
             if enabled.is_empty() {
                 bail!("no channel is enabled, so there is no record to read");
             }
-            self.record(&enabled)
+            self.flagged_record(&enabled)
         })())
     }
 
@@ -667,20 +686,43 @@ impl Oscilloscope for RigolDs1000z {
         Some(self.apply(&format!(":TRIGger:HOLDoff {}", seconds.max(1.6e-8))))
     }
 
-    /// One SCPI command; a query answers with the reply. Settings sent this
-    /// way are not tracked until the daemon next reads them.
+    /// One SCPI command; a query answers with the reply. A command that can
+    /// change a cached setting, `:AUToscale` among them, has the settings
+    /// read again after it.
     fn scpi(&mut self, command: &str) -> Option<Result<Option<String>>> {
         Some((|| {
-            if command.contains('?') {
+            let reply = if command.contains('?') {
                 let reply = self.link().query(command)?;
                 check_errors(self.link().as_mut(), command)?;
-                Ok(Some(reply))
+                Some(reply)
+            } else if is_autoscale(command) {
+                // The scope answers nothing, the error check included,
+                // until the autoscale is done.
+                self.link().set_timeout(AUTOSCALE_TIMEOUT);
+                let applied = self.apply(command);
+                self.link().set_timeout(DEFAULT_TIMEOUT);
+                applied?;
+                None
             } else {
                 self.apply(command)?;
-                Ok(None)
+                None
+            };
+            if changes_cached_settings(command) {
+                let channels = self.settings.channels.len();
+                let settings = read_settings(self.link().as_mut(), channels)?;
+                self.settings = settings;
             }
+            Ok(reply)
         })())
     }
+}
+
+/// Whether `command` is `:AUToscale`, in any of its spellings.
+fn is_autoscale(command: &str) -> bool {
+    let header = command.trim().trim_start_matches(':');
+    header
+        .get(..3)
+        .is_some_and(|short| short.eq_ignore_ascii_case("AUT"))
 }
 
 #[cfg(test)]

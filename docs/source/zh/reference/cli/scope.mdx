@@ -80,7 +80,7 @@ lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 | `fft` | 报告某个通道最强的频率分量 | 两者 |
 | `display` | 设置 Web UI 绘制波形的方式 | 两者 |
 | `cursor` | 在采集数据上放置光标并读取差值 | `time`/`volts`/`off` 两者都可用；`set-a`/`set-b`/`move-a`/`move-b`/`hide` 仅限 Rigol |
-| `stream` | 串流示波器数据并提供 Web 可视化 | 两者（Rigol 需要 HDMI 采集卡） |
+| `stream` | 串流示波器数据并提供 Web 可视化 | 两者（Rigol MSO5000 需要 HDMI 采集卡） |
 
 <Note>
 边沿触发和 `trigger holdoff` 在 PicoScope 和 Rigol 上都可用。SPI 触发仅限 Rigol。脉冲、I2C 和 UART 触发在两种仪器上都会被拒绝，示波器保持不变。
@@ -112,7 +112,10 @@ CLI 在把命令发送到示波器之前会先检查这些值：
 | 厂商 | 型号 | 特性 |
 |--------------|-------|----------|
 | Rigol | MSO5000 系列 | 2 或 4 个模拟 + 16 个数字通道，通过 HDMI 采集卡实时查看，边沿和 SPI 触发，由仪器完成的单次测量，显示光标 |
+| Rigol | DS1000Z 系列（DS1054Z、DS1074Z、DS1104Z） | 4 个模拟通道，从 1200 点屏幕记录实时查看（无需采集卡），带释抑的边沿触发，自动设置，由仪器完成的单次测量 |
 | PicoScope | 2000、2000a、3000a、4000a、5000a 系列 | 实时串流，基于 Web 的可视化，CSV 导出，边沿触发，由守护进程计算的测量，基于采集数据的光标 |
+
+DS1000Z 没有视频输出，因此守护进程通过全速 USB 读取它的屏幕记录，开启三个通道时约每秒 2.4 帧。它没有数字通道、显示光标或滚动模式。执行 `autoscale` 之后 5 到 25 s 内，示波器的测量尚未稳定，时间测量显示为不可用。
 
 守护进程从所连接的 PicoScope 读取通道数、电压量程、带宽、存储深度和 ADC 分辨率。它不根据系列假定这些值。要查看守护进程检测到的内容，请在 Web UI 的控制台中输入 `capabilities`。
 

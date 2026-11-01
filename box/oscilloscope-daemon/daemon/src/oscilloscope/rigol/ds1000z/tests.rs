@@ -48,6 +48,7 @@ struct State {
     errors: VecDeque<String>,
     sent: Vec<String>,
     reply: Option<Vec<u8>>,
+    max_transfer: Option<u32>,
 }
 
 impl State {
@@ -97,6 +98,7 @@ impl State {
             errors: VecDeque::new(),
             sent: Vec::new(),
             reply: None,
+            max_transfer: None,
         }
     }
 
@@ -214,6 +216,12 @@ impl State {
             "TRIGGER:MODE" | "TRIGGER:HOLDOFF" | "RUN" | "TFORCE" => {}
             "STOP" => self.status = "STOP",
             "SINGLE" => self.status = "WAIT",
+            // As a DS1054Z autoscaled onto its 1 kHz probe-comp square.
+            "AUTOSCALE" | "AUT" => {
+                self.time_scale = 2e-4;
+                self.channels[0].scale = 1.0;
+                self.sweep = "AUTO".into();
+            }
             "TRIGGER:STATUS?" => {
                 let v = self.status;
                 self.answer(v);
@@ -268,6 +276,10 @@ impl State {
 struct Fake(Arc<Mutex<State>>);
 
 impl Scpi for Fake {
+    fn set_max_transfer(&mut self, bytes: u32) {
+        self.0.lock().expect("test lock").max_transfer = Some(bytes);
+    }
+
     fn write(&mut self, command: &str) -> Result<()> {
         let mut s = self.0.lock().expect("test lock");
         s.sent.push(command.to_string());
@@ -408,12 +420,78 @@ fn a_capture_is_the_screen_record_in_volts() {
 }
 
 #[test]
+fn autoscale_is_recognized_in_any_spelling() {
+    for command in [":AUToscale", ":AUT", "autoscale", " :aut "] {
+        assert!(super::is_autoscale(command), "{command}");
+    }
+    for command in [":ACQuire:TYPE NORMal", ":AU", ""] {
+        assert!(!super::is_autoscale(command), "{command}");
+    }
+}
+
+#[test]
+fn opening_caps_the_usb_transfer_size() {
+    let (_scope, state) = open(State::ds1054z());
+    assert_eq!(state.lock().expect("test lock").max_transfer, Some(500));
+}
+
+#[test]
+fn a_capture_sends_one_command_a_message() {
+    let (scope, state) = open(State::ds1054z());
+    state.lock().expect("test lock").sent.clear();
+    scope.get_triggered_data().expect("capture");
+    let compound: Vec<String> = sent(&state)
+        .into_iter()
+        .filter(|c| c.contains(';'))
+        .collect();
+    assert!(compound.is_empty(), "{compound:?}");
+}
+
+#[test]
 fn an_auto_capture_is_not_marked_triggered() {
     let mut state = State::ds1054z();
     state.status = "AUTO";
     let (scope, _) = open(state);
     let frame = scope.get_triggered_data().expect("capture");
     assert_eq!(frame.flags & FLAG_TRIGGERED, 0);
+}
+
+#[test]
+fn a_record_read_on_a_trigger_is_marked_triggered() {
+    let mut state = State::ds1054z();
+    state.status = "TD";
+    let (mut scope, state) = open(state);
+    let frame = scope.read_record().expect("a record").expect("read");
+    assert_ne!(frame.flags & FLAG_TRIGGERED, 0);
+    state.lock().expect("test lock").status = "AUTO";
+    let frame = scope.read_record().expect("a record").expect("read");
+    assert_eq!(frame.flags & FLAG_TRIGGERED, 0);
+}
+
+#[test]
+fn a_single_record_is_triggered_only_once_the_scope_stops() {
+    let mut state = State::ds1054z();
+    state.sweep = "SING".into();
+    state.status = "WAIT";
+    let (mut scope, state) = open(state);
+    let frame = scope.read_record().expect("a record").expect("read");
+    assert_eq!(frame.flags & FLAG_TRIGGERED, 0);
+    state.lock().expect("test lock").status = "STOP";
+    let frame = scope.read_record().expect("a record").expect("read");
+    assert_ne!(frame.flags & FLAG_TRIGGERED, 0);
+}
+
+#[test]
+fn settings_are_read_again_after_a_raw_autoscale() {
+    let mut state = State::ds1054z();
+    state.sweep = "NORM".into();
+    let (mut scope, _) = open(state);
+    scope
+        .scpi(":AUToscale")
+        .expect("handled")
+        .expect("autoscale");
+    assert!((scope.get_time_per_div().expect("timebase") - 2e-4).abs() < 1e-12);
+    assert_eq!(scope.get_capture_mode().expect("sweep"), CaptureMode::Auto);
 }
 
 #[test]

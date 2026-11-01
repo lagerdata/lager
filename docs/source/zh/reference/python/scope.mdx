@@ -11,7 +11,13 @@ description: 用于示波器控制的 Python SDK
 
 ## 仪器支持
 
-同一个对象和同样的调用既适用于 Rigol MSO5000，也适用于 PicoScope（2000、2000a、3000a、4000a 或 5000a）。Box 上的示波器守护进程驱动这两种示波器。区别在底层：Rigol 通过 USB 接收 SCPI 命令，PicoScope 是带有厂商 SDK 的 USB 设备。
+同一个对象和同样的调用适用于 Rigol MSO5000、Rigol DS1000Z（DS1054Z、DS1074Z、DS1104Z）和 PicoScope（2000、2000a、3000a、4000a 或 5000a）。Box 上的示波器守护进程驱动这三种示波器。区别在底层：Rigol 通过 USB 接收 SCPI 命令，PicoScope 是带有厂商 SDK 的 USB 设备。
+
+DS1000Z 与 MSO5000 有以下不同：
+
+- **它的实时视图就是屏幕记录。** 它没有视频输出，因此串流的帧是示波器每个通道的 1200 点记录，通过全速 USB 读取，开启三个通道时约每秒 2.4 帧。不需要采集卡。
+- **它没有数字通道、没有仪器上的光标，也没有滚动模式。** `scope.cursor` 的方法会抛出异常；`lager scope <net> cursor time` 和 `cursor volts` 仍然读取采集到的采样点。
+- **`autoscale()` 之后 5 到 25 s 内，时间测量显示为不可用。** 在测量稳定之前，示波器不报告频率或周期。
 
 为 PicoScope 编写脚本之前，请先了解以下区别：
 
@@ -133,7 +139,7 @@ scope.force_trigger()
 
 #### `all()`
 
-一次调用返回该网络通道上的每一项测量，键为 `vpp`、`vmax`、`frequency` 等。Box 根据同一次采集计算这些值，因此这是读取多个值的低开销方式。在 Rigol 上，这次采集是通道的 1000 点屏幕记录，读取约需 0.2 s。在 PicoScope 上，它是采集到的数据块。
+一次调用返回该网络通道上的每一项测量，键为 `vpp`、`vmax`、`frequency` 等。Box 根据同一次采集计算这些值，因此这是读取多个值的低开销方式。在 Rigol 上，这次采集是通道的屏幕记录，MSO5000 为 1000 点，DS1000Z 为 1200 点，读取约需 0.2 s。在 PicoScope 上，它是采集到的数据块。
 
 在 Rigol 上，屏幕记录限制了它能测量的时间。它太粗，无法测量边沿时间，因此上升和下降时间会被省略：请调用 `rise_time()` 和 `fall_time()` 获取示波器自己的读数。周期、频率和占空比需要屏幕上有两个完整周期。过冲和占空比可能与示波器自己的读数相差一个百分点或更多，这是记录的分辨率所致。
 
@@ -253,7 +259,7 @@ vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
 
 ## 串流
 
-两种示波器都支持串流。Rigol 从通过 `lager nets set-capture` 与它配对的实时视图串流。配对之前，`stream_start()`、`stream_frames()` 和 `stream_capture()` 会抛出 `UnsupportedScopeFeature`。`capture()` 读取示波器自己的记录，不需要实时视图。
+两种示波器都支持串流。MSO5000 从通过 `lager nets set-capture` 与它配对的实时视图串流。配对之前，`stream_start()`、`stream_frames()` 和 `stream_capture()` 会抛出 `UnsupportedScopeFeature`。DS1000Z 串流它的屏幕记录，不需要配对。`capture()` 读取示波器自己的记录，不需要实时视图。
 
 ### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
 
@@ -508,9 +514,10 @@ scope.cursor.hide()
 | 厂商 | 型号系列 | 特性 |
 |--------------|--------------|----------|
 | Rigol | MSO5000 | 2 或 4 个模拟通道（取决于型号）+ 16 个数字通道、边沿和 SPI 触发、光标、基于示波器完整存储深度的测量 |
+| Rigol | DS1000Z（DS1054Z、DS1074Z、DS1104Z） | 4 个模拟通道、带释抑的边沿触发、自动设置、基于示波器完整存储深度的测量、从 1200 点屏幕记录串流 |
 | PicoScope | 2000、2000a、3000a、4000a、5000a | 采集控制、刻度设置、边沿触发、14 种计算测量、连续串流 |
 
-两种示波器都支持串流。Rigol 需要先通过 `lager nets set-capture` 配对实时视图才能串流。
+两种示波器都支持串流。MSO5000 需要先通过 `lager nets set-capture` 配对实时视图才能串流；DS1000Z 不需要。
 
 Box 在运行时检测所连接 PicoScope 的通道数、电压量程、带宽、存储深度和 ADC 分辨率。因此，同一系列中的型号无需配置即可工作。用 `scope.capabilities()` 读取这些信息。
 
@@ -518,7 +525,7 @@ Box 在运行时检测所连接 PicoScope 的通道数、电压量程、带宽�
 
 - 示波器通道（1-4）请用 `NetType.Analog`
 - MSO 示波器的数字通道（D0-D15）请用 `NetType.Logic`
-- Rigol 需要先通过 `lager nets set-capture` 配对实时视图才能串流
+- MSO5000 需要先通过 `lager nets set-capture` 配对实时视图才能串流
 - 为获得可靠的测量结果，请在开始采集之前先配置触发
 - 测量方法成功时返回 `float`，测量无效时返回 `None`（例如无信号、无触发、通道不对）。在 Rigol 硬件上，仪器对无效测量返回 9.9E+37，它会被自动转换为 `None`
 - 关于协议触发（UART、I2C、SPI、CAN），请参阅[逻辑分析仪](/source/zh/reference/python/logic)文档
