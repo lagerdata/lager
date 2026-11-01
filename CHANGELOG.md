@@ -68,8 +68,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **Rigol DS1000Z-series scopes (DS1054Z, DS1074Z, DS1104Z) work as scope nets.**
   The scope daemon reads the model from `*IDN?` and drives a DS1000Z over SCPI
   alone, with its live view read from the on-screen record; `lager instruments`
-  lists it (`1ab1:04ce`) and `lager scope` controls it. Not yet verified on
-  hardware.
+  lists it (`1ab1:04ce`) and `lager scope` controls it. Verified on a DS1054Z
+  (firmware 00.04.05.SP2), including recovery after the daemon is killed.
 
 ### Fixed
 

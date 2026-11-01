@@ -998,31 +998,55 @@ impl RigolMso5000 {
             .iter()
             .map(|&i| (i, self.settings.channels[i].coupling))
             .collect();
-        screen_record(self.link().as_mut(), &wanted)
+        screen_record(self.link().as_mut(), &wanted, Messages::Compound)
     }
+}
+
+/// How a scope takes several commands sent together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Messages {
+    /// Joined with `;` into one message.
+    Compound,
+    /// Each in a message of its own. A DS1000Z (firmware 00.04.05) given
+    /// set-up commands and a query in one message past about 50 bytes
+    /// never answers, and shorter ones still log -113 "Undefined header".
+    OneEach,
 }
 
 /// The screen record of `channels` (zero-based, each with the coupling to
 /// report), 8-bit and exact: `:WAVeform:MODE NORMal`, which reads what the
 /// scope has on screen and leaves acquisition running. The MSO5000 and the
 /// DS1000Z answer the same commands with the same ten-field preamble.
-fn screen_record(scpi: &mut dyn Scpi, channels: &[(usize, Coupling)]) -> Result<CaptureFrame> {
+fn screen_record(
+    scpi: &mut dyn Scpi,
+    channels: &[(usize, Coupling)],
+    messages: Messages,
+) -> Result<CaptureFrame> {
     let mut frames = Vec::new();
     let mut traces: Vec<Vec<i16>> = Vec::new();
     let mut first: Option<Preamble> = None;
     for (n, &(i, coupling)) in channels.iter().enumerate() {
-        // One message for the set-up and the preamble: the live view
-        // publishes nothing while the link is held, and every USB
-        // transaction saved is a shorter pause in it.
-        let setup = if n == 0 {
-            ":WAVeform:MODE NORMal;:WAVeform:FORMat BYTE;"
-        } else {
-            ""
+        let mut commands = Vec::with_capacity(4);
+        if n == 0 {
+            commands.push(":WAVeform:MODE NORMal".to_string());
+            commands.push(":WAVeform:FORMat BYTE".to_string());
+        }
+        commands.push(format!(":WAVeform:SOURce CHANnel{}", i + 1));
+        commands.push(":WAVeform:PREamble?".to_string());
+        let reply = match messages {
+            // One message for the set-up and the preamble: the live view
+            // publishes nothing while the link is held, and every USB
+            // transaction saved is a shorter pause in it.
+            Messages::Compound => scpi.query(&commands.join(";"))?,
+            Messages::OneEach => {
+                let (query, setup) = commands.split_last().expect("the preamble query is last");
+                for command in setup {
+                    scpi.write(command)?;
+                }
+                scpi.query(query)?
+            }
         };
-        let preamble = Preamble::parse(&scpi.query(&format!(
-            "{setup}:WAVeform:SOURce CHANnel{};:WAVeform:PREamble?",
-            i + 1
-        ))?)?;
+        let preamble = Preamble::parse(&reply)?;
         let data = scpi.query_block(":WAVeform:DATA?")?;
         let reference = preamble.y_reference;
         traces.push(

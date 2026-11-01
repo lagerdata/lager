@@ -11,10 +11,23 @@ Use the scope module to control oscilloscopes for analog signal capture, trigger
 
 ## Instrument support
 
-The same object and the same calls work for a Rigol MSO5000 and for a PicoScope
-(2000, 2000a, 3000a, 4000a or 5000a). The oscilloscope daemon on the box drives
-both. The difference is underneath: the Rigol takes SCPI over USB, and a
-PicoScope is a USB device with a vendor SDK.
+The same object and the same calls work for a Rigol MSO5000, a Rigol DS1000Z
+(DS1054Z, DS1074Z, DS1104Z) and a PicoScope (2000, 2000a, 3000a, 4000a or
+5000a). The oscilloscope daemon on the box drives all three. The difference is
+underneath: a Rigol takes SCPI over USB, and a PicoScope is a USB device with a
+vendor SDK.
+
+A DS1000Z differs from the MSO5000 in these ways:
+
+- **Its live view is the screen record.** It has no video output, so streamed
+  frames are the scope's 1200-point record of each channel, read over
+  full-speed USB at about 2.4 frames a second with three channels on. No
+  capture card is needed.
+- **It has no digital channels, no cursors on the instrument and no roll mode.**
+  The `scope.cursor` methods raise; `lager scope <net> cursor time` and
+  `cursor volts` still read the captured samples.
+- **Timing measurements read as unavailable for 5 to 25 s after `autoscale()`.**
+  The scope reports no frequency or period until its measurements settle.
 
 Know these differences before you write a script for a PicoScope:
 
@@ -176,7 +189,8 @@ an imprecise guess. Put at least two cycles on screen before you measure timing.
 Every measurement on the net's channel, in one call, keyed `vpp`, `vmax`,
 `frequency` and so on. The box computes them from a single capture, so this is
 the cheap way to read more than one value. On a Rigol the capture is the
-channel's 1000-point screen record, read in about 0.2 s. On a PicoScope it is a
+channel's screen record, 1000 points on an MSO5000 and 1200 on a DS1000Z, read
+in about 0.2 s. On a PicoScope it is a
 captured block.
 
 The screen record limits what it can time on a Rigol. It is too coarse to time
@@ -302,10 +316,11 @@ vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
 
 ## Streaming
 
-Streaming works on both makes. A Rigol streams from the live view paired with it
-by `lager nets set-capture`. Until one is paired, `stream_start()`,
+Streaming works on both makes. An MSO5000 streams from the live view paired with
+it by `lager nets set-capture`. Until one is paired, `stream_start()`,
 `stream_frames()` and `stream_capture()` raise `UnsupportedScopeFeature`.
-`capture()` reads the scope's own record and needs no live view.
+A DS1000Z streams its screen record and needs no pairing. `capture()` reads the
+scope's own record and needs no live view.
 
 ### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
 
@@ -605,10 +620,11 @@ scope.cursor.hide()
 | Manufacturer | Model Series | Features |
 |--------------|--------------|----------|
 | Rigol | MSO5000 | 2 or 4 analog channels (by model) + 16 digital, edge and SPI triggers, cursors, measurements on the scope's full memory |
+| Rigol | DS1000Z (DS1054Z, DS1074Z, DS1104Z) | 4 analog channels, edge trigger with holdoff, autoscale, measurements on the scope's full memory, streaming from the 1200-point screen record |
 | PicoScope | 2000, 2000a, 3000a, 4000a, 5000a | Capture control, scaling, edge trigger, 14 computed measurements, continuous streaming |
 
-Both makes stream. A Rigol streams once a live view is paired with
-`lager nets set-capture`.
+Both makes stream. An MSO5000 streams once a live view is paired with
+`lager nets set-capture`; a DS1000Z streams without one.
 
 The box detects an attached PicoScope's channel count, voltage ranges,
 bandwidth, memory depth and ADC resolution at runtime. Models within a series
@@ -618,7 +634,7 @@ therefore work without configuration. Read them with `scope.capabilities()`.
 
 - Use `NetType.Analog` for oscilloscope channels (1-4)
 - Use `NetType.Logic` for digital channels (D0-D15) on MSO scopes
-- A Rigol streams only once a live view is paired with `lager nets set-capture`
+- An MSO5000 streams only once a live view is paired with `lager nets set-capture`
 - Configure trigger before starting capture for reliable measurements
 - Measurement methods return `float` on success, or `None` if the measurement is invalid (e.g., no signal, no trigger, wrong channel). On Rigol hardware, the instrument returns 9.9E+37 for invalid measurements, which is automatically converted to `None`.
 - For protocol triggering (UART, I2C, SPI, CAN), see the [Logic Analyzer](./logic) documentation
