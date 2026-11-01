@@ -1984,6 +1984,32 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
         click.echo(f"  lager nets add <name> {net_role} {channel} '{address}'")
 
 
+# Name prefixes for roles whose first hyphenated word is not the prefix. A
+# `scope` net stands for the whole instrument and would otherwise share the
+# `scope` prefix with its `scope-channel` nets; the channels keep `scope<N>`.
+_NET_NAME_PREFIX = {
+    "power-supply": "supply",
+    "scope": "oscilloscope",
+}
+
+
+def _net_name_prefix(role: str) -> str:
+    """The prefix `nets add-all` puts before the index in a role's net names."""
+    return _NET_NAME_PREFIX.get(role, role.split("-")[0])
+
+
+def _next_free_net_name(prefix: str, taken: set[str]) -> str:
+    """`prefix` plus the lowest index from 1 up whose name is not in `taken`.
+
+    Indices are free per name, not per role, so two roles that share a prefix
+    can never produce the same name.
+    """
+    idx = 1
+    while f"{prefix}{idx}" in taken:
+        idx += 1
+    return f"{prefix}{idx}"
+
+
 @nets.command("add-all", help="Add all possible nets that can be created on the box")
 @click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
@@ -1994,13 +2020,6 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     This command replicates the functionality of the 'Add Nets' page in the TUI.
     """
     resolved_box = _resolve_box(ctx, box)
-
-    def _first_word(role: str) -> str:
-        """Return the first part of a hyphenated role name."""
-        # Special case: power-supply nets use 'supply' prefix instead of 'power'
-        if role == "power-supply":
-            return "supply"
-        return role.split("-")[0]
 
     # Get available instruments and existing nets
     inst_list = _fetch_instruments(ctx, resolved_box)
@@ -2250,24 +2269,10 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         filtered_nets.append(net)
 
     # Assign names to filtered nets (only now that we know which will be created)
-    idx_re = re.compile(r"^([A-Za-z]+)(\d+)$")
-    used_indices: dict[str, set[int]] = defaultdict(set)
-
-    # Collect used indices from existing nets
-    for saved_net in saved_nets:
-        m = idx_re.match(saved_net.get("name", ""))
-        if m and _first_word(saved_net.get("role", "")) == m.group(1):
-            used_indices[saved_net.get("role", "")].add(int(m.group(2)))
-
-    # Assign names to new nets
+    taken = {saved_net.get("name", "") for saved_net in saved_nets}
     for net in filtered_nets:
-        role = net["type"]
-        # Find lowest unused index for this role
-        idx = 1
-        while idx in used_indices[role]:
-            idx += 1
-        used_indices[role].add(idx)
-        net["net"] = f"{_first_word(role)}{idx}"
+        net["net"] = _next_free_net_name(_net_name_prefix(net["type"]), taken)
+        taken.add(net["net"])
 
     # Generate warnings
     for inst in sorted(duplicate_hubs, key=_natural_sort_key):

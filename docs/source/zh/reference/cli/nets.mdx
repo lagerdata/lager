@@ -372,6 +372,8 @@ Create all 7 nets on box <BOX_IP>? [y/N]:
 
 在列表之前，`add-all` 会为它跳过的每一台设备打印一条警告。它会跳过报告相同地址的同型号两台设备，也会跳过没有任何已保存 Net 的单输出或模式互斥芯片 —— 那种芯片提供多个角色，而 `add-all` 不会替您选择。
 
+每个新 Net 以其角色命名，后接盒子上任何 Net 都未使用的最小序号：`supply1`、`adc2`。`power-supply` Net 使用 `supply`。`scope` Net 使用 `oscilloscope`，因此一台四通道示波器的仪器 Net 名为 `oscilloscope1`，各通道为 `scope1` 到 `scope4`。
+
 ### `add-batch`
 
 从 JSON 文件创建多个 Net，便于高效批量配置。
