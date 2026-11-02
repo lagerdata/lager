@@ -321,6 +321,28 @@ def _serial_or_reject(serial):
     return serial
 
 
+# Transports /debug/connect starts a backend with. JLinkGDBServer takes the
+# name as ``-if``; OpenOCD turns it into ``transport select`` (``hla_swd`` /
+# ``hla_jtag`` on an ST-Link).
+CONNECT_TRANSPORTS = ('SWD', 'JTAG')
+
+
+def _transport_or_reject(data):
+    """Return the requested debug transport, upper-cased, or raise.
+
+    Absent means SWD, which is what /debug/connect always used before it read
+    the field. Anything outside CONNECT_TRANSPORTS is refused here, before
+    anything is stopped or started.
+    """
+    raw = data.get('transport')
+    if raw is None:
+        return 'SWD'
+    if isinstance(raw, str) and raw.strip().upper() in CONNECT_TRANSPORTS:
+        return raw.strip().upper()
+    raise BadDebugRequest(
+        f'transport must be one of {", ".join(CONNECT_TRANSPORTS)}, got {raw!r}')
+
+
 def _get_openocd_config_file(net=None):
     """Resolve a user OpenOCD ``.cfg`` for *net*, write to disk, return path.
 
@@ -482,7 +504,7 @@ SERVICE_VERSION = '1.0.0'
 # /health so a CLI can refuse a flag the box would silently ignore. A box
 # that predates the list answers with no ``features`` key at all, which reads
 # as "none". Append; never remove or rename an entry.
-SERVICE_FEATURES = ('erase_range', 'halt')
+SERVICE_FEATURES = ('erase_range', 'halt', 'connect_transport')
 
 # Track active connections (with thread safety for concurrent access)
 active_connections = {}
@@ -687,6 +709,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             speed = data.get('speed', 'adaptive')
             force = data.get('force', False)
             halt = data.get('halt', False)
+            transport = _transport_or_reject(data)
             gdb = data.get('gdb', True)  # Default to starting GDB server
             backend = resolve_backend(net)
             (
@@ -779,7 +802,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 with connections_lock:
                     existing = active_connections.get(connection_id)
 
-                if existing and existing.get('device') == device_type:
+                # A server started before transport was tracked ran SWD.
+                if (existing and existing.get('device') == device_type
+                        and existing.get('transport', 'SWD') == transport):
                     # Same device, reuse existing connection
                     server_label = 'OpenOCD' if backend == BACKEND_OPENOCD else 'JLinkGDBServer'
                     logger.info(f'Reusing existing {server_label} connection (PID {status["pid"]})')
@@ -789,6 +814,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         'probe': net.get('instrument'),
                         'serial': serial,
                         'backend': backend,
+                        'transport': transport,
                         'message': f'{server_label} ready for operations',
                         'pid': status['pid'],
                         'gdb_server': {
@@ -803,9 +829,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     })
                     return
                 else:
-                    # Different device or unknown state -- restart this probe's server.
+                    # Different device or transport, or unknown state --
+                    # restart this probe's server.
                     logger.info(
-                        f'Existing {backend} server does not match requested device {device_type}, restarting'
+                        f'Existing {backend} server does not match requested device '
+                        f'{device_type} over {transport}, restarting'
                     )
                     if backend == BACKEND_OPENOCD:
                         stop_openocd(serial=serial, tcl_port=openocd_tcl_port)
@@ -834,6 +862,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Start the backend
             logger.info(
                 f'Starting {backend} gdbserver for device {device_type}, speed {speed}, '
+                f'transport {transport}, '
                 f'probe serial={serial or "<any>"}, gdb_port={gdb_port}, '
                 f'rtt_port={rtt_telnet_port}'
             )
@@ -842,7 +871,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     device=device_type,
                     address=(net or {}).get('address'),
                     speed=speed,
-                    transport='SWD',
+                    transport=transport,
                     halt=halt,
                     gdb_port=gdb_port,
                     telnet_port=openocd_telnet_port,
@@ -864,7 +893,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 result = start_jlink_gdbserver(
                     device=device_type,
                     speed=speed,
-                    transport='SWD',
+                    transport=transport,
                     halt=halt,
                     gdb_port=gdb_port,
                     swo_port=swo_port,
@@ -882,6 +911,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     'timestamp': time.time(),
                     'device': device_type,
                     'backend': backend,
+                    'transport': transport,
                     'pid': result['pid'],
                     'serial': serial,
                     'gdb_port': gdb_port,
@@ -899,6 +929,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'probe': net.get('instrument'),
                 'serial': serial,
                 'backend': backend,
+                'transport': transport,
                 'message': f'{server_label} started successfully',
                 'pid': result['pid'],
                 'gdb_server': {

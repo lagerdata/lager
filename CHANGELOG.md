@@ -62,6 +62,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   serial with another on the box, is now addressed by its USB port, as `usb-port:1-1.4`, and its
   net follows the port. Two of these used to share an address, so `lager nets add` refused both.
   A camera that was on a list but had no video node is no longer offered as a net.
+- **`/debug/connect` starts the probe with the `transport` you ask for.** It
+  takes `SWD` or `JTAG`, as `DebugNet.connect(transport=...)` already did, and
+  answers with the one it used; before, it started both J-Link and OpenOCD with
+  SWD whatever the request said. A net with its own OpenOCD config keeps the
+  config's transport. The debug service's `/health` lists `connect_transport`.
 
 ## [0.61.0] - 2026-10-30
 
