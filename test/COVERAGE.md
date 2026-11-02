@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3770 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5054 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5065 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9675** |
+| | **Total gated** | **9686** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,9 +500,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 337 files)
+### Local Unit Tests (`test/unit/` -- 338 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 182 files)
+#### Box Unit Tests (`test/unit/box/` -- 183 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -539,6 +539,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_da1469x_predicate.py` | `lager.debug.probes.is_da1469x` is the one DA1469x-family predicate on the box. An AST scan of `box/lager` fails on an inline `'DA1469' in ...` test anywhere except that function, the standalone copy in `debug/jlink.py` (which must agree with it), and the CPU-architecture table in `gdb.get_arch`. `flash_device`, the GDB reset and `JLink._is_da1469` must call a predicate rather than spell the test out |
 | `test_debug_bin_address.py` | Both debug service clients send a `--bin` load address of 0 as 0, and use `0x08000000` only when no address was given; both send `erase_start` / `erase_size` on `/debug/erase` only when given, with a timeout that grows per MiB |
 | `test_debug_connect_ports.py` | `/debug/connect` port overrides are coerced and range-checked at the boundary, because they are used to build the debug backend's command line: a non-integer is refused rather than forwarded. A quoted number still works |
+| `test_debug_connect_transport.py` | `transport` on `/debug/connect` reaches whichever backend starts, J-Link or OpenOCD, upper-cased; absent still means SWD. Anything but SWD or JTAG is a 400 before any server is stopped or started. A running server is reused only on the same transport, an entry from before the field counts as SWD, and `/health` lists `connect_transport` |
 | `test_debug_defmt_rtt.py` | Defmt RTT decoding wrapper threading and piping logic, plus the down-channel `write()` that makes a decoding session bi-directional — including the late write that must not reopen the telnet port it just released |
 | `test_debug_status_target_attached.py` | `/debug/status` must report `gdbserver_running` and `target_attached` separately, keep `connected` pinned to its old server-liveness meaning for older clients, and preserve the tri-state -- None (older box, refused probe, timeout) is not False. Also pins the log-scrape/probe split: the cheap path always runs, the wire read is opt-in |
 | `test_debug_erase_verdict.py` | `/debug/erase` must not answer 200 for a J-Link session that never attached, and the verdict predicate `_attach_failed` must stay stricter than the flash-retry predicate `_connect_failed`. Also the request's `erase_start` / `erase_size`: a checked pair reaches `chip_erase` and is reported back as `erase_range`, half a pair or a range outside the DA1469x window is a 400 before anything runs, and `/health` lists the feature. The reported `erase_range` is resolved before Commander runs, so a script cleared mid-erase (a concurrent disconnect) still reports `source: script`; `api.jlink_erase_plan` follows `chip_erase`'s script rules. An nRF5340 app core with no range reports its 1 MiB app flash, and an erase whose read-back is not 0xFF is a 500 even when J-Link confirmed it and evidence is off |
