@@ -23,6 +23,7 @@ lager update [OPTIONS]
 | `--pull` | Pull the pre-built box image from GHCR for a release tag instead of building on the box (falls back to a local build on any miss) |
 | `--no-pull` | Never pull a pre-built image; always build on the box |
 | `--skip-picoscope` | Do not install the PicoTech SDK on a box that has none |
+| `--fork OWNER/REPO` | Deploy `--version` from a public GitHub fork (e.g. `octocat/lager`) instead of `lagerdata/lager`. Requires `--version`. See [Deploying from a fork](#deploying-from-a-fork). |
 | `--verbose` / `-v` | Show detailed output (default shows progress bar) |
 
 <Note>
@@ -117,6 +118,36 @@ Per-release **version branches** (bare `X.Y.Z` branches) are deprecated in favou
 of tags. A value like `0.26.0` now resolves to the tag `v0.26.0`, not a branch of
 the same name. See `RELEASE_PROCESS.md` in the repository.
 </Warning>
+
+### Deploying from a fork
+
+To test box changes without write access to `lagerdata/lager`, push a branch to
+your own fork and deploy it with `--fork`:
+
+```bash
+lager update --box my-box --fork octocat/lager --version my-branch
+```
+
+`--version` is required with `--fork` and accepts a branch, a tag, or a full
+40-character commit SHA, as it does without `--fork`. The fork must be public:
+the box fetches it over HTTPS without credentials.
+
+A fork deploy differs from a normal update in four ways:
+
+- The box always builds its image locally. Pre-built images exist only for
+  `lagerdata/lager` release tags, so `--pull` cannot be combined with `--fork`.
+- The box checkout keeps `lagerdata/lager` as its `origin`. The fork's ref is
+  fetched into a private namespace and checked out detached. A fork's tags never
+  replace the release tags of the same name.
+- `lager hello` shows the ref as `<owner>/<repo>:<ref>@<sha>` and flags it as a
+  fork build, even when the ref looks like a release tag.
+- The next `lager update` without `--fork` returns the box to `lagerdata/lager`.
+
+To return to a release after testing:
+
+```bash
+lager update --box my-box --version v0.61.0
+```
 
 ## Usage
 

@@ -22,6 +22,7 @@
 # Options:
 #   --user <username>     Box username (default: lagerdata)
 #   --version <version>   Release tag (e.g. v0.15.0) or git branch to deploy (default: main)
+#   --fork <owner/repo>   Deploy --version from a public GitHub fork instead of lagerdata/lager
 #   --skip-jlink          Skip J-Link installation even if available
 #   --skip-picoscope      Skip PicoScope 7 SDK installation
 #   --skip-verify         Skip post-deployment verification
@@ -135,6 +136,7 @@ show_help() {
     echo "Options:"
     echo "  --user <username>     Box username (default: lagerdata)"
     echo "  --version <version>   Release tag (e.g. v0.15.0) or git branch (default: main)"
+    echo "  --fork <owner/repo>   Deploy --version from a public GitHub fork (always builds on the box)"
     echo "  --vpn <interface>     VPN interface to bind to (e.g., tun0, ppp0)"
     echo "                        If not specified, auto-detects Tailscale/WireGuard"
     echo "  --corporate-vpn <iface> Corporate VPN interface for firewall (e.g., tun0)"
@@ -175,6 +177,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --version)
             GIT_VERSION="$2"
+            shift 2
+            ;;
+        --fork)
+            FORK="$2"
             shift 2
             ;;
         --vpn)
@@ -278,6 +284,56 @@ else
     GIT_REF="origin/$GIT_VERSION"
 fi
 # --- END version resolution ---
+
+# --fork <owner>/<repo>: deploy GIT_VERSION from a GitHub fork. Mirrors
+# resolve_fork_version_ref() in cli/commands/utility/update.py.
+#
+# `origin` stays lagerdata/lager -- the clone and the tag fetch below are
+# unchanged -- and the fork is fetched by URL into refs/lager/fork/, then
+# checked out detached. Not a named remote: a `fork/main` beside `origin/main`
+# makes a later plain `git checkout main` ambiguous, and a fork tag fetched
+# into refs/tags/ would overwrite the real release tag of the same name.
+# No pre-built image either: those are built from lagerdata tags only.
+#
+# The owner/repo and branch are validated rather than escaped: they end up in
+# a command run by the box's shell.
+# --- BEGIN fork resolution (extracted verbatim by test/unit/cli/test_deploy_box_image_ref.py) ---
+GIT_CHECKOUT="$GIT_VERSION"
+FORK_URL=""
+FORK_FETCH=""
+FORK_LS_REF=""
+FORK_FETCH_CMD=""
+if [ -n "${FORK:-}" ]; then
+    if ! [[ "$FORK" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] \
+        || [ "${FORK#*/}" = "." ] || [ "${FORK#*/}" = ".." ]; then
+        echo "Error: --fork must be <owner>/<repo>, e.g. octocat/lager (got '$FORK')" >&2
+        exit 1
+    fi
+    if ! [[ "$GIT_VERSION" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$GIT_VERSION" == *..* ]]; then
+        echo "Error: --version '$GIT_VERSION' is not a branch, tag or commit name this script can fetch from a fork" >&2
+        exit 1
+    fi
+    FORK_URL="https://github.com/${FORK}.git"
+    if [[ "$GIT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|preview)[0-9]*)?$ ]]; then
+        GIT_REF="refs/lager/fork/tags/${GIT_VERSION}"
+        FORK_FETCH="+refs/tags/${GIT_VERSION}:${GIT_REF}"
+        FORK_LS_REF="refs/tags/${GIT_VERSION}"
+    elif [[ "$GIT_VERSION" =~ ^[0-9a-f]{40}$ ]]; then
+        GIT_REF="$GIT_VERSION"
+        FORK_FETCH="$GIT_VERSION"
+    else
+        GIT_REF="refs/lager/fork/heads/${GIT_VERSION}"
+        FORK_FETCH="+refs/heads/${GIT_VERSION}:${GIT_REF}"
+        FORK_LS_REF="refs/heads/${GIT_VERSION}"
+    fi
+    GIT_CHECKOUT="--detach ${GIT_REF}"
+    # No --filter: origin is the clone's only promisor, so a fork-only blob
+    # must arrive in this fetch or a later lazy fetch would ask lagerdata for it.
+    FORK_FETCH_CMD="GIT_TERMINAL_PROMPT=0 git fetch --force --no-tags ${FORK_URL} ${FORK_FETCH} && "
+    BOX_IMAGE_TAG_REF=""
+    BOX_IMAGE_PULL=0
+fi
+# --- END fork resolution ---
 
 # Print header
 echo ""
@@ -1589,6 +1645,22 @@ print_step "Deploying Box Code"
         exit 1
     fi
 
+    if [ -n "$FORK" ]; then
+        print_info "Checking the fork ${FORK}..."
+        if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote --exit-code ${FORK_URL} HEAD" >/dev/null 2>&1; then
+            print_error "Cannot read the fork ${FORK}"
+            echo "The fork must exist and be public: the box fetches it anonymously over HTTPS."
+            echo "Check it opens in a browser: https://github.com/${FORK}"
+            exit 1
+        fi
+        if [ -n "$FORK_LS_REF" ] && ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "GIT_TERMINAL_PROMPT=0 timeout 30 git ls-remote --exit-code ${FORK_URL} ${FORK_LS_REF}" >/dev/null 2>&1; then
+            print_error "'${GIT_VERSION}' not found on the fork ${FORK}"
+            echo "Push it to the fork first, then check: https://github.com/${FORK}/tree/${GIT_VERSION}"
+            exit 1
+        fi
+        print_success "Fork ${FORK} is readable"
+    fi
+
     # Check if ~/box already exists and is a git repo
     HAS_GIT_REPO=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/.git && echo 'yes' || echo 'no'" 2>/dev/null) || {
         print_error "SSH connection failed while checking box state"
@@ -1636,9 +1708,9 @@ print_step "Deploying Box Code"
             cd ~/box && \
             git sparse-checkout set box cli && \
             git fetch origin --tags --force && \
-            git reset --hard HEAD && \
+            ${FORK_FETCH_CMD}git reset --hard HEAD && \
             git clean -fd && \
-            git checkout ${GIT_VERSION} && \
+            git checkout ${GIT_CHECKOUT} && \
             git reset --hard ${GIT_REF}
         "
 
@@ -1671,7 +1743,7 @@ print_step "Deploying Box Code"
             cd ~/box && \
             git sparse-checkout init --cone && \
             git sparse-checkout set box cli && \
-            git checkout ${GIT_VERSION}
+            ${FORK_FETCH_CMD}git checkout ${GIT_CHECKOUT}
         "
 
         # Check if box/ directory exists after checkout
@@ -2528,7 +2600,11 @@ echo ""
 
 echo "5. Update box code in the future:"
 echo -e "   ${BLUE}lager update --box ${BOX_IP}${NC}"
-echo -e "   ${BLUE}lager update --box ${BOX_IP} --version ${GIT_VERSION}${NC}"
+if [ -n "$FORK" ]; then
+    echo -e "   ${BLUE}lager update --box ${BOX_IP} --fork ${FORK} --version ${GIT_VERSION}${NC}"
+else
+    echo -e "   ${BLUE}lager update --box ${BOX_IP} --version ${GIT_VERSION}${NC}"
+fi
 echo ""
 
 # Offer to add to .lager config (unless --skip-add-box was passed)

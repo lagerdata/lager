@@ -64,7 +64,10 @@ from .update import (
     _state_file_write_cmd,
     default_box_version,
     default_version_notice,
+    fork_ref_label,
+    resolve_fork_version_ref,
     resolve_version_ref,
+    validate_fork,
 )
 
 
@@ -256,7 +259,7 @@ def _state_file_fixes(ssh_host, name, content):
     ]
 
 
-def _record_install_state(runner, ssh_host, *, version, cli_version):
+def _record_install_state(runner, ssh_host, *, version, cli_version, fork=None):
     """Record what was installed in /etc/lager, and prove the version landed.
 
     Writes /etc/lager/version, /etc/lager/ref and /etc/lager/build-hash with
@@ -271,8 +274,15 @@ def _record_install_state(runner, ssh_host, *, version, cli_version):
     Returns ``(box_version, ref_content, build_hash)``; ``build_hash`` is ''
     when the box reported none, in which case that file is not written.
     """
-    deployed_ref, _reset, _fetch = resolve_version_ref(version)
-    box_version = _installed_box_version(runner, deployed_ref)
+    if fork:
+        # A fork's `vX.Y.Z` is not the release: take the version from the tree,
+        # and record the ref as <owner>/<repo>:<ref> (see fork_ref_label).
+        deployed_ref, _reset, _fetch = resolve_fork_version_ref(version)
+        box_version = _read_box_source_version(runner)
+        deployed_ref = fork_ref_label(fork, deployed_ref)
+    else:
+        deployed_ref, _reset, _fetch = resolve_version_ref(version)
+        box_version = _installed_box_version(runner, deployed_ref)
     if not box_version:
         raise LagerError(
             'The CLI did not find the version of the code it installed.',
@@ -335,7 +345,8 @@ def _record_install_state(runner, ssh_host, *, version, cli_version):
 @click.option("--pull", is_flag=True, help="Use the pre-built box image for a release tag instead of building it on the box (the default; falls back to a local build on any miss)")
 @click.option("--no-pull", "no_pull", is_flag=True, help="Never use a pre-built image; always build on the box")
 @click.option("--timeout", type=click.IntRange(min=0), default=None, help="Max seconds for the deploy step, which includes the container build (0=no timeout). Defaults to LAGER_INSTALL_TIMEOUT, or 1800. Raise it on slow hardware -- an emulated guest or a throttled VM can exceed the default on a healthy build.")
-def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull, timeout):
+@click.option("--fork", metavar="OWNER/REPO", default=None, help="Deploy --version from a public GitHub fork (e.g. octocat/lager) instead of lagerdata/lager. Requires --version; always builds on the box. The box checkout keeps lagerdata/lager as origin, so a later `lager update` without --fork goes back to it")
+def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull, timeout, fork):
     """
     Install lager box code onto a new box
     """
@@ -344,6 +355,26 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
 
     # No --version: the release tag matching this CLI (see default_box_version).
     version_defaulted = not version
+
+    # --fork: same rules as `lager update --fork`, checked before anything
+    # touches the box. See update.validate_fork / resolve_fork_version_ref.
+    if fork:
+        _owner, _repo = validate_fork(fork)
+        fork = f'{_owner}/{_repo}'
+        if version_defaulted:
+            raise click.UsageError(
+                '--fork needs --version: name the branch, tag or commit to deploy '
+                f'from {fork}, e.g. --fork {fork} --version my-branch.'
+            )
+        resolve_fork_version_ref(version)  # rejects an unfetchable name now, not mid-deploy
+        if pull:
+            raise click.UsageError(
+                '--pull and --fork are mutually exclusive: pre-built images exist '
+                'only for lagerdata/lager release tags'
+            )
+        # A fork never gets the pre-built image (it is built from lagerdata tags).
+        no_pull = True
+
     version = version or default_box_version()
 
     # Flag wins over the env var, which wins over the default. `--timeout 0`
@@ -554,6 +585,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     else:
         click.secho(f"Installing lager to {ip}...", fg='cyan', bold=True)
     click.echo(f"  Version: {version}")
+    if fork:
+        click.echo(f"  Fork: {fork} (not lagerdata/lager)")
     if version_defaulted:
         click.secho(f"  {default_version_notice(version)}", fg='cyan')
     click.echo(f"  User: {user}")
@@ -561,7 +594,9 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     click.echo("  Host CLI: ~/.lager_venv (installed from the box checkout)")
     # The image step dominates the wait, so say up front where it will come
     # from. Only release tags have a published image; a branch always builds.
-    if no_pull:
+    if fork:
+        click.echo("  Box image: build on the box (--fork)")
+    elif no_pull:
         click.echo("  Box image: build on the box (--no-pull)")
     elif _box_image_ref_for_version(version):
         click.echo(f"  Box image: pre-built {version} if published, else build on the box")
@@ -611,6 +646,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
         deploy_args.append("--pull")
     if corporate_vpn:
         deploy_args.extend(["--corporate-vpn", corporate_vpn])
+    if fork:
+        deploy_args.extend(["--fork", fork])
 
     # ttl_seconds: the deploy script below tears down the container serving
     # the :9000 lock API and spends most of its run rebuilding it, so this
@@ -721,6 +758,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
             ssh_host,
             version=version,
             cli_version=cli_version,
+            fork=fork,
         )
     except LagerError as exc:
         exc.die()
@@ -867,7 +905,10 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     click.secho("Next steps:", fg='cyan')
     click.echo("  - Verify that the box works: lager hello --box [BOX_NAME]")
     # The box is already on `version`, so a bare update right now does nothing.
-    if resolve_version_ref(version)[2].startswith('refs/tags/'):
+    if fork:
+        click.echo(f"  - To pull later commits from the fork: lager update --box [BOX_NAME] --fork {fork} --version {version}")
+        click.echo("  - To go back to a release: lager update --box [BOX_NAME] --version <vX.Y.Z>")
+    elif resolve_version_ref(version)[2].startswith('refs/tags/'):
         click.echo("  - After you upgrade the CLI, update the box to match: lager update --box [BOX_NAME]")
     else:
         click.echo(f"  - To pull later commits on {version}: lager update --box [BOX_NAME] --version {version}")

@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3799 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3843 (+3 xfailed) |
 | `unit (box)` | `test/unit/box/` | 5207 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9860** |
+| | **Total gated** | **9904** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,7 +500,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 342 files)
+### Local Unit Tests (`test/unit/` -- 343 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 185 files)
 
@@ -696,7 +696,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 133 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 134 files)
 
 | File | What it tests |
 |------|---------------|
@@ -789,6 +789,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |
 | `test_update_fetch.py` | `lager update`'s fetch command line: the tag refspec is forced, so a box holding a tag that points somewhere other than origin's can still be updated; the `LAGER_FETCH_RC=` marker still precedes the divergence count |
+| `test_update_fork.py` | `lager update --fork` / `lager install --fork`: the fork is fetched by URL into `refs/lager/fork/` (never `origin`, never a named remote, never `refs/tags/`), unfiltered and prompt-free; fork and version values are validated before any SSH; a fork never pulls the GHCR image and is recorded as `<owner>/<repo>:<ref>`; `lager hello` flags it; the deploy script's bash resolver agrees with the Python one; output without `--fork` is unchanged |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager update` probe script modprobe/usbtmc detection and output parsing, and the re-derivation that runs after the checkout. The probe reads the tree as it was before the pull, so a blacklist file changed by a release reads as current until that state is read again |
 | `test_control_flow_exits.py` | `ctx.exit()` survives the broad handler of its own try block: `lager update --check` exits 2 (not 1) with no traceback, plus the `tools/check_control_flow_handlers.py` gate and its own detection cases |

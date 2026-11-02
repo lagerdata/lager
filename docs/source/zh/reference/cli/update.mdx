@@ -23,6 +23,7 @@ lager update [OPTIONS]
 | `--pull` | 对发布标签从 GHCR 拉取预构建的 Box 镜像，而不是在 Box 上构建（任何不匹配都会退回到本地构建） |
 | `--no-pull` | 从不拉取预构建镜像；始终在 Box 上构建 |
 | `--skip-picoscope` | 不在没有 PicoTech SDK 的 Box 上安装它 |
+| `--fork OWNER/REPO` | 从公开的 GitHub fork（例如 `octocat/lager`）而不是 `lagerdata/lager` 部署 `--version`。必须同时指定 `--version`。请参阅[从 fork 部署](#从-fork-部署)。 |
 | `--verbose` / `-v` | 显示详细输出（默认显示进度条） |
 
 <Note>
@@ -86,6 +87,29 @@ lager update --box my-lager-box --version 5d84c68612384eed2854638c1e0941a4ff8b78
 <Warning>
 按版本划分的**版本分支**（裸的 `X.Y.Z` 分支）已被弃用，改用标签。像 `0.26.0` 这样的值现在解析为标签 `v0.26.0`，而不是同名分支。请参阅仓库中的 `RELEASE_PROCESS.md`。
 </Warning>
+
+### 从 fork 部署
+
+如果没有 `lagerdata/lager` 的写权限，也可以测试 Box 改动：把分支推送到你自己的 fork，然后用 `--fork` 部署：
+
+```bash
+lager update --box my-box --fork octocat/lager --version my-branch
+```
+
+使用 `--fork` 时必须指定 `--version`。它与不带 `--fork` 时一样，接受分支、标签或完整的 40 位提交 SHA。fork 必须是公开的：Box 通过 HTTPS 获取它，不使用任何凭据。
+
+从 fork 部署与普通更新有四点不同：
+
+- Box 总是在本地构建镜像。预构建镜像只为 `lagerdata/lager` 的发布标签提供，因此 `--pull` 不能与 `--fork` 同时使用。
+- Box 上的检出仍以 `lagerdata/lager` 作为 `origin`。fork 的 ref 被获取到一个私有命名空间，并以分离（detached）状态检出。fork 的标签永远不会替换同名的发布标签。
+- `lager hello` 以 `<owner>/<repo>:<ref>@<sha>` 的形式显示 ref，并将其标记为 fork 构建，即使该 ref 看起来像发布标签。
+- 下一次不带 `--fork` 的 `lager update` 会让 Box 回到 `lagerdata/lager`。
+
+测试结束后回到某个发布版本：
+
+```bash
+lager update --box my-box --version v0.61.0
+```
 
 ## 用法
 

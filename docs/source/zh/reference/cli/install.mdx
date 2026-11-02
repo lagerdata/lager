@@ -27,6 +27,7 @@ lager install [OPTIONS]
 | `--yes` | 标志 | | 跳过确认提示 |
 | `--pull` | 标志 | 开启 | 当目标是发布标签时使用预构建的 Box 镜像（默认行为） |
 | `--no-pull` | 标志 | | 始终在 Box 上构建 Box 镜像 |
+| `--fork OWNER/REPO` | 字符串 | | 从公开的 GitHub fork（例如 `octocat/lager`）而不是 `lagerdata/lager` 部署 `--version`。必须同时指定 `--version`，并且总是在 Box 上构建。请参阅[从 fork 部署](/source/zh/reference/cli/update#从-fork-部署) |
 | `--timeout INTEGER` | 整数 | `1800` | 部署步骤（含容器构建）的最长秒数。`0` 表示取消该预算。不带该标志时，由 `LAGER_INSTALL_TIMEOUT` 决定其值；标志优先于环境变量 |
 | `--help` | | | 显示帮助信息并退出 |
 
