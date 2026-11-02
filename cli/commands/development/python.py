@@ -424,6 +424,16 @@ _SIGNAL_MAP = {
 _SIGNAL_CHOICES = click.Choice(list(_SIGNAL_MAP.keys()), case_sensitive=False)
 
 
+def _box_error_detail(resp):
+    """The ``error`` the box put in an error response's JSON body, or None."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    error = data.get('error') if isinstance(data, dict) else None
+    return str(error) if error else None
+
+
 def _get_signal_number(name):
     return _SIGNAL_MAP[name.upper()]
 
@@ -669,36 +679,36 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
 
     # Check for HTTP errors before trying to parse streaming response
     if resp.status_code >= 400:
+        # What the box said is the diagnosis; the generic hints below are only
+        # a fallback. A collected-mode box refusing a run it cannot record
+        # answers 503 with the cause and the fix, and printing "try again
+        # later" over that sent people chasing an outage that did not exist.
+        detail = _box_error_detail(resp)
         if resp.status_code == 401:
             click.secho('Error: Authentication failed (HTTP 401)', fg='red', err=True)
-            click.secho('Check box connectivity with: lager hello', err=True)
+            hint = 'Check box connectivity with: lager hello'
         elif resp.status_code == 403:
             click.secho('Error: Access forbidden (HTTP 403)', fg='red', err=True)
-            click.secho('You do not have permission to access this box.', err=True)
+            hint = 'You do not have permission to access this box.'
         elif resp.status_code == 404:
             click.secho('Error: Resource not found (HTTP 404)', fg='red', err=True)
-            click.secho('The box endpoint does not exist. Check that the box is set up correctly.', err=True)
+            hint = 'The box endpoint does not exist. Check that the box is set up correctly.'
         elif resp.status_code == 500:
             click.secho('Error: Internal server error on box (HTTP 500)', fg='red', err=True)
-            click.secho('Check box logs with: lager logs --box [BOX_NAME]', err=True)
+            hint = 'Check box logs with: lager logs --box [BOX_NAME]'
         elif resp.status_code == 502:
             click.secho('Error: Bad gateway (HTTP 502)', fg='red', err=True)
-            click.secho('The box service can be restarting. Try again in a few seconds.', err=True)
+            hint = 'The box service can be restarting. Try again in a few seconds.'
         elif resp.status_code == 503:
             click.secho('Error: Service unavailable (HTTP 503)', fg='red', err=True)
-            click.secho('The box service is temporarily unavailable. Try again later.', err=True)
+            hint = 'The box service is temporarily unavailable. Try again later.'
         else:
             click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
-            try:
-                # Try to extract error message from JSON response
-                error_data = resp.json()
-                if 'error' in error_data:
-                    click.secho(f'Details: {error_data["error"]}', err=True)
-                else:
-                    click.echo(resp.text, err=True)
-            except Exception:
-                if resp.text:
-                    click.echo(resp.text, err=True)
+            hint = resp.text.strip() or None
+        if detail:
+            click.echo(detail, err=True)
+        elif hint:
+            click.echo(hint, err=True)
         ctx.exit(1)
 
     # Handle detached mode: parse JSON response and return immediately

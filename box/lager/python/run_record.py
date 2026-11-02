@@ -126,7 +126,39 @@ MAX_OUTPUTS = 1000
 
 
 class RunRecordUnavailable(Exception):
-    """A collected-mode box cannot record this run, so it must not start it."""
+    """A collected-mode box cannot record this run, so it must not start it.
+
+    The message is what the client shows the user, so it names the cause and
+    the fix: the person reading it is usually not the one who turned collected
+    mode on, and a bare errno leaves them nowhere to start.
+    """
+
+
+# The user the container runs as, and so the owner every file under the
+# records root must have. Baked into the image; start_box.sh hardcodes it too.
+CONTAINER_USER = 'www-data'
+CONTAINER_UID = 33
+
+
+def describe_refusal(exc, root):
+    """Explain why a collected-mode box refused a run, and how to fix it."""
+    lines = [
+        'This box is in collected mode, so it does not start a run it cannot record, '
+        f'and it could not record this one. The run was not started: {exc}',
+    ]
+    code = getattr(exc, 'errno', None)
+    if code in (errno.EACCES, errno.EPERM):
+        lines.append(
+            f'{root} must be owned by {CONTAINER_USER} (uid {CONTAINER_UID}), the user Lager runs as. '
+            f'Fix it on the box with: sudo chown -R {CONTAINER_UID}:{CONTAINER_UID} {root}')
+    elif code == errno.ENOSPC:
+        lines.append(
+            f'Free disk space on the box. A collected box keeps every record until '
+            f'something collects {os.path.join(root, "outbox")}, so check that the collector is running.')
+    lines.append(
+        f'If nothing collects this box\'s run records, delete {os.path.join(root, "policy.json")} '
+        'to return it to local mode, which never refuses a run.')
+    return '\n'.join(lines)
 
 
 # ----------------------------------------------------------------- helpers ---
@@ -822,7 +854,7 @@ class RunRecorder:
         except Exception as exc:  # pylint: disable=broad-except
             if mode == MODE_COLLECTED:
                 logger.error('run record: cannot record run %s, refusing it: %s', run_id, exc)
-                raise RunRecordUnavailable(str(exc)) from exc
+                raise RunRecordUnavailable(describe_refusal(exc, root)) from exc
             logger.exception('run record: could not open a record for run %s', run_id)
             return None
 

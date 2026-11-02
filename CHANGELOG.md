@@ -84,6 +84,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Fixed
 
+- **`lager python` shows why a box refused a run.** For an HTTP error the CLI now prints the box's own
+  reason in place of its generic hint, so a box in collected run-record mode that cannot record a run no
+  longer reports only "Service unavailable (HTTP 503) ... Try again later". The box's message names the
+  cause and the fix, and the box now repairs a `/etc/lager/run_records` it does not own when it starts.
 - **Webcam nets keep their camera when `/dev/video*` numbers change.** A net opened the number
   saved with it, so a different plug-in order could start the wrong camera. It now finds its
   camera from its address each time, and reports a missing camera instead of opening another.

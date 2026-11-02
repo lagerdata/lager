@@ -555,6 +555,51 @@ _normalize_secret_files() {
 _normalize_secret_files
 # --- END secret-file ownership ---
 
+# --- BEGIN run-record ownership (extracted verbatim by test/unit/box/test_run_record_ownership.py) ---
+# Every `lager python` run writes a record under /etc/lager/run_records, as
+# uid 33. Lager creates the directory itself on the first run, so normally it is
+# already right. It goes wrong when something else creates it first: a
+# collector turning on collected mode by hand does `sudo mkdir` and writes
+# policy.json, the directory belongs to root, and the container cannot create
+# open/ inside it. A collected box refuses every run it cannot record, so such a
+# box stops running scripts entirely.
+#
+# The repair is the root-owned helper `lager install` puts in place and grants
+# by exact path: it re-owns /etc/lager to uid 33, skipping authorized_keys.d.
+# Not a `sudo chown -R`, which is deliberately never granted (see the helper's
+# header). Run only when something under the records root is not uid 33's, so a
+# healthy box never touches sudo here. The collector contract already requires
+# it to run as uid 33 or root, so this cannot lock out a collector that
+# follows it.
+LAGER_RUN_RECORDS_ROOT="${LAGER_RUN_RECORDS_ROOT:-/etc/lager/run_records}"
+LAGER_ETC_PERMS_HELPER="${LAGER_ETC_PERMS_HELPER:-/usr/local/lib/lager/etc_lager_perms.sh}"
+
+_run_records_foreign() {
+    [ -n "$(find "$LAGER_RUN_RECORDS_ROOT" ! -uid "${LAGER_CONTAINER_UID:-33}" -print 2>/dev/null | head -n 1)" ]
+}
+
+_normalize_run_records_dir() {
+    [ -d "$LAGER_RUN_RECORDS_ROOT" ] || return 0
+    _run_records_foreign || return 0
+    sudo -n "$LAGER_ETC_PERMS_HELPER" >/dev/null 2>&1 || true
+    if _run_records_foreign; then
+        echo ""
+        echo "  ============================================================"
+        echo "  WARNING: the container cannot write $LAGER_RUN_RECORDS_ROOT"
+        echo "  ============================================================"
+        echo "  Something under it is not owned by uid ${LAGER_CONTAINER_UID:-33}, the user the"
+        echo "  container runs as. Runs go unrecorded, and a box in collected"
+        echo "  mode refuses every lager python run."
+        echo ""
+        echo "  Fix it with:"
+        echo "    sudo chown -R ${LAGER_CONTAINER_UID:-33}:${LAGER_CONTAINER_UID:-33} $LAGER_RUN_RECORDS_ROOT"
+        echo "  ============================================================"
+        echo ""
+    fi
+}
+_normalize_run_records_dir
+# --- END run-record ownership ---
+
 # --- BEGIN authorized-keys sync (extracted verbatim by test/unit/box/test_authorized_keys_sync.py) ---
 # Publish SSH keys from the key directory into ~/.ssh/authorized_keys.
 #

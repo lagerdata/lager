@@ -910,8 +910,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 client_field=fields.get(run_record.CLIENT_FIELD),
             )
         except run_record.RunRecordUnavailable as e:
-            self.send_error_response(
-                503, f'This box records every run and cannot record this one, so it was not started: {e}')
+            self.send_error_response(503, str(e))
             return
         if recorder is not None:
             env_vars = env_vars + [f'{k}={v}' for k, v in recorder.env.items()]
