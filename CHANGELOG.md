@@ -33,6 +33,20 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   With `max_voltage` set, OVP stays on, and with `max_current` set, OCP stays on.
   The interlock checks this in the hardware service, so it also covers a script
   that calls the driver's own `disable_*_protection` methods through it.
+- **The box's WiFi, BLE and BluFi endpoints can do what the Python API could.**
+  Each new action has a `/status` capability so a client can tell an older box.
+  None has a `lager` command yet, and none has run on real hardware:
+  - **`disconnect` on `/wifi/command`** takes the box's wlan interface down
+    (`wifiDisconnect`). It stays down until a `connect` or a host reboot, so a
+    box reached over that interface goes offline.
+  - **`read`, `write`, `notify` and `pair` on `/ble/command`** work on one GATT
+    characteristic, by UUID or handle, with data as hex (`bleGatt`). Each call
+    connects and disconnects on its own; `notify` collects up to `max_messages`
+    for at most `duration` seconds.
+  - **`set_mode` on `/blufi/command`** sets an ESP32's op mode and answers with
+    the mode the device reports (`blufiDeviceMode`).
+  - **`custom_data` on `/blufi/command`** sends bytes to the device and, with
+    `reply_timeout`, returns what it sends back (`blufiCustomData`).
 
 ## [0.61.0] - 2026-10-30
 

@@ -15,6 +15,10 @@ mode, so all bleak coroutines execute on one dedicated event-loop thread
 timeout. There is a single BT adapter, so every BLE operation additionally
 serializes under ``bt_adapter_lock`` — the same lock the blufi handler takes,
 because BluFi drives the same adapter through its own internal bleak thread.
+
+Links are per request. Each GATT action (read, write, notify, pair) connects,
+does its one operation and disconnects, so a device that needs a held
+connection between operations cannot be driven from here.
 """
 import asyncio
 import logging
@@ -25,7 +29,8 @@ from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("scan", "info", "connect", "disconnect")
+_VALID_ACTIONS = ("scan", "info", "connect", "disconnect",
+                  "read", "write", "notify", "pair")
 
 # XX:XX:XX:XX:XX:XX (colons or dashes)
 _BLE_ADDRESS_RE = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$')
@@ -130,6 +135,58 @@ async def _disconnect_async(address):
                 "note": bluez_unavailable_hint(e) or "Device not reachable: %s" % e}
 
 
+async def _read_async(address, char, timeout):
+    from bleak import BleakClient
+
+    async with BleakClient(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(char)
+    return bytes(data)
+
+
+async def _write_async(address, char, data, response, timeout):
+    from bleak import BleakClient
+
+    async with BleakClient(address, timeout=timeout) as client:
+        await client.write_gatt_char(char, data, response=response)
+
+
+async def _notify_async(address, char, max_messages, duration, timeout):
+    """Subscribe, collect up to max_messages notifications or until duration
+    seconds pass, then unsubscribe. Returns (messages, timed_out)."""
+    from bleak import BleakClient
+
+    messages = []
+    done = asyncio.Event()
+
+    def on_notify(_char, data):
+        if len(messages) < max_messages:
+            messages.append(bytes(data))
+        if len(messages) >= max_messages:
+            done.set()
+
+    async with BleakClient(address, timeout=timeout) as client:
+        await client.start_notify(char, on_notify)
+        try:
+            await asyncio.wait_for(done.wait(), timeout=duration)
+            timed_out = False
+        except asyncio.TimeoutError:
+            timed_out = True
+        try:
+            await client.stop_notify(char)
+        except Exception:
+            # The link is torn down on exit anyway; the messages are what
+            # the caller asked for.
+            logger.debug("stop_notify failed", exc_info=True)
+    return messages, timed_out
+
+
+async def _pair_async(address, timeout):
+    from bleak import BleakClient
+
+    async with BleakClient(address, timeout=timeout) as client:
+        await client.pair()
+
+
 def scan(params):
     timeout = float(params.get("timeout") or 5.0)
     if not 0.1 <= timeout <= 300.0:
@@ -180,11 +237,111 @@ def disconnect(params):
     }
 
 
+def _require_char(params):
+    """A characteristic UUID string, or an integer handle."""
+    char = params.get("char")
+    if isinstance(char, bool):
+        char = None
+    if isinstance(char, int):
+        if char < 0:
+            raise ValueError("char handle must be non-negative")
+        return char
+    if isinstance(char, str) and char.strip():
+        return char.strip()
+    raise ValueError("char (characteristic UUID or handle) is required")
+
+
+def _number(params, key, default):
+    # An explicit 0 is a value to range-check, not a request for the default.
+    value = params.get(key)
+    return default if value is None else float(value)
+
+
+def _timeout(params, default):
+    timeout = _number(params, "timeout", default)
+    if not 0.1 <= timeout <= 300.0:
+        raise ValueError("timeout must be between 0.1 and 300 seconds")
+    return timeout
+
+
+def read(params):
+    address = _require_address(params)
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    data = run_bleak(_read_async(address, char, timeout), timeout + 20.0)
+    return {
+        "message": "Read %d byte(s) from %s" % (len(data), char),
+        "value": {"address": address, "char": char, "data": data.hex()},
+    }
+
+
+def write(params):
+    address = _require_address(params)
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    raw = params.get("data")
+    if not isinstance(raw, str):
+        raise ValueError("data (hex string) is required")
+    try:
+        data = bytes.fromhex(raw)
+    except ValueError:
+        raise ValueError("data must be a hex string, e.g. '0102ff'")
+    # bleak picks write-with-response or without from the characteristic's
+    # properties when response is None.
+    response = params.get("response")
+    if response is not None:
+        response = bool(response)
+    run_bleak(_write_async(address, char, data, response, timeout),
+              timeout + 20.0)
+    return {
+        "message": "Wrote %d byte(s) to %s" % (len(data), char),
+        "value": {"address": address, "char": char, "length": len(data)},
+    }
+
+
+def notify(params):
+    address = _require_address(params)
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    max_messages = int(_number(params, "max_messages", 1))
+    if not 1 <= max_messages <= 10000:
+        raise ValueError("max_messages must be between 1 and 10000")
+    duration = _number(params, "duration", 10.0)
+    if not 0.1 <= duration <= 300.0:
+        raise ValueError("duration must be between 0.1 and 300 seconds")
+    messages, timed_out = run_bleak(
+        _notify_async(address, char, max_messages, duration, timeout),
+        timeout + duration + 20.0)
+    return {
+        "message": "Received %d notification(s) from %s" % (len(messages), char),
+        "value": {
+            "address": address,
+            "char": char,
+            "messages": [m.hex() for m in messages],
+            "timed_out": timed_out,
+        },
+    }
+
+
+def pair(params):
+    address = _require_address(params)
+    timeout = _timeout(params, 10.0)
+    run_bleak(_pair_async(address, timeout), timeout + 20.0)
+    return {
+        "message": "Paired with %s" % address,
+        "value": {"address": address, "paired": True},
+    }
+
+
 _ACTIONS = {
     "scan": scan,
     "info": info,
     "connect": info,  # connect == connect + enumerate services, like the old script
     "disconnect": disconnect,
+    "read": read,
+    "write": write,
+    "notify": notify,
+    "pair": pair,
 }
 
 
@@ -197,7 +354,8 @@ def register_ble_routes(app: Flask) -> None:
         Execute a BLE command using the box's Bluetooth adapter.
 
         Request body:
-            { "action": "scan" | "info" | "connect" | "disconnect",
+            { "action": "scan" | "info" | "connect" | "disconnect"
+                        | "read" | "write" | "notify" | "pair",
               "params": { ... } }
         """
         try:
@@ -208,7 +366,8 @@ def register_ble_routes(app: Flask) -> None:
             if action not in _VALID_ACTIONS:
                 return jsonify({
                     'success': False,
-                    'error': 'action (scan|info|connect|disconnect) is required',
+                    'error': 'action (scan|info|connect|disconnect|read|write'
+                             '|notify|pair) is required',
                 }), 400
 
             try:
