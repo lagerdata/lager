@@ -60,6 +60,24 @@ class DMMUnsupportedError(ValueError):
 class DMMBase(ABC):
     """Driver interface every DMM implements; do not instantiate directly."""
 
+    @classmethod
+    @abstractmethod
+    def validate(
+        cls,
+        function: str,
+        range: float | str | None = None,
+        nplc: float | None = None,
+        sensor: str | None = None,
+    ) -> None:
+        """Check a ``measure()`` request without opening the instrument.
+
+        Called before a request reaches hardware_service, which reports a
+        driver exception as ``DeviceError``.
+
+        Raises:
+            DMMUnsupportedError: The meter cannot do what was asked.
+        """
+
     @abstractmethod
     def measure(
         self,
