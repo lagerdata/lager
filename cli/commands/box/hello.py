@@ -32,10 +32,16 @@ def _ref_suffix(box_ref, box_version=None):
     Returns '' for a box that reports no ref -- one that predates
     /etc/lager/ref -- so an older box reads exactly as it did before rather
     than gaining a scary-looking blank.
+
+    A box deployed with ``--fork`` records ``<owner>/<repo>:<ref>@<sha>`` and
+    is always flagged, even on a release-shaped ref: a fork's ``v0.52.0`` is
+    whatever that fork tagged, not the release.
     """
     if not box_ref:
         return ''
     ref_name = str(box_ref).split('@', 1)[0]
+    if ':' in ref_name:
+        return ' ' + click.style(f'({box_ref} -- fork build, not a release)', fg='yellow')
     if looks_like_release_tag(ref_name):
         if box_version and ref_name == f'v{str(box_version).lstrip("v")}':
             return ' (release)'

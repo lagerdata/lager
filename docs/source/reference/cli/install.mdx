@@ -27,6 +27,7 @@ lager install [OPTIONS]
 | `--yes` | flag | | Skip confirmation prompts |
 | `--pull` | flag | on | Use the pre-built box image when the target is a release tag (the default) |
 | `--no-pull` | flag | | Always build the box image on the box |
+| `--fork OWNER/REPO` | string | | Deploy `--version` from a public GitHub fork (e.g. `octocat/lager`) instead of `lagerdata/lager`. Requires `--version` and always builds on the box. See [Deploying from a fork](/source/reference/cli/update#deploying-from-a-fork) |
 | `--timeout INTEGER` | int | `1800` | Max seconds for the deploy step, which includes the container build. `0` disables the budget. Without the flag, `LAGER_INSTALL_TIMEOUT` sets the value. The flag overrides the variable |
 | `--help` | | | Show help message and exit |
 

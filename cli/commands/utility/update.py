@@ -121,6 +121,94 @@ def resolve_version_ref(target_version):
     return target_version, f'origin/{target_version}', target_version
 
 
+#: ``<owner>/<repo>`` for ``--fork``. GitHub owner names are 1-39 alphanumerics
+#: or hyphens and cannot start with a hyphen; repo names are alphanumerics plus
+#: ``.``, ``_`` and ``-``. The value is interpolated into a URL that runs inside
+#: a remote shell command, so anything else -- a full URL, a path, whitespace,
+#: shell metacharacters -- is refused rather than escaped.
+_FORK_RE = re.compile(r'([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100})')
+
+#: A ``--version`` that can be fetched from a fork. Same reason as _FORK_RE: it
+#: is interpolated into the box's shell. Covers every branch, tag and SHA shape
+#: in practical use (``main``, ``de/my-branch``, ``v0.61.0-rc1``). Always used
+#: with ``fullmatch`` -- ``$`` would accept a trailing newline.
+_FORK_VERSION_RE = re.compile(r'[A-Za-z0-9._/-]+')
+
+#: Private ref namespace a fork is fetched into. Deliberately NOT a remote:
+#: once ``refs/remotes/fork/main`` sits next to ``refs/remotes/origin/main``,
+#: a later plain ``git checkout -f main`` (no local ``main`` branch) refuses
+#: with "matched multiple remote-tracking branches", breaking every ordinary
+#: update after a fork deploy. Refs under ``refs/lager/`` are invisible to
+#: checkout's remote-branch guessing, and tags land here too so a fork's
+#: ``vX.Y.Z`` can never overwrite the real ``refs/tags/vX.Y.Z``.
+_FORK_REF_NS = 'refs/lager/fork'
+
+
+def validate_fork(value):
+    """Parse a ``--fork`` value into ``(owner, repo)``.
+
+    Accepts only ``<owner>/<repo>`` (e.g. ``octocat/lager``). Raises
+    ``click.BadParameter`` for anything else, including a full URL.
+    """
+    m = _FORK_RE.fullmatch(value or '')
+    if not m or m.group(2) in ('.', '..'):
+        raise click.BadParameter(
+            f'{value!r} is not a GitHub fork. Use <owner>/<repo>, '
+            'e.g. --fork octocat/lager.',
+            param_hint="'--fork'",
+        )
+    return m.group(1), m.group(2)
+
+
+def fork_url(owner, repo):
+    """HTTPS clone URL of a GitHub fork."""
+    return f'https://github.com/{owner}/{repo}.git'
+
+
+def fork_ref_label(fork, target_version):
+    """Value recorded in /etc/lager/ref (before ``@<sha>``) for a deploy.
+
+    ``<owner>/<repo>:<ref>`` for a fork, so nothing that reads the box -- `lager
+    hello`, /status -- can mistake fork code for the lagerdata ref of the same
+    name. The bare ref otherwise, unchanged from before ``--fork`` existed.
+    """
+    return f'{fork}:{target_version}' if fork else target_version
+
+
+def resolve_fork_version_ref(target_version):
+    """``resolve_version_ref`` for a ``--fork`` deploy.
+
+    Returns ``(display, ref, fetch)``:
+    - ``display`` -- the normalised version as the user names it (tag ``vX.Y.Z``,
+      lowercased SHA, or branch name), for messages and /etc/lager/ref.
+    - ``ref``     -- what to check out (detached) and reset to: a ref under
+      ``refs/lager/fork/`` for a branch or tag, or the SHA itself.
+    - ``fetch``   -- the argument for ``git fetch <fork-url> --force``: a
+      forced refspec into the private namespace, or the bare SHA.
+
+    The fork is fetched by URL, never through ``origin`` or a named remote;
+    see ``_FORK_REF_NS`` for why.
+
+    Raises ``click.BadParameter`` for a version that is not a plain ref name.
+    """
+    if not _FORK_VERSION_RE.fullmatch(target_version or '') or '..' in target_version:
+        raise click.BadParameter(
+            f'{target_version!r} is not a branch, tag or commit name that can be '
+            'fetched from a fork (letters, digits, ".", "_", "-" and "/" only).',
+            param_hint="'--version'",
+        )
+    m = re.match(r'^v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?)$', target_version)
+    if m:
+        tag = f'v{m.group(1)}'
+        ref = f'{_FORK_REF_NS}/tags/{tag}'
+        return tag, ref, f'+refs/tags/{tag}:{ref}'
+    if _COMMIT_SHA_RE.match(target_version):
+        sha = target_version.lower()
+        return sha, sha, sha
+    ref = f'{_FORK_REF_NS}/heads/{target_version}'
+    return target_version, ref, f'+refs/heads/{target_version}:{ref}'
+
+
 def default_box_version():
     """The ref `lager install` and `lager update` deploy when ``--version`` is
     not given: the release tag of the CLI doing the deploy.
@@ -148,8 +236,41 @@ def default_version_notice(target_version):
     )
 
 
-def _fetch_shell_script(fetch_ref, git_ref):
+def _fork_unreachable(stderr):
+    """True when a fork fetch failed because the repository itself is not
+    readable -- missing, private, or misspelled. GitHub answers all three the
+    same way over anonymous HTTPS: "Repository not found", or an auth
+    challenge that GIT_TERMINAL_PROMPT=0 turns into "could not read Username".
+    """
+    low = (stderr or '').lower()
+    return any(s in low for s in (
+        'repository not found',
+        'could not read username',
+        'terminal prompts disabled',
+        'authentication failed',
+    ))
+
+
+def _fork_ref_missing(stderr):
+    """True when the fork is readable but does not have the requested ref."""
+    low = (stderr or '').lower()
+    return any(s in low for s in (
+        "couldn't find remote ref",
+        'not our ref',
+        'unadvertised object',
+        'not found',
+    ))
+
+
+def _fetch_shell_script(fetch_ref, git_ref, source=None):
     """One round-trip: fetch, report fetch's own rc, then measure divergence.
+
+    ``source`` is a fork's clone URL for ``--fork``; ``None`` fetches from
+    ``origin`` exactly as before. A fork fetch passes ``--no-tags`` so git's
+    tag auto-following cannot write the fork's tags into ``refs/tags/``, and
+    no ``--filter``: the box is a ``blob:none`` partial clone whose only
+    promisor is ``origin``, so a fork-only blob left behind here would later be
+    lazily requested from lagerdata, which does not have it.
 
     ``--force`` is load-bearing, for the same reason the deploy script forces
     its ``--tags`` fetch. A box cloned before a tag was re-created upstream
@@ -175,8 +296,18 @@ def _fetch_shell_script(fetch_ref, git_ref):
     that variant only counted commits the box was *behind* and treated any
     "ahead" state as in-sync, making a downgrade impossible.
     """
+    if source:
+        # GIT_TERMINAL_PROMPT=0: a private or misspelled fork answers HTTPS
+        # with an auth challenge, and git would otherwise sit waiting for a
+        # username on a terminal nobody is watching.
+        fetch_cmd = (
+            'GIT_TERMINAL_PROMPT=0 git fetch --force --no-tags '
+            f'{shlex.quote(source)} {shlex.quote(fetch_ref)}'
+        )
+    else:
+        fetch_cmd = f'git fetch origin --force {fetch_ref}'
     return (
-        f'cd ~/box && git fetch origin --force {fetch_ref} 2>&1; '
+        f'cd ~/box && {fetch_cmd} 2>&1; '
         'echo "LAGER_FETCH_RC=$?"; '
         f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
     )
@@ -1458,9 +1589,14 @@ def _parse_probe_output(stdout):
     return facts
 
 
-def _pull_shell_script(target_version, git_ref):
+def _pull_shell_script(target_version, git_ref, detach=False):
     """Step 4's git update — sparse-checkout fixups, checkout, and reset,
     chained into a single SSH call.
+
+    ``detach`` (``--fork``) checks ``git_ref`` out as a detached HEAD instead
+    of switching to the branch named ``target_version``: a fork ref lives under
+    ``refs/lager/fork/`` and has no local branch, and moving the box's local
+    ``main`` onto fork code would leave it there for the next plain update.
 
     `git checkout -f` so a prior flatten artifact (a root-level tracked
     file overwritten by box/<same-name>) doesn't block the switch.
@@ -1488,8 +1624,9 @@ def _pull_shell_script(target_version, git_ref):
         'git sparse-checkout add modprobe_d 2>/dev/null || true; } && '
         '{ git sparse-checkout list | grep -q "^cli$" || '
         'git sparse-checkout add cli 2>/dev/null || true; } && '
-        f'git checkout -f {target_version} && '
-        f'git reset --hard {git_ref}'
+        + (f'git checkout -f --detach {shlex.quote(git_ref)} && '
+           if detach else f'git checkout -f {target_version} && ')
+        + f'git reset --hard {git_ref}'
     )
 
 
@@ -1904,7 +2041,7 @@ def _undetermined_exit_code(check):
 
 
 def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
-                  pull=False, no_pull=False, skip_picoscope=False):
+                  pull=False, no_pull=False, skip_picoscope=False, fork=None):
     """Core update logic behind `lager update`.
 
     Not a Click command itself — the thin Click wrapper at the bottom of this
@@ -1946,7 +2083,34 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # `target_version` is normalised (e.g. '0.18.5' -> 'v0.18.5') so the fetch,
     # checkout and user-facing messages all agree. `fetch_ref` is what we hand to
     # `git fetch origin` (an explicit tag refspec for tags; see resolve_version_ref).
-    target_version, git_ref, fetch_ref = resolve_version_ref(target_version)
+    #
+    # --fork fetches from <owner>/<repo> by URL into refs/lager/fork/ and checks
+    # out detached; `origin` is never touched, so the next plain update is back
+    # on lagerdata. A fork must name its ref: the default (this CLI's release
+    # tag) almost never exists on a fork, and guessing would deploy the wrong
+    # thing. Validated before any SSH so a bad value costs nothing.
+    fork_source = None
+    if fork:
+        _fork_owner, _fork_repo = validate_fork(fork)
+        fork = f'{_fork_owner}/{_fork_repo}'
+        if version_defaulted:
+            raise click.UsageError(
+                '--fork needs --version: name the branch, tag or commit to deploy '
+                f'from {fork}, e.g. --fork {fork} --version my-branch.'
+            )
+        fork_source = fork_url(_fork_owner, _fork_repo)
+        target_version, git_ref, fetch_ref = resolve_fork_version_ref(target_version)
+        # Fork code never gets a pre-built image: GHCR images are built from
+        # lagerdata tags, so a fork tag of the same name would run lagerdata's
+        # code. Same switch as --no-pull.
+        no_pull = True
+    else:
+        target_version, git_ref, fetch_ref = resolve_version_ref(target_version)
+    # What /etc/lager/ref records, and what the release-tag shortcuts below
+    # key off. A fork's `v0.61.0` is not the v0.61.0 release, so it must not
+    # be read as one when deciding the version number or the image to pull.
+    deployed_ref_label = fork_ref_label(fork, target_version)
+    release_version = '' if fork else target_version
 
     # Use the default box only when --box was not given. `--box ""` goes on
     # to the resolver, which refuses it.
@@ -1983,6 +2147,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     click.secho('Box Update', fg='blue', bold=True)
     click.echo(f'Target:  {box_name} ({resolved_box})')
     click.echo(f'Version: {target_version}')
+    if fork:
+        click.echo(f'Fork:    {fork} (not lagerdata/lager)')
     if verbose:
         click.echo(f'CLI:     {cli_version}')
     if version_defaulted:
@@ -2670,7 +2836,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # `git fetch` then `git rev-list` in a single round-trip; see
     # :func:`_fetch_shell_script` for what each piece does, and why the
     # fetch is forced.
-    fetch_script = _fetch_shell_script(fetch_ref, git_ref)
+    fetch_script = _fetch_shell_script(fetch_ref, git_ref, source=fork_source)
     # Retry the fetch on *transient* failures only. Boxes on flaky links (e.g.
     # WiFi with a slow/intermittent resolver) hit sporadic DNS-resolution or
     # connection timeouts on `git fetch` that clear on a retry seconds later;
@@ -2743,6 +2909,28 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             click.secho("  - No internet connection on the box", err=True)
             click.secho("  - DNS resolution failure", err=True)
             click.secho("  - Firewall blocking outbound connections", err=True)
+        elif fork and _fork_unreachable(stderr):
+            log_error(f'Error: Could not read the fork {fork}')
+            click.secho(
+                f'GitHub refused {fork_source}. The fork must exist and be public: '
+                'the box fetches it anonymously over HTTPS.',
+                err=True,
+            )
+            click.secho(f'Check it opens in a browser: https://github.com/{fork}', err=True)
+        elif fork and _fork_ref_missing(stderr):
+            log_error(f"Error: Version '{target_version}' not found on the fork {fork}")
+            if _COMMIT_SHA_RE.match(target_version):
+                click.secho(
+                    f"'{target_version}' is a commit, and {fork} did not serve it. "
+                    'It must be reachable from a branch or tag pushed to the fork.',
+                    err=True,
+                )
+            else:
+                click.secho(
+                    f"Push it to the fork first, then check: "
+                    f'https://github.com/{fork}/tree/{target_version}',
+                    err=True,
+                )
         elif "Permission denied" in stderr or "Authentication failed" in stderr:
             log_error('Error: GitHub authentication failed')
             click.secho("The box did not authenticate with GitHub.", err=True)
@@ -2851,7 +3039,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         # Name the ref the box is actually on, so the hint is not `main` for a
         # box on a feature branch. One extra read, on this path only.
         on_ref = _read_deployed_ref_name(run_ssh_command_with_output)
-        if looks_like_release_tag(on_ref):
+        if ':' in on_ref:
+            # A --fork deploy records <owner>/<repo>:<ref>.
+            _on_fork, _, _on_fork_ref = on_ref.partition(':')
+            click.echo(f'The box is on {_on_fork_ref} from the fork {_on_fork}. To stay on it:  '
+                       f'lager update --box {box_name} --fork {_on_fork} --version {_on_fork_ref}')
+        elif looks_like_release_tag(on_ref):
             click.echo(f'The box is on {on_ref}. To keep newer releases, upgrade '
                        'the CLI first: pip install --upgrade lager-cli')
         elif on_ref and not _COMMIT_SHA_RE.match(on_ref):
@@ -2926,7 +3119,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         code_in_sync = commits_behind == 0 and commits_ahead == 0
         if code_in_sync:
             import re
-            _vp = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+            _vp = re.match(r'^v?(\d+\.\d+\.\d+)$', release_version)
             _tree_v = _vp.group(1) if _vp else _read_box_source_version(run_ssh_command_with_output)
             if not container_down:
                 deploy_stale = _deployed_version_stale(_tree_v, current_version_raw)
@@ -3064,7 +3257,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         log(f'{"Rolling back to" if is_rollback else "Pulling"} {git_ref}...', nl=False)
 
         result = run_ssh_command_with_output(
-            _pull_shell_script(target_version, git_ref)
+            _pull_shell_script(target_version, git_ref, detach=bool(fork))
         )
         if result.returncode != 0:
             if progress:
@@ -3627,7 +3820,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         # works even when the file isn't in the working tree (cone-mode
         # boxes). HEAD is unchanged in this branch (no pull), so one read
         # suffices.
-        _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+        _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', release_version)
         if _vp:
             _box_v = _vp.group(1)
             _tree_v = _box_v
@@ -3728,7 +3921,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         # to check a deploy took is that `lager hello` names a ref, so a
         # missing file here reports failure for a deploy that succeeded.
         if not store_deployed_ref(
-            target_version, _read_box_head_sha(run_ssh_command_with_output)
+            deployed_ref_label, _read_box_head_sha(run_ssh_command_with_output)
         ):
             click.secho(
                 'Warning: the CLI did not record the deployed ref in /etc/lager/ref; '
@@ -4300,7 +4493,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # file records a number, and a branch that has not been bumped past the
     # last release serializes to the same string as the release tag, so
     # without this nothing on the box distinguishes the two.
-    if not store_deployed_ref(target_version, _read_box_head_sha(run_ssh_command_with_output)):
+    if not store_deployed_ref(deployed_ref_label, _read_box_head_sha(run_ssh_command_with_output)):
         click.secho(
             'Warning: the CLI did not record the deployed ref in /etc/lager/ref; '
             '`lager hello` will not be able to say which ref this box is on.',
@@ -4318,7 +4511,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     # when the box has no tags at all (brand-new repo) or the closest tag
     # isn't semver-shaped (downstream `compare_versions` parses `X.Y.Z` ints).
     import re
-    version_pattern = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+    version_pattern = re.match(r'^v?(\d+\.\d+\.\d+)$', release_version)
     if version_pattern:
         box_cli_version = version_pattern.group(1)
     else:
@@ -4718,6 +4911,7 @@ def _update_options(fn):
         click.option('--pull', is_flag=True, help='Pull the pre-built box image from GHCR for a release tag instead of building it on the box (falls back to a local build on any miss)'),
         click.option('--no-pull', is_flag=True, help='Never pull a pre-built image; always build on the box'),
         click.option('--skip-picoscope', is_flag=True, help='Do not install the PicoTech SDK on a box that has none'),
+        click.option('--fork', metavar='OWNER/REPO', default=None, help='Deploy --version from a public GitHub fork (e.g. octocat/lager) instead of lagerdata/lager. Requires --version; always builds on the box. The box goes back to lagerdata on the next update without --fork'),
     ]):
         fn = opt(fn)
     return fn
@@ -4727,12 +4921,17 @@ def _update_options(fn):
 @click.pass_context
 @_update_options
 def update(ctx, box, yes, version, verbose, check, force, pull, no_pull,
-           skip_picoscope):
+           skip_picoscope, fork):
     """Update box code from GitHub repository"""
     if pull and no_pull:
         raise click.UsageError('--pull and --no-pull are mutually exclusive')
+    if pull and fork:
+        raise click.UsageError(
+            '--pull and --fork are mutually exclusive: pre-built images exist '
+            'only for lagerdata/lager release tags'
+        )
     _update_logic(
         ctx,
         box=box, yes=yes, version=version, verbose=verbose, check=check, force=force,
-        pull=pull, no_pull=no_pull, skip_picoscope=skip_picoscope,
+        pull=pull, no_pull=no_pull, skip_picoscope=skip_picoscope, fork=fork,
     )

@@ -14,6 +14,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **`lager update --fork` and `lager install --fork` deploy box code from a
+  GitHub fork.** Testing box changes used to require pushing a branch to
+  `lagerdata/lager`, which needs write access to the repository. Now push to
+  your own public fork and run
+  `lager update --box <box> --fork <owner>/<repo> --version <branch>`.
+  `--version` is required with `--fork`. A fork deploy always builds on the box,
+  because pre-built images exist only for lagerdata release tags. The box keeps
+  `lagerdata/lager` as `origin`, the fork's tags never replace release tags, and
+  `lager hello` marks the box as a fork build. The next update without `--fork`
+  returns the box to `lagerdata/lager`.
+
 - **The box HTTP API can do four more things the Python API could.** Each one
   has a `/status` capability, or a response field, so a client can tell an older
   box from one that refuses. None of them has a `lager` command yet, and none
