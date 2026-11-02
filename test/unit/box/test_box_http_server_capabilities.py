@@ -120,6 +120,25 @@ class StatusCapabilitiesTest(unittest.TestCase):
             (box_http_server._has_ble, box_http_server._has_wifi,
              box_http_server._has_blufi) = orig
 
+    def test_box_level_action_flags_follow_their_endpoint(self):
+        # A new action on an existing endpoint gets its own flag, because the
+        # endpoint flag is also true on a box that predates the action.
+        orig = (box_http_server._has_ble, box_http_server._has_wifi,
+                box_http_server._has_blufi)
+        flags = ('wifiDisconnect', 'bleGatt', 'blufiDeviceMode',
+                 'blufiCustomData')
+        try:
+            for available in (True, False):
+                box_http_server._has_ble = available
+                box_http_server._has_wifi = available
+                box_http_server._has_blufi = available
+                caps = self._capabilities()
+                for flag in flags:
+                    self.assertIs(caps[flag], available, flag)
+        finally:
+            (box_http_server._has_ble, box_http_server._has_wifi,
+             box_http_server._has_blufi) = orig
+
     def test_metadata_sync_capabilities_reflect_registration(self):
         # The control plane gates its metadata pushes on these two flags. A box
         # that advertises them without the routes would be PUT to on every probe

@@ -424,6 +424,12 @@ def status():
             'bleCommand': _has_ble,
             'wifiCommand': _has_wifi,
             'blufiCommand': _has_blufi,
+            # Actions added to those endpoints later. The endpoint flags above
+            # cannot show them, so a client checks these before sending one.
+            'wifiDisconnect': _has_wifi,
+            'bleGatt': _has_ble,
+            'blufiDeviceMode': _has_blufi,
+            'blufiCustomData': _has_blufi,
             # /custom-devices/* (the `lager nets assign` backend) is served
             # on :9000; lets the CLI/TUI detect boxes that predate it.
             'customDevices': _has_custom_devices,

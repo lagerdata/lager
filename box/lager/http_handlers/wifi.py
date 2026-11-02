@@ -20,7 +20,7 @@ from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("status", "scan", "connect", "delete")
+_VALID_ACTIONS = ("status", "scan", "connect", "disconnect", "delete")
 
 # One wlan radio: back-to-back nmcli/wpa_supplicant invocations against the
 # same interface interleave badly (the connect path kills wpa_supplicant),
@@ -98,10 +98,28 @@ def _delete(params):
     }
 
 
+def _disconnect(params):
+    # nmcli also stops the device from auto-activating afterwards, so the
+    # link stays down until a connect action or a host reboot. A box reached
+    # over this interface goes offline until then, as with delete on the
+    # active profile.
+    from lager.protocols.wifi import disconnect_wifi
+
+    interface = params.get("interface") or "wlan0"
+    result = disconnect_wifi(interface)
+    if not result.get("success"):
+        raise RuntimeError(result.get("error") or "Disconnect failed")
+    return {
+        "message": "Disconnected %s" % interface,
+        "value": {"interface": interface, "connected": False},
+    }
+
+
 _ACTIONS = {
     "status": _status,
     "scan": _scan,
     "connect": _connect,
+    "disconnect": _disconnect,
     "delete": _delete,
 }
 
@@ -115,7 +133,7 @@ def register_wifi_routes(app: Flask) -> None:
         Execute a WiFi command against the box's own wlan interface.
 
         Request body:
-            { "action": "status" | "scan" | "connect" | "delete",
+            { "action": "status" | "scan" | "connect" | "disconnect" | "delete",
               "params": { ... } }
         """
         try:
@@ -126,7 +144,7 @@ def register_wifi_routes(app: Flask) -> None:
             if action not in _VALID_ACTIONS:
                 return jsonify({
                     'success': False,
-                    'error': 'action (status|scan|connect|delete) is required',
+                    'error': 'action (status|scan|connect|disconnect|delete) is required',
                 }), 400
 
             try:

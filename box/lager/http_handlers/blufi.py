@@ -30,7 +30,8 @@ from lager.http_handlers.ble import bluez_unavailable_hint, bt_adapter_lock, run
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("scan", "connect", "provision", "wifi_scan", "status", "version")
+_VALID_ACTIONS = ("scan", "connect", "provision", "wifi_scan", "status", "version",
+                  "set_mode", "custom_data")
 
 # BluFi BLE service UUID, used to identify BluFi-capable devices in scans.
 BLUFI_SERVICE_UUID = "0000ffff-0000-1000-8000-00805f9b34fb"
@@ -258,6 +259,78 @@ def _version(params):
         _teardown(client)
 
 
+def _op_mode(value):
+    """An op mode by number (0-3) or by name, e.g. "STA" or "sta+softap"."""
+    if isinstance(value, bool):
+        value = None
+    if isinstance(value, int) and value in OP_MODE_NAMES:
+        return value
+    if isinstance(value, str):
+        by_name = {n.lower(): m for m, n in OP_MODE_NAMES.items()}
+        if value.strip().lower() in by_name:
+            return by_name[value.strip().lower()]
+    raise ValueError("mode must be one of %s, or 0-3"
+                     % ", ".join(OP_MODE_NAMES.values()))
+
+
+def _set_mode(params):
+    op_mode = _op_mode(params.get("mode"))
+
+    client = _connect_and_secure(params)
+    try:
+        client.postDeviceMode(op_mode)
+        time.sleep(0.5)
+        client.requestDeviceStatus()
+        time.sleep(0.5)
+        state = _wifi_state(client)
+        # Report what the device says rather than failing on a mismatch: a
+        # SoftAP mode can need more configuration before the device shows it.
+        return {
+            "message": "Requested op mode %s; device reports %s"
+                       % (OP_MODE_NAMES[op_mode], state["opModeName"]),
+            "value": {"device_name": params.get("device_name"),
+                      "requested": op_mode, **state},
+        }
+    finally:
+        _teardown(client)
+
+
+def _custom_data(params):
+    raw = params.get("data")
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("data (hex string) is required")
+    try:
+        data = bytes.fromhex(raw)
+    except ValueError:
+        raise ValueError("data must be a hex string, e.g. '0102ff'")
+    if not data:
+        raise ValueError("data must not be empty")
+    reply_timeout = params.get("reply_timeout")
+    reply_timeout = 0.0 if reply_timeout is None else float(reply_timeout)
+    if not 0.0 <= reply_timeout <= 60.0:
+        raise ValueError("reply_timeout must be between 0 and 60 seconds")
+
+    client = _connect_and_secure(params)
+    replies = []
+    # BlufiClient only logs custom data the device sends back; collect it
+    # instead. It is called from the notify thread, and list.append is safe.
+    client.onCustomData = lambda reply: replies.append(bytes(reply))
+    try:
+        client.postCustomData(data)
+        if reply_timeout:
+            time.sleep(reply_timeout)
+        return {
+            "message": "Sent %d byte(s), received %d repl%s"
+                       % (len(data), len(replies),
+                          "y" if len(replies) == 1 else "ies"),
+            "value": {"device_name": params.get("device_name"),
+                      "sent": len(data),
+                      "replies": [r.hex() for r in list(replies)]},
+        }
+    finally:
+        _teardown(client)
+
+
 _ACTIONS = {
     "scan": _scan,
     "connect": _connect,
@@ -265,6 +338,8 @@ _ACTIONS = {
     "wifi_scan": _wifi_scan,
     "status": _status,
     "version": _version,
+    "set_mode": _set_mode,
+    "custom_data": _custom_data,
 }
 
 
@@ -278,7 +353,7 @@ def register_blufi_routes(app: Flask) -> None:
 
         Request body:
             { "action": "scan" | "connect" | "provision" | "wifi_scan"
-                        | "status" | "version",
+                        | "status" | "version" | "set_mode" | "custom_data",
               "params": { "device_name": ..., ... } }
         """
         try:
@@ -290,7 +365,7 @@ def register_blufi_routes(app: Flask) -> None:
                 return jsonify({
                     'success': False,
                     'error': 'action (scan|connect|provision|wifi_scan|status'
-                             '|version) is required',
+                             '|version|set_mode|custom_data) is required',
                 }), 400
 
             try:
