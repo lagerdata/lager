@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3775 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5101 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3794 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5201 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9727** |
+| | **Total gated** | **9849** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,9 +500,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 339 files)
+### Local Unit Tests (`test/unit/` -- 341 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 184 files)
+#### Box Unit Tests (`test/unit/box/` -- 185 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -553,7 +553,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_detect_and_configure_rtt.py` | RTT control-block RAM scan doesn't leave core halted in all-stop mode |
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
-| `test_dmm_siglent_sdm3065x.py` | Siglent SDM3065X DMM driver against a fake SCPI transport: CONFigure/NPLC/temperature command forms per function, ranges and NPLC values outside the programming guide refused before the meter is touched, `9.9E37` overload and open as no value, both `SYST:ERR?` reply forms, a rejected setting reported before `READ?`, the `SYST:ERR?` probe at open with a short timeout turning checking off when unanswered, a device clear after every timeout; plus the `dmm` role routing, catalog entry, and `/net/command` measure/errors/identify replies |
+| `test_dmm_siglent_sdm3065x.py` | Siglent SDM3065X DMM driver against a fake SCPI transport: CONFigure/NPLC/temperature command forms per function, ranges and NPLC values outside the programming guide refused before the meter is touched, `9.9E37` overload and open as no value, both `SYST:ERR?` reply forms, a rejected setting reported before `READ?`, the `SYST:ERR?` probe at open with a short timeout turning checking off when unanswered, a device clear after every timeout; plus the `dmm` role routing, every `DRIVERS` registry entry resolving to a complete `DMMBase` subclass with the first match winning, catalog entry, and `/net/command` measure/errors/identify replies |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
 | `test_drivers_deps.py` | `lager.drivers.deps`, a driver's Python packages: hashed lock parsing (pip options, unpinned lines, URLs and duplicates refused), a pin equal to a box package dropped and a different one refused, an incomplete lock named, pip run into the staged `.deps` with `--only-binary`, `--require-hashes`, `--no-deps` and the bundle's `wheels/`, a pip failure, timeout or size cap keeping the previous version live, stale or missing packages listed as an error, `reinstall-deps`, the loader putting `.deps` after the box's packages, and real offline pip installing a vendored wheel that a runner child then imports |
 | `test_drivers_handler.py` | Custom-driver routes (`/drivers`) and `/net/command` dispatch to a custom driver, through a real runner subprocess: typed params and args, bad args refused before spawning, an unmarked method not callable, a stray print not corrupting the result, a driver exception as 502, a timeout as 504, a wrong-role or missing base net as 400, a live `lager uart` session on the base net as 409, a broken bundle as 503 |

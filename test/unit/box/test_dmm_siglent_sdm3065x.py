@@ -24,6 +24,7 @@ from lager.http_handlers.usb_scanner import CHANNEL_MAPS, SUPPORTED_USB
 from lager.measurement.dmm import (
     FUNCTIONS,
     UNITS,
+    DMMBase,
     DMMNet,
     DMMUnsupportedError,
     dispatcher,
@@ -300,6 +301,34 @@ class TestRouting:
     ])
     def test_module_for_instrument(self, instrument, module):
         assert dispatcher.module_for_instrument(instrument) == module
+
+    @pytest.mark.parametrize("match", list(dispatcher.DRIVERS))
+    def test_every_registered_driver_is_a_dmm_driver(self, match):
+        cls = dispatcher.driver_class(match)
+        assert issubclass(cls, DMMBase)
+        assert not getattr(cls, "__abstractmethods__", None)
+
+    def test_driver_class_routes_by_instrument_name(self):
+        assert dispatcher.driver_class("Siglent_SDM3065X") is sdm.SiglentSDM3065X
+
+    def test_first_registry_match_wins(self):
+        drivers = {"sdm3065x-sc": "lager.measurement.dmm.dmm_net:DMMNet",
+                   **dispatcher.DRIVERS}
+        with patch.dict(dispatcher.DRIVERS, drivers, clear=True):
+            assert dispatcher.driver_class("Siglent_SDM3065X-SC") is DMMNet
+            assert dispatcher.driver_class("Siglent_SDM3065X") is sdm.SiglentSDM3065X
+
+    def test_validate_and_make_driver_use_the_registered_class(self):
+        cls = MagicMock()
+        with patch.object(dispatcher, "driver_class", return_value=cls):
+            dispatcher.validate("Any_DMM", "res", range=200)
+            dispatcher.make_driver({"instrument": "Any_DMM", "address": _ADDRESS})
+        cls.validate.assert_called_once_with("res", range=200, nplc=None, sensor=None)
+        cls.assert_called_once_with({"instrument": "Any_DMM", "address": _ADDRESS})
+
+    def test_validate_refuses_unknown_instrument(self):
+        with pytest.raises(DMMBackendError, match="Unsupported DMM instrument"):
+            dispatcher.validate("Fluke_8846A", "dcv")
 
     def test_make_driver_refuses_unknown_instrument(self):
         with pytest.raises(DMMBackendError, match="Unsupported DMM instrument"):

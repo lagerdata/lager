@@ -250,6 +250,17 @@ class SiglentSDM3065X(DMMBase):
             raise DeviceNotFoundError(f"Device at {self.address} is not a Siglent {MODEL}: {idn}")
         self._probe_error_queue()
 
+    @classmethod
+    def validate(
+        cls,
+        function: str,
+        range: float | str | None = None,
+        nplc: float | None = None,
+        sensor: str | None = None,
+    ) -> None:
+        """Check a request against the SDM3065X; see ``DMMBase.validate``."""
+        build_commands(function, range=range, nplc=nplc, sensor=sensor)
+
     @staticmethod
     def _open(address: str) -> Any:
         # Same cross-process advisory lock the other VISA drivers take around
