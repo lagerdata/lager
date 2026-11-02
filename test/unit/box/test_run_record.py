@@ -14,6 +14,7 @@ schema, so a field the code adds or drops without the schema following fails
 here rather than in a consumer.
 """
 
+import errno
 import hashlib
 import io
 import json
@@ -487,6 +488,36 @@ class TestModes:
         monkeypatch.setattr(rr.os, 'statvfs', lambda path: Full())
         with pytest.raises(rr.RunRecordUnavailable):
             begin(etc)
+
+    def test_a_refusal_for_ownership_names_the_owner_and_the_fix(self, root, etc, monkeypatch):
+        """The field case: a collector created the records root as root, so
+        the container could not create open/ and every run was refused."""
+        collected(root)
+
+        def denied(path):
+            raise PermissionError(errno.EACCES, 'Permission denied', os.path.join(path, 'open'))
+        monkeypatch.setattr(rr, '_dirs', denied)
+        with pytest.raises(rr.RunRecordUnavailable) as exc:
+            begin(etc)
+        message = str(exc.value)
+        assert 'Permission denied' in message
+        assert 'not started' in message
+        assert f'sudo chown -R 33:33 {root}' in message
+        assert os.path.join(root, 'policy.json') in message
+
+    def test_a_refusal_for_space_points_at_the_outbox(self, root, etc, monkeypatch):
+        collected(root)
+
+        class Full:
+            f_bavail = 1
+            f_frsize = 4096
+        monkeypatch.setattr(rr.os, 'statvfs', lambda path: Full())
+        with pytest.raises(rr.RunRecordUnavailable) as exc:
+            begin(etc)
+        message = str(exc.value)
+        assert os.path.join(root, 'outbox') in message
+        assert 'chown' not in message
+        assert os.path.join(root, 'policy.json') in message
 
     def test_local_mode_runs_unrecorded_rather_than_refusing(self, root, etc, monkeypatch):
         monkeypatch.setattr(rr, 'next_sequence', lambda root: (_ for _ in ()).throw(OSError('disk')))

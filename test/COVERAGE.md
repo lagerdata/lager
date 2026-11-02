@@ -47,13 +47,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3843 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5207 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3851 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5214 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9904** |
+| | **Total gated** | **9919** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,9 +500,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 343 files)
+### Local Unit Tests (`test/unit/` -- 344 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 185 files)
+#### Box Unit Tests (`test/unit/box/` -- 186 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -629,12 +629,13 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
 | `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
-| `test_run_record.py` | The box's run record: RFC 8785 canonical JSON (UTF-16 key order, ECMAScript numbers), instrument serial numbers read from net addresses (instrument vs adapter), the record-store box ID and MAC-derived hardware ID, sanitizing what the client asserts, script assertions, the exit reason for every way a run ends (exited, timeout vs a script's own 124, cancelled, disconnected, start-failed, lost on restart), the sequence counter, and the two recording modes -- local keeps no bytes, collected retains them by hash and refuses a run it cannot record; every record validates against the published schema |
+| `test_run_record.py` | The box's run record: RFC 8785 canonical JSON (UTF-16 key order, ECMAScript numbers), instrument serial numbers read from net addresses (instrument vs adapter), the record-store box ID and MAC-derived hardware ID, sanitizing what the client asserts, script assertions, the exit reason for every way a run ends (exited, timeout vs a script's own 124, cancelled, disconnected, start-failed, lost on restart), the sequence counter, and the two recording modes -- local keeps no bytes, collected retains them by hash and refuses a run it cannot record, saying why and how to fix it (ownership vs disk space); every record validates against the published schema |
 | `test_run_record_e2e.py` | Run records through a real `/python` service and real child processes: the log hash the CLI computes from the stream equals the box's, a downloaded file checks against its recorded hash (and a changed one is reported), the box's code hashes equal the client's, a `/python/kill` is recorded as cancelled and a dropped client as disconnected, a collected box answers 503 instead of running unrecorded, and the record is gzip-compressed for a client that accepts it and plain for one that does not |
 | `test_run_record_schema.py` | The run record's schema, example and specification agree: the schema is valid draft 2020-12, the example validates, and every field and exit reason in the schema is described in `docs/reference/run-record.md` |
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_script_backend_sniff.py` | `sniff_script_backend` routes a debug-script override by format so `DebugNet.connect(script=...)` works on both backends: extension beats content, every declared extension and marker is asserted individually because a base64 blob has no filename to fall back on, and an ambiguous file abstains rather than picking a side. Also pins the two J-Link forms the marker list misses (`InitTarget(void)`, `JLINK_ExecCommand`) — safe, because abstaining raises rather than guessing, but it is why `jlink_script=` exists |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets. Also that the shipped default list names the MCP token path the box's `constants.py` names |
+| `test_run_record_ownership.py` | The run-record ownership block extracted verbatim from `box/start_box.sh`: a records root something other than the container created (a collector's `sudo mkdir`) is repaired through the granted `etc_lager_perms.sh` helper with no arguments, never a `sudo chown -R`; a healthy root never reaches sudo, and one the helper cannot fix is reported with the command that does |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup. `list_cables()` identity fields against a fake `/dev/serial` tree: manufacturer/product (missing, blank and control characters give null or are stripped), interface number, by-id/by-path links (the `-usb-` by-path name beats `-usbv2-`, identical serial-less twins share one by-id link so only one tty reports it, links outside `/dev` are ignored), and a missing `/dev/serial` gives nulls rather than an exception |
 | `test_siglent_spd1000.py` | Siglent SPD1000X (SPD1168X) supply driver against a fake SCPI transport: exact command forms and no `*OPC?`, the inter-command pacing, output on/off and CV/CC from the `SYSTem:STATus?` bitfield (a failed read is unknown, not off), `SYSTem:ERRor?` parsing, OVP/OCP and setpoints above the model maximum refused before any write, monitor and text state reports (measured values, never setpoints, with the output off), dispatcher, hardware_service module and net mapper routing, and that the scanner catalogs f4ec:1410 as a one-channel supply |
 | `test_store_path_containment.py` | A binary name, a device-lock key and a DFU staging file are each named after something off the wire: the existing reduction is pinned as what rejects, and the containment check beside each join pins where the result lands, so widening a reduction cannot silently widen the directory. Also pins that names with spaces, `+` and parentheses still work, since the CLI forwards the basename of any local file |
@@ -778,7 +779,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_resolve_box_locked.py` | `resolve_box_locked`: acquires an ephemeral lock on resolution, stashes the release on the context, passes through under `LAGER_AUTO_LOCK_DISABLE`, and reports `already_ours` for a lock we already hold. Pins the holder via `get_lock_holder` and forbids real HTTP, so the result cannot depend on whether it runs on a laptop or a CI runner |
 | `test_empty_box_name.py` | An explicit `--box ""` (or whitespace-only) is refused rather than silently resolving to the DEFAULT box, in BOTH `resolve_and_validate_box` and `resolve_and_validate_box_with_name` -- they duplicate the resolution logic, so a guard in one would leave the other's callers still defaulting. Also pins the half that must not change: `None` still means "not given" and falls back to the default |
 | `test_empty_box_everywhere.py` | `--box ""` is refused by every command that picked its box before the shared resolver (update, ssh, binaries, nets, box-config, arm, spi, i2c, logs, install, uninstall) and never falls back to the default box; an AST guard flags a new `if not box: box = ...` or `x = box or ...` under `cli/commands` |
-| `test_run_record_client.py` | The client's half of the run record: `--env` values redacted from argv, `--label` parsing, the log hash matching the box's framing, `repoPath` mapping each uploaded file back to the Git repository (including the renamed `main.py` and `--add-file` extras), and `lager python` saving the record, warning on a mismatch, staying silent against a box without records, exiting non-zero when the stream ends with no exit code, and refusing an unset `--passenv` |
+| `test_run_record_client.py` | The client's half of the run record: `--env` values redacted from argv, `--label` parsing, the log hash matching the box's framing, `repoPath` mapping each uploaded file back to the Git repository (including the renamed `main.py` and `--add-file` extras), and `lager python` saving the record, warning on a mismatch, staying silent against a box without records, exiting non-zero when the stream ends with no exit code, refusing an unset `--passenv`, and printing the box's own reason for an HTTP error (a collected box's 503) in place of the generic hint |
 | `test_simple_hdlc.py` | `cli/simple_hdlc.py`: the CRC-16/CCITT-FALSE checksum pinned to the values of the PyCRC implementation it replaced, HDLC encode/decode round trips including escaped flag and escape bytes, and a corrupted CRC reported as an error frame |
 | `test_socketio_sigint.py` | All four socket.io clients are built with `handle_sigint=False` and leave the process SIGINT handler alone; `disconnect_bounded` returns within its timeout from a peer that never closes; Ctrl+C in a UART session still sends `stop_uart` and disconnects |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |

@@ -334,7 +334,11 @@ records go. This section is what a collector must do to lose nothing.
 
 **Access.** Lager writes every file under `/etc/lager/run_records/` with mode
 0600, owned by the user the Lager service runs as. The collector MUST run as
-that user or as root.
+that user or as root. A collector that creates `/etc/lager/run_records` itself,
+to write `policy.json` before Lager has run anything, MUST give the directory to
+that user (`www-data`, uid 33): Lager cannot create `open/` in a directory it
+does not own, and a `collected` box then refuses every run. The box repairs
+the ownership when its service starts.
 
 **Turning collected mode on and off.** The collector owns `policy.json`; Lager
 only reads it.

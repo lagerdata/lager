@@ -437,3 +437,65 @@ class TestLocalPath:
     def test_refuses_to_climb_out(self):
         assert crr.local_path(self.record, '/tmp/lager-output/runs/r1/../../x') is None
         assert crr.local_path(self.record, '/tmp/lager-output/runs/r1/') is None
+
+
+# ------------------------------------------------- box error responses ---
+
+class FakeErrorResponse:
+    def __init__(self, status, body):
+        self.status_code = status
+        self._body = body
+        self.text = body if isinstance(body, str) else json.dumps(body)
+
+    def json(self):
+        if isinstance(self._body, str):
+            raise ValueError('not JSON')
+        return self._body
+
+
+class RefusingSession(FakeSession):
+    def __init__(self, status, body):
+        super().__init__(b'')
+        self.response = FakeErrorResponse(status, body)
+
+    def run_python(self, box, files, run_id=None):
+        return self.response
+
+
+def refused(tmp_path, monkeypatch, capsys, status, body):
+    with pytest.raises((SystemExit, click.exceptions.Exit)) as exc:
+        run(tmp_path, monkeypatch, RefusingSession(status, body))
+    code = getattr(exc.value, 'exit_code', None)
+    assert (exc.value.code if code is None else code) == 1
+    return capsys.readouterr().err
+
+
+def test_a_503_shows_why_the_box_refused_instead_of_try_again_later(tmp_path, monkeypatch, capsys):
+    """A collected-mode box that cannot record a run answers 503 with the
+    cause and the fix. The CLI printed "temporarily unavailable, try again
+    later" over it, which sent a user chasing an outage that did not exist."""
+    reason = ("This box is in collected mode ... [Errno 13] Permission denied: "
+              "'/etc/lager/run_records/open'")
+    err = refused(tmp_path, monkeypatch, capsys, 503, {'error': reason, 'status': 'error'})
+    assert 'HTTP 503' in err
+    assert reason in err
+    assert 'Try again later' not in err
+
+
+def test_a_503_without_a_reason_keeps_the_generic_hint(tmp_path, monkeypatch, capsys):
+    err = refused(tmp_path, monkeypatch, capsys, 503, '<html>Service Unavailable</html>')
+    assert 'Try again later' in err
+    assert '<html>' not in err
+
+
+@pytest.mark.parametrize('status', [401, 403, 404, 500, 502])
+def test_every_known_status_shows_the_box_reason(tmp_path, monkeypatch, capsys, status):
+    err = refused(tmp_path, monkeypatch, capsys, status, {'error': 'the actual reason'})
+    assert f'HTTP {status}' in err
+    assert 'the actual reason' in err
+
+
+def test_an_unknown_status_still_shows_a_body_that_is_not_json(tmp_path, monkeypatch, capsys):
+    err = refused(tmp_path, monkeypatch, capsys, 418, 'no coffee here')
+    assert 'HTTP 418' in err
+    assert 'no coffee here' in err
