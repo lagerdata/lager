@@ -48,12 +48,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3768 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 4982 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5007 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 414 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9601** |
+| | **Total gated** | **9626** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -500,9 +500,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 336 files)
+### Local Unit Tests (`test/unit/` -- 337 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 181 files)
+#### Box Unit Tests (`test/unit/box/` -- 182 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -516,6 +516,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved), its single-instance lock, and the key-sync poller's pid file, marker and own session |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
+| `test_battery_command_esr.py` | `/battery/command` `set_esr`: offset written, instrument's answer reported, zero is a set, driver refusal |
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
 | `test_ble_central_loop.py` | The box BLE `Central()` makes its own event loop when none is passed: no `DeprecationWarning` with no current loop, a working loop off the main thread, and a passed-in `loop` is used |

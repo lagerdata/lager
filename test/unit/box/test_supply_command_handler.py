@@ -57,6 +57,12 @@ if _BOX_ROOT not in sys.path:
 from flask import Flask  # noqa: E402
 from lager.exceptions import SupplyBackendError  # noqa: E402
 from lager.http_handlers import supply as supply_handler  # noqa: E402
+from lager.nets.device import DeviceError  # noqa: E402
+from lager.power.supply.ea import EA  # noqa: E402
+from lager.power.supply.keithley import Keithley2281S  # noqa: E402
+from lager.power.supply.keysight_e36000 import KeysightE36000  # noqa: E402
+from lager.power.supply.rigol_dp700 import RigolDP700  # noqa: E402
+from lager.power.supply.rigol_dp800 import RigolDP800  # noqa: E402
 
 
 class FakeSupply:
@@ -94,6 +100,12 @@ class FakeSupply:
 
     def enable_overcurrent_protection(self, channel=None):
         self._record('enable_overcurrent_protection', channel=channel)
+
+    def disable_ocp(self, channel=None):
+        self._record('disable_ocp', channel=channel)
+
+    def disable_ovp(self, channel=None):
+        self._record('disable_ovp', channel=channel)
 
     def get_channel_voltage(self, source=None):
         self._record('get_channel_voltage', source=source)
@@ -284,12 +296,106 @@ class SupplyCommandHandlerTest(unittest.TestCase):
         self.assertIn('ON', msg)
         self.assertNotIn('n/a', msg)
 
+    # ---- protection off -----------------------------------------------
+
+    def test_disable_ocp_reaches_the_driver_with_the_channel(self):
+        resp = self._post('disable_ocp')
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertTrue(body['success'])
+        self.assertIn('OCP off', body['message'])
+        self.assertEqual(self.supply.named('disable_ocp'),
+                         [('disable_ocp', (), {'channel': 1})])
+        self.assertEqual(self.supply.named('disable_ovp'), [])
+
+    def test_disable_ovp_reaches_the_driver_with_the_channel(self):
+        resp = self._post('disable_ovp')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('OVP off', resp.get_json()['message'])
+        self.assertEqual(self.supply.named('disable_ovp'),
+                         [('disable_ovp', (), {'channel': 1})])
+
+    def test_interlock_refusal_comes_back_as_its_own_sentence(self):
+        sentence = "Refused disable_ovp on net 'supply1': this net has a max_voltage of 4.3"
+        self.supply.disable_ovp = MagicMock(side_effect=DeviceError(
+            {'error': sentence, 'reason': 'safety_protection_off_refused'}))
+        resp = self._post('disable_ovp')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json(), {'success': False, 'error': sentence})
+
+    def test_driver_refusal_loses_the_invoke_prefix(self):
+        self.supply.disable_ocp = MagicMock(side_effect=DeviceError(
+            {'error': 'Function call failed: EA cannot turn OCP off', 'details': 'tb'}))
+        resp = self._post('disable_ocp')
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.get_json()['error'], 'EA cannot turn OCP off')
+
     # ---- guardrails ---------------------------------------------------
 
     def test_unknown_action_still_400(self):
         resp = self._post('warp_drive')
         self.assertEqual(resp.status_code, 400)
         self.assertIn('Unknown action', resp.get_json()['error'])
+
+
+def _bare(driver_class, **attrs):
+    """A driver instance with no VISA session behind it."""
+    driver = driver_class.__new__(driver_class)
+    for name, value in attrs.items():
+        setattr(driver, name, value)
+    return driver
+
+
+class ProtectionOffDriverTest(unittest.TestCase):
+    """The real drivers, because reporting "off" here is a safety claim.
+
+    A fake would answer whatever the handler asks; what matters is which
+    instruments can actually do it.
+    """
+
+    def test_instruments_with_no_way_to_do_it_refuse(self):
+        for driver_class in (EA, Keithley2281S):
+            driver = _bare(driver_class)
+            with self.assertRaisesRegex(SupplyBackendError, 'cannot turn OCP off'):
+                driver.disable_ocp(channel=1)
+            with self.assertRaisesRegex(SupplyBackendError, 'cannot turn OVP off'):
+                driver.disable_ovp(channel=1)
+
+    def test_e36300_refuses_rather_than_silently_doing_nothing(self):
+        driver = _bare(KeysightE36000, _model='E36312A')
+        driver._write = MagicMock()
+        with self.assertRaisesRegex(SupplyBackendError, 'E36312A cannot turn OCP off'):
+            driver.disable_ocp(channel=1)
+        with self.assertRaisesRegex(SupplyBackendError, 'E36312A cannot turn OVP off'):
+            driver.disable_ovp(channel=1)
+        driver._write.assert_not_called()
+
+    def test_e36200_writes_the_state_off_for_the_channel(self):
+        driver = _bare(KeysightE36000, _model='E36233A')
+        driver._write = MagicMock()
+        driver._chanlist_to_str = lambda chanlist: str(chanlist)
+        driver.disable_ocp(channel=2)
+        driver.disable_ovp(channel=2)
+        self.assertEqual(
+            [c.args[0] for c in driver._write.call_args_list],
+            ['SOURce:CURRent:PROTection:STATe OFF, (@2)',
+             'SOURce:VOLTage:PROTection:STATe OFF, (@2)'])
+
+    def test_rigol_drivers_write_protection_off(self):
+        dp700 = _bare(RigolDP700)
+        dp700._write = MagicMock()
+        dp700.disable_ocp(channel=1)
+        dp700.disable_ovp(channel=1)
+        self.assertEqual([c.args[0] for c in dp700._write.call_args_list],
+                         [':OUTP:OCP OFF', ':OUTP:OVP OFF'])
+
+        dp800 = _bare(RigolDP800)
+        dp800.instr = MagicMock()
+        dp800._interpret_channel = lambda channel: 'CH%s' % channel
+        dp800.disable_ocp(channel=2)
+        dp800.disable_ovp(channel=2)
+        self.assertEqual([c.args[0] for c in dp800.instr.write.call_args_list],
+                         [':OUTP:OCP CH2,OFF', ':OUTP:OVP CH2,OFF'])
 
 
 if __name__ == '__main__':

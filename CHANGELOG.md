@@ -12,6 +12,28 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The box HTTP API can do four more things the Python API could.** Each one
+  has a `/status` capability, or a response field, so a client can tell an older
+  box from one that refuses. None of them has a `lager` command yet, and none
+  has run on real instruments:
+  - **`enable` and `disable` on an e-load net** switch its input through
+    `/net/command` (`eloadInputSwitch`).
+  - **`set_esr` on `/battery/command`** sets the series-resistance offset, and
+    with no value reads it. The answer is the instrument's, in `value`, because
+    it can clamp (`batteryEsr`).
+  - **`disable_ocp` and `disable_ovp` on `/supply/command`** turn a supply's
+    protection off, and setting a limit turns it back on (`supplyProtectionOff`).
+    The Rigol DP700 and DP800 and the Keysight E36200 can do this. The EA, the
+    Keithley 2281S and the Keysight E36300 say they cannot.
+  - **`recover` on `/usb/command`** answers with the `ports` it re-powered, when
+    the hub's driver reports them.
+- **A net with a safety ceiling refuses to turn off the protection behind it.**
+  With `max_voltage` set, OVP stays on, and with `max_current` set, OCP stays on.
+  The interlock checks this in the hardware service, so it also covers a script
+  that calls the driver's own `disable_*_protection` methods through it.
+
 ## [0.61.0] - 2026-10-30
 
 ### Added

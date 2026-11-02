@@ -316,6 +316,51 @@ class RateCapTests(unittest.TestCase):
                 safety.check('vbat', 'voltage', [], {'value': 24.0})
 
 
+class ProtectionOffTests(unittest.TestCase):
+    """A ceiling is only as good as the trip behind it."""
+
+    def setUp(self):
+        safety.reset_rate_state()
+
+    def test_each_name_is_refused_on_a_net_with_the_matching_ceiling(self):
+        with _use_nets(VBAT):
+            for function in ('disable_ovp', 'disable_overvoltage_protection'):
+                with self.assertRaises(safety.ProtectionOffRefused) as ctx:
+                    safety.check('vbat', function, [], {'channel': 1})
+                self.assertEqual(ctx.exception.limit_kind, 'max_voltage')
+                self.assertEqual(ctx.exception.limit_value, 4.3)
+            for function in ('disable_ocp', 'disable_overcurrent_protection'):
+                with self.assertRaises(safety.ProtectionOffRefused) as ctx:
+                    safety.check('vbat', function, [], {'channel': 1})
+                self.assertEqual(ctx.exception.limit_kind, 'max_current')
+
+    def test_it_is_a_safety_violation_so_every_catch_sees_it(self):
+        self.assertTrue(issubclass(safety.ProtectionOffRefused, safety.SafetyViolation))
+
+    def test_a_ceiling_on_the_other_quantity_does_not_refuse(self):
+        net = {'name': 'volts_only', 'role': 'power-supply',
+               'safety_limits': {'max_voltage': 5.0}}
+        with _use_nets(net):
+            safety.check('volts_only', 'disable_ocp', [], {'channel': 1})
+
+    def test_net_without_limits_is_unrestricted(self):
+        net = {'name': 'open', 'role': 'power-supply'}
+        with _use_nets(net):
+            safety.check('open', 'disable_ovp', [], {'channel': 1})
+
+    def test_guarded_under_a_role_with_no_value_limits(self):
+        net = {'name': 'other', 'role': 'solar',
+               'safety_limits': {'max_voltage': 5.0}}
+        with _use_nets(net):
+            with self.assertRaises(safety.ProtectionOffRefused):
+                safety.check('other', 'disable_ovp', [], {})
+
+    def test_unidentified_net_is_refused_where_limits_exist(self):
+        with _use_nets(VBAT):
+            with self.assertRaises(safety.UnidentifiedNet):
+                safety.check_invocation({}, 'disable_ovp', [], {})
+
+
 class NetIdentificationTests(unittest.TestCase):
     """How a request is mapped to a saved net, and what happens when it can't be."""
 
@@ -484,6 +529,17 @@ class InvokeEndpointTests(unittest.TestCase):
             resp = self._post({'name': 'vbus', 'address': VBUS['address'], 'channel': 2})
         self.assertEqual(resp.status_code, 200, resp.get_json())
         self.device.voltage.assert_called_once_with(value=24.0)
+
+    def test_protection_off_surfaces_as_403_and_never_reaches_the_driver(self):
+        with _use_nets(VBAT):
+            resp = self._post({'name': 'vbat'}, function='disable_ovp',
+                              kwargs={'channel': 1})
+        self.assertEqual(resp.status_code, 403, resp.get_json())
+        body = resp.get_json()
+        self.assertEqual(body['reason'], 'safety_protection_off_refused')
+        self.assertEqual(body['limit_kind'], 'max_voltage')
+        self.assertEqual(body['limit'], 4.3)
+        self.device.disable_ovp.assert_not_called()
 
     def test_rate_cap_surfaces_as_403(self):
         with _use_nets(VBAT), patch.object(safety.time, 'monotonic', return_value=1000.0):

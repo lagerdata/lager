@@ -319,6 +319,20 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertTrue(r.get_json()["success"])
         dev.read_setpoint.assert_called_once_with("cc")
 
+    def test_eload_enable_switches_the_input_on(self):
+        r, dev = self._run({"netname": "load1", "action": "enable"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["success"])
+        dev.enable.assert_called_once_with()
+        dev.disable.assert_not_called()
+
+    def test_eload_disable_switches_the_input_off(self):
+        r, dev = self._run({"netname": "load1", "action": "disable"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["success"])
+        dev.disable.assert_called_once_with()
+        dev.enable.assert_not_called()
+
     def test_eload_unsupported_instrument_is_error(self):
         nets = [{"name": "load1", "role": "eload",
                  "instrument": "acme_9000", "address": "USB::x"}]

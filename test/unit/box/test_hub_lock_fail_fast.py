@@ -283,6 +283,7 @@ class _FakeHubModule:
     disable = _dispatch
     toggle = _dispatch
     state = _dispatch
+    recover = _dispatch
 
 
 class UsbCommandFailFastTests(_HangHookIsolated):
@@ -311,6 +312,24 @@ class UsbCommandFailFastTests(_HangHookIsolated):
         patcher.start()
         self.addCleanup(patcher.stop)
         return fake
+
+    def test_recover_lists_the_ports_it_powered(self):
+        self._install_hub(lambda netname: [1, 2, 4])
+        resp = self.client.post(
+            "/usb/command", json={"netname": "usb1", "action": "recover"})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        body = resp.get_json()
+        self.assertEqual(body["ports"], [1, 2, 4])
+        self.assertIn("on port(s) 1, 2, 4", body["message"])
+
+    def test_recover_omits_ports_when_the_driver_does_not_say(self):
+        self._install_hub(lambda netname: None)
+        resp = self.client.post(
+            "/usb/command", json={"netname": "usb1", "action": "recover"})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        body = resp.get_json()
+        self.assertNotIn("ports", body)
+        self.assertEqual(body["message"], "USB port 'usb1': power restored")
 
     def test_busy_lock_answers_503_without_queueing(self):
         fake = self._install_hub(lambda netname: True)

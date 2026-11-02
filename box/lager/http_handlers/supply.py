@@ -18,6 +18,8 @@ from lager.dispatchers.helpers import resolve_net_proxy
 from lager.exceptions import SupplyBackendError
 from lager.nets.device import ConnectionFailed, DeviceError, Device, describe_error
 
+from .battery import _device_error_message
+
 from .state import (
     active_supply_sessions,
     active_supply_sessions_lock,
@@ -143,7 +145,8 @@ def register_supply_routes(app: Flask) -> None:
         {
             "netname": "supply1",
             "action": "voltage" | "current" | "enable" | "disable" | "ocp" | "ovp"
-                      | "clear_ocp" | "clear_ovp" | "state",
+                      | "clear_ocp" | "clear_ovp" | "disable_ocp" | "disable_ovp"
+                      | "state",
             "params": {"value": 3.3}  # Optional, for set operations
         }
 
@@ -353,6 +356,18 @@ def register_supply_routes(app: Flask) -> None:
                 elif action == 'set_mode':
                     supply.set_mode()
                     result['message'] = 'Power supply mode set'
+
+                elif action in ('disable_ocp', 'disable_ovp'):
+                    # Refused by the safety interlock on a net with a matching
+                    # ceiling, and by a driver with no way to do it. Neither is
+                    # a transport failure, so the sentence goes back as it is.
+                    try:
+                        getattr(supply, action)(channel=channel)
+                    except DeviceError as e:
+                        logger.warning(f"[HTTP] Supply command {action} on {netname} refused: {e}")
+                        return jsonify({'success': False, 'error': _device_error_message(e)}), 400
+                    name = action.rpartition('_')[2].upper()
+                    result['message'] = f'{name} off. Setting an {name} limit turns it back on'
 
                 else:
                     return jsonify({'success': False, 'error': f'Unknown action: {action}'}), 400
