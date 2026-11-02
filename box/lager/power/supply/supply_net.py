@@ -86,6 +86,27 @@ class SupplyNet(abc.ABC):
         """Set or read over-voltage protection limit. If `value` is provided, set the OVP limit; otherwise read and print the current OVP limit."""
         raise NotImplementedError
 
+    def disable_ocp(self, channel=None) -> None:
+        """Turn over-current protection off, or refuse on an instrument that cannot.
+
+        A uniform name over the drivers' differently-shaped methods, in the
+        same way as `clear_ocp`. Setting an OCP limit turns it back on.
+        """
+        disable = getattr(self, "disable_overcurrent_protection", None)
+        if disable is None:
+            raise SupplyBackendError(f"{type(self).__name__} cannot turn OCP off")
+        disable(channel)
+
+    def disable_ovp(self, channel=None) -> None:
+        """Turn over-voltage protection off, or refuse on an instrument that cannot.
+
+        See `disable_ocp`. Setting an OVP limit turns it back on.
+        """
+        disable = getattr(self, "disable_overvoltage_protection", None)
+        if disable is None:
+            raise SupplyBackendError(f"{type(self).__name__} cannot turn OVP off")
+        disable(channel)
+
     def get_full_state(self) -> None:
         """Get full state including measurements, setpoints, and limits. This is optional and can be overridden by specific drivers."""
         # Default implementation falls back to state()

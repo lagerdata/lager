@@ -446,6 +446,8 @@ def register_usb_routes(app: Flask) -> None:
             # toggle and state both return the live port state from the
             # dispatcher; enable/disable are unambiguous from the action itself.
             reconnected = None
+            # For a recover, the ports re-powered, when the driver says.
+            ports = None
             # For a cycle, which of the four results it was, as a field a
             # caller can test instead of the message text.
             outcome = None
@@ -491,9 +493,10 @@ def register_usb_routes(app: Flask) -> None:
                                "topology could not be read)")
             elif action == "recover":
                 state = "enabled"
-                ports = ", ".join(str(p) for p in result) if result else ""
+                ports = list(result) if result else None
                 message = (f"USB port '{netname}': power restored"
-                           + (f" on port(s) {ports}" if ports else ""))
+                           + (" on port(s) " + ", ".join(str(p) for p in ports)
+                              if ports else ""))
             elif action == "disable":
                 state = "disabled"
                 message = f"USB port '{netname}' disabled"
@@ -517,6 +520,8 @@ def register_usb_routes(app: Flask) -> None:
                 body['reconnected'] = reconnected
             if outcome is not None:
                 body['outcome'] = outcome
+            if ports is not None:
+                body['ports'] = ports
             return jsonify(body)
         except Exception as e:
             logger.exception("[HTTP] /usb/command unexpected error")

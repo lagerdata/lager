@@ -473,6 +473,12 @@ def status():
             # stream only when this is set; an older box ignores the query
             # parameter and answers with the plain array.
             'netsStateStream': _has_nets,
+            # Actions added to a role or route that already existed, which
+            # netCommandRoles and the route flags cannot show. A box predating
+            # one omits the key, which reads as false.
+            'eloadInputSwitch': _has_net_command,
+            'batteryEsr': True,
+            'supplyProtectionOff': True,
         },
     })
 

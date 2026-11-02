@@ -80,6 +80,43 @@ class SafetyViolation(Exception):
         }
 
 
+class ProtectionOffRefused(SafetyViolation):
+    """Turning off a protection a net's ceiling depends on was refused.
+
+    A subclass so that everything catching SafetyViolation refuses it the same
+    way. There is no requested value to report, only the ceiling.
+    """
+
+    def __init__(
+        self,
+        net_name: str,
+        limit_kind: str,
+        limit_value: float,
+        function_name: str,
+    ) -> None:
+        self.net_name = net_name
+        self.limit_kind = limit_kind
+        self.limit_value = limit_value
+        self.requested = None
+        self.function_name = function_name
+        Exception.__init__(
+            self,
+            f"Refused {function_name} on net '{net_name}': this net has a "
+            f"{limit_kind} of {limit_value}, and that protection must stay on.",
+        )
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Serialize for an HTTP error body."""
+        return {
+            "error": str(self),
+            "reason": "safety_protection_off_refused",
+            "net": self.net_name,
+            "function": self.function_name,
+            "limit_kind": self.limit_kind,
+            "limit": self.limit_value,
+        }
+
+
 class RateLimitExceeded(Exception):
     """A guarded command was called too often on one net.
 
@@ -158,6 +195,18 @@ _RATE_LIMITED_FUNCTIONS = frozenset(
 
 _GUARDED_ROLES = frozenset({role for role, _ in _VALUE_LIMITS})
 
+# Driver methods that turn off the instrument's own trip, and the ceiling each
+# one would leave with nothing behind it. A net with that ceiling refuses them:
+# the ceiling only stops a setpoint, and the trip is what stops the DUT drawing
+# or seeing too much once the output is on. Any role, because the question is
+# what the net declares, not which instrument is driving it.
+_PROTECTION_OFF: Dict[str, str] = {
+    "disable_ocp": "max_current",
+    "disable_overcurrent_protection": "max_current",
+    "disable_ovp": "max_voltage",
+    "disable_overvoltage_protection": "max_voltage",
+}
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -234,7 +283,7 @@ def is_guarded(role: Optional[str], function_name: str) -> bool:
     """True when this (role, function) is subject to any interlock."""
     if not role:
         return False
-    if (role, function_name) in _VALUE_LIMITS:
+    if (role, function_name) in _VALUE_LIMITS or function_name in _PROTECTION_OFF:
         return True
     return role in _GUARDED_ROLES and function_name in _RATE_LIMITED_FUNCTIONS
 
@@ -313,7 +362,8 @@ def check(
             when omitted.
 
     Raises:
-        SafetyViolation: The requested setpoint exceeds a configured ceiling.
+        SafetyViolation: The requested setpoint exceeds a configured ceiling,
+            or the command would turn off a protection that ceiling relies on.
         RateLimitExceeded: Too many guarded calls on this net in the window.
 
     Note the ordering: the value check runs before the rate check, so a
@@ -330,6 +380,13 @@ def check(
         # that predate limits keep working, and the rate cap is a property of
         # having limits at all, not a global throttle.
         return
+
+    ceiling_key = _PROTECTION_OFF.get(function_name)
+    if ceiling_key is not None:
+        ceiling = limits.get(ceiling_key)
+        if isinstance(ceiling, (int, float)) and not isinstance(ceiling, bool):
+            raise ProtectionOffRefused(
+                net_name or "", ceiling_key, float(ceiling), function_name)
 
     limit_key = _VALUE_LIMITS.get((resolved_role or "", function_name))
     if limit_key is not None:
@@ -432,7 +489,9 @@ class UnidentifiedNet(Exception):
 
 
 _POSSIBLY_GUARDED_FUNCTIONS = frozenset(
-    set(_RATE_LIMITED_FUNCTIONS) | {function for _, function in _VALUE_LIMITS}
+    set(_RATE_LIMITED_FUNCTIONS)
+    | {function for _, function in _VALUE_LIMITS}
+    | set(_PROTECTION_OFF)
 )
 
 

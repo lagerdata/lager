@@ -284,6 +284,19 @@ def register_battery_routes(app: Flask) -> None:
                         ovp = battery._safe_query(':BATT:SIM:TVOL:PROT?', '4.5')
                         result['message'] = f'OVP limit: {ovp}V'
 
+                elif action == 'set_esr':
+                    # A series offset on top of the active model, which is all
+                    # the 2281S can set. The instrument's answer is reported
+                    # rather than the request, because it can clamp the value.
+                    # The live total is `esr` in the state action.
+                    if value is not None:
+                        battery.set_esr(value)
+                    offset = float(battery._safe_query(':BATT:SIM:RES:OFFS?', '0'))
+                    result['value'] = offset
+                    result['message'] = (f'ESR offset set to {offset} ohm'
+                                         if value is not None
+                                         else f'ESR offset: {offset} ohm')
+
                 elif action == 'set_mode':
                     mode_type = params.get('mode_type')
                     if mode_type is not None:

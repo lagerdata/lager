@@ -92,6 +92,17 @@ class StatusCapabilitiesTest(unittest.TestCase):
         else:
             self.assertEqual(roles, [])
 
+    def test_eload_input_switch_follows_the_net_command_route(self):
+        box_http_server._has_net_command = True
+        self.assertIs(self._capabilities()['eloadInputSwitch'], True)
+        box_http_server._has_net_command = False
+        self.assertIs(self._capabilities()['eloadInputSwitch'], False)
+
+    def test_advertises_actions_on_routes_that_always_register(self):
+        caps = self._capabilities()
+        self.assertIs(caps['batteryEsr'], True)
+        self.assertIs(caps['supplyProtectionOff'], True)
+
     def test_box_level_capabilities_reflect_registration(self):
         # Same contract as netCommand: each flag mirrors whether its route
         # actually registered.

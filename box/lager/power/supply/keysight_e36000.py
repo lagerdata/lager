@@ -458,6 +458,18 @@ class KeysightE36000(SupplyNet):
                 self._write("SOURce:VOLTage:PROTection:STATe OFF")
         # else: E36300 doesn't support disabling OVP
 
+    def disable_ocp(self, channel=None) -> None:
+        # disable_overcurrent_protection() does nothing on an E36300, so
+        # falling through to it would report protection off while it is on.
+        if not self._is_e36200_series():
+            raise SupplyBackendError(f"{self._model} cannot turn OCP off")
+        super().disable_ocp(channel)
+
+    def disable_ovp(self, channel=None) -> None:
+        if not self._is_e36200_series():
+            raise SupplyBackendError(f"{self._model} cannot turn OVP off")
+        super().disable_ovp(channel)
+
     def is_overvoltage_protection_enabled(self, chanlist=None) -> bool | list[bool]:
         """
         Check if OVP is enabled for the specified channel(s).

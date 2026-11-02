@@ -422,6 +422,13 @@ def _eload(netname, role, action, params):
             state["measured_power"])
         return _ok(msg, state)
 
+    if action == "enable":
+        dev.enable()
+        return _ok("E-load '%s' input enabled" % netname)
+    if action == "disable":
+        dev.disable()
+        return _ok("E-load '%s' input disabled" % netname)
+
     if action not in ("cc", "cv", "cr", "cp"):
         raise UnknownAction(action)
     value = params.get("value")
