@@ -30,6 +30,7 @@ let supply = lager.supply("supply1");
 | `set_ocp()` | Set and enable over-current protection |
 | `clear_ovp()` | Clear an over-voltage trip |
 | `clear_ocp()` | Clear an over-current trip |
+| `disable_ovp()` / `disable_ocp()` | Turn a protection off |
 | `state()` | Full structured state in a single transaction |
 
 ## Types
@@ -113,6 +114,19 @@ Set **and enable** the protection trip. These are not just threshold writes.
 ### `clear_ovp() -> Result<()>` and `clear_ocp() -> Result<()>`
 
 Clear a trip that fired. Until you clear it, the output stays down.
+
+### `disable_ovp() -> Result<()>` and `disable_ocp() -> Result<()>`
+
+Turn over-voltage or over-current protection off. `set_ovp()` and `set_ocp()` turn it
+back on. These require box software 0.62.0 or later. An older box fails with
+`Error::UnsupportedByBox`.
+
+The box refuses with `Error::Box` in two cases:
+
+- The instrument cannot turn the protection off. The EA, the Keithley 2281S and the
+  Keysight E36300 cannot.
+- The net has a safety ceiling behind that protection. A `max_voltage` ceiling keeps
+  OVP on, and a `max_current` ceiling keeps OCP on.
 
 ### `state() -> Result<SupplyState>`
 

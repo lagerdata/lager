@@ -31,6 +31,7 @@ let battery = lager.battery("battery1");
 | `models()` | 列出模拟器上的电池模型 |
 | `export_model()` | 读取一个模型的数据点 |
 | `create_model()` | 把模型写入一个槽位 |
+| `set_esr()` / `esr()` | 设置或读取串联电阻偏移 |
 | `set_ovp()` / `set_ocp()` | 设置保护跳闸 |
 | `clear_ovp()` / `clear_ocp()` / `clear()` | 清除跳闸 |
 | `enable()` / `disable()` | 打开或关闭仿真的电池组 |
@@ -125,6 +126,19 @@ battery.set_soc(20.0)?;   // nearly flat
 <Warning>
   `create_model` 会覆盖该槽位。仪器无法删除或保护模型。
 </Warning>
+
+### `set_esr(ohms: f64) -> Result<f64>` 和 `esr() -> Result<f64>`
+
+设置或读取串联电阻（ESR）偏移，单位欧姆。仪器会把它加到模型的内阻上。
+
+```rust
+let applied = battery.set_esr(0.25)?;
+println!("ESR offset {applied} ohm");
+```
+
+**返回：** 仪器实际应用的偏移。它可能与 `ohms` 不同，因为仪器会对该值进行钳位。
+
+它们需要Box 软件 0.62.0 或更高版本。较旧的 Box 会以 `Error::UnsupportedByBox` 失败。
 
 ### `enable() -> Result<()>` 和 `disable() -> Result<()>`
 

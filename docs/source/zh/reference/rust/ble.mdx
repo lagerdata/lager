@@ -26,6 +26,10 @@ BLE 是 **Box 级**能力，不是一个 Net：它驱动的是 Box 自己的适�
 | `info()`、`info_with_timeout()` | 短暂连接并枚举 GATT 服务 |
 | `connect()`、`connect_with_timeout()` | 连接，并通过枚举服务来确认 |
 | `disconnect()` | 确保某个设备已与 Box 断开连接 |
+| `read()` | 读取一个 GATT 特征 |
+| `write()`, `write_with_response()` | 写入一个 GATT 特征 |
+| `notify()` | 在一段时间内收集某个特征的通知 |
+| `pair()` | 与设备配对并保留绑定 |
 
 ## 类型
 
@@ -54,7 +58,19 @@ pub struct BleCharacteristic {
     pub description: Option<String>,
     pub properties: Vec<String>,   // e.g. ["read", "notify"]
 }
+
+pub enum GattChar {
+    Uuid(String),   // from a &str or String
+    Handle(u16),    // from a u16
+}
+
+pub struct BleNotifications {
+    pub messages: Vec<Vec<u8>>,   // each payload, in arrival order
+    pub timed_out: bool,          // true when fewer than max_messages arrived
+}
 ```
+
+GATT 方法接受 `impl Into<GattChar>`，因此可以传入 UUID 字符串或句柄。当设备有两个 UUID 相同的特征时，请使用句柄。
 
 ## 方法参考
 
@@ -88,6 +104,30 @@ for d in ble.scan(5.0)? {
 
 相同的调用，用于需要超过默认 10 秒连接超时的设备。
 
+### `read(address: &str, characteristic: impl Into<GattChar>) -> Result<Vec<u8>>`
+
+读取一个 GATT 特征的值。
+
+```rust
+const BATTERY_LEVEL: &str = "00002a19-0000-1000-8000-00805f9b34fb";
+let level = ble.read("AA:BB:CC:DD:EE:FF", BATTERY_LEVEL)?;
+assert_eq!(level.len(), 1);
+```
+
+### `write(address: &str, characteristic: impl Into<GattChar>, data: &[u8]) -> Result<()>`
+
+写入一个 GATT 特征。Box 会根据该特征的属性，选择带响应写入或无响应写入。`write_with_response(address, characteristic, data, response: bool)` 让您自己选择：`true` 为带响应，`false` 为无响应。
+
+### `notify(address: &str, characteristic: impl Into<GattChar>, max_messages: u32, duration: f64) -> Result<BleNotifications>`
+
+订阅一个特征并收集它的通知。收到 `max_messages`（1-10000）条，或经过 `duration` 秒（0.1-300）后，收集停止。随后 Box 会取消订阅。数量不足不算错误：返回结果中 `timed_out` 会被置位。
+
+### `pair(address: &str) -> Result<()>`
+
+通过 Box 的 BlueZ 与设备配对，BlueZ 会保留该绑定。
+
+GATT 方法和 `pair()` 需要Box 软件 0.62.0 或更高版本。较旧的 Box 会以 `Error::UnsupportedByBox` 失败。
+
 ## 示例
 
 ### 断言被测设备带着正确的服务在广播
@@ -120,4 +160,5 @@ supply.disable()?;
 - **每台 Box 只有一个适配器。** Box 会把它上面所有的 BLE **和** BluFi 工作串行化，因此并发调用会排队而不是失败。一次 BluFi 配网和一次 BLE 扫描不能重叠。
 - `capabilities.ble_command` 为 `true` 只表示 Box **提供这条路由**，而不表示它能完成这项工作。宿主机上没有运行 BlueZ 的 Box 会用 `Error::Box` 和 HTTP 502 作答，并携带 `BlueZ is not running on the box host`（较旧的 Box 镜像会发送 `The name org.bluez was not provided by any .service files`）。即使 USB 总线上确实有蓝牙控制器也会这样。请检查错误，而不是只看能力标志。`lager update` 会在宿主机上安装 BlueZ。
 - `info`、`connect` 和 `disconnect` 在 Box 侧的连接超时是 10 秒；客户端在此之上再加 30 秒。
+- 每次 GATT 调用都会连接、执行它的一项操作，然后断开。因此这个 API 无法驱动需要在多次操作之间保持同一连接的设备。数据在 API 中是字节，在线路上是十六进制。
 - `rssi` 是恰好收到的那条广播的一次快照。请把它当作排序提示，而不是测量值。

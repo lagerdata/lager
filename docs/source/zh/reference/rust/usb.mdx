@@ -26,6 +26,7 @@ let port = lager.usb("usb1");
 | `cycle()`, `cycle_with_off_time()` | 断电、等待、上电，并报告设备是否回来了 |
 | `cycle_report()` | 与 `cycle()` 相同，并且还会说明设备为什么没有回来 |
 | `recover()` | 在一条命令被中断之后，给端口重新上电 |
+| `recover_report()` | 与 `recover()` 相同，并列出 Box 上电的端口 |
 
 ## 方法参考
 
@@ -87,6 +88,17 @@ match port.cycle()? {
 ### `recover() -> Result<()>`
 
 在一条命令中途停止之后，给端口重新上电。在 Plugable 扩展坞上，这会给该扩展坞的每一个端口上电。
+
+### `recover_report() -> Result<UsbRecoverReport>`
+
+执行与 `recover()` 相同的操作，并返回 Box 的报告。
+
+| 字段 | 含义 |
+|---|---|
+| `ports` | 驱动上电的集线器端口，或 `None` |
+| `message` | Box 的消息 |
+
+只有当驱动上电的端口不止该 Net 自己的端口时（例如 Plugable 扩展坞），才会设置 `ports`。它需要Box 软件 0.62.0 或更高版本。较旧的 Box 不发送该列表，所以 `ports` 为 `None`。
 
 ## 示例
 

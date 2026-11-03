@@ -27,6 +27,8 @@ BluFi 是 **Box 级**能力，不是一个 Net，而且它与 BLE 共用 Box 上
 | `wifi_scan()`、`wifi_scan_for()` | 让目标扫描它自己能看到的网络 |
 | `status()` | 目标当前的 WiFi 状态 |
 | `version()` | 目标的 BluFi 固件版本 |
+| `set_mode()` | 设置目标的 WiFi 工作模式 |
+| `send_custom_data()` | 发送 BluFi 自定义数据并收集回复 |
 
 ## 类型
 
@@ -50,6 +52,18 @@ pub struct BlufiProvisionResult {
 pub struct BlufiNetwork {
     pub ssid: String,
     pub rssi: Option<i64>,   // dBm, as seen by the target
+}
+
+pub enum BlufiOpMode { Null, Sta, SoftAp, StaSoftAp }   // code() gives 0 to 3
+
+pub struct BlufiModeReport {
+    pub requested: Option<i64>,   // the op-mode code sent
+    pub status: BlufiStatus,      // the WiFi state the target reports afterwards
+}
+
+pub struct BlufiCustomDataReply {
+    pub sent: usize,              // bytes sent
+    pub replies: Vec<Vec<u8>>,    // one entry per frame the target sent back
 }
 ```
 
@@ -87,6 +101,25 @@ assert_eq!(r.sta_conn, Some(0), "not connected: {:?}", r.sta_conn_name);
 ### `status(device_name: &str) -> Result<BlufiStatus>` 和 `version(device_name: &str) -> Result<Option<String>>`
 
 目标当前的 WiFi 状态，以及它的 BluFi 固件版本。
+
+### `set_mode(device_name: &str, mode: BlufiOpMode) -> Result<BlufiModeReport>`
+
+设置目标的 WiFi 工作模式。
+
+```rust
+use lager::BlufiOpMode;
+
+let report = blufi.set_mode("BLUFI_DEVICE", BlufiOpMode::Sta)?;
+println!("now {:?}", report.status.op_mode_name);
+```
+
+**返回：** 发送的模式代码，以及目标在切换之后报告的 WiFi 状态。两者可以不同，这不算错误。SoftAP 模式可能需要更多设置，目标才会显示它。
+
+### `send_custom_data(device_name: &str, data: &[u8], reply_window: f64) -> Result<BlufiCustomDataReply>`
+
+向目标发送 BluFi 自定义数据。`data` 不能为空。随后 Box 会在 `reply_window` 秒（0-60）内收集目标发回的自定义数据。取 0 时，数据发送后调用立即返回，不带任何回复。
+
+`set_mode()` 和 `send_custom_data()` 需要Box 软件 0.62.0 或更高版本。较旧的 Box 会以 `Error::UnsupportedByBox` 失败。
 
 ## 示例
 

@@ -108,9 +108,10 @@ Examples:
 | `scope()` | 0.55.0 |
 | `hsm()`, `custom()` | 0.59.0 |
 | `DebugNet::halt()`, `Arm::get_acceleration()` | 0.60.0 |
+| `dmm()`, the GATT methods on `ble()`, JTAG on `DebugNet::connect_with()` | 0.62.0 |
 
-`erase_range()` and `halt()` check the debug service's features before they send
-anything. So an old box fails with this variant before it touches the target.
+`erase_range()`, `halt()` and a JTAG connect check the debug service's features before
+they send anything. So an old box fails with this variant before it touches the target.
 
 ### `NotSupportedByBox { feature, details }`
 

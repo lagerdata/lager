@@ -1,0 +1,125 @@
+---
+title: 数字万用表
+description: 用 Rust 读取台式数字万用表
+---
+
+从台式数字万用表（DMM）Net 读取一次读数。DMM Net 需要 Box 软件 0.62.0 或更高版本。
+
+## 句柄
+
+```rust
+use lager::{DmmFunction, DmmOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let dmm = lager.dmm("dmm1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `measure()` | 配置万用表并读取一次读数 |
+| `identify()` | 返回万用表的 `*IDN?` 回复 |
+| `errors()` | 读取并清空万用表的错误队列 |
+
+## 类型
+
+### `DmmFunction`
+
+```rust
+pub enum DmmFunction {
+    DcVolts, AcVolts, DcCurrent, AcCurrent, Resistance, FourWireResistance,
+    Continuity, Diode, Frequency, Period, Capacitance, Temperature,
+}
+```
+
+| 变体 | Box 名称 | 单位 |
+|---|---|---|
+| `DcVolts` | `dcv` | `V` |
+| `AcVolts` | `acv` | `V` |
+| `DcCurrent` | `dci` | `A` |
+| `AcCurrent` | `aci` | `A` |
+| `Resistance` | `res` | `ohm` |
+| `FourWireResistance` | `fres` | `ohm` |
+| `Continuity` | `cont` | `ohm` |
+| `Diode` | `diode` | `V` |
+| `Frequency` | `freq` | `Hz` |
+| `Period` | `period` | `s` |
+| `Capacitance` | `cap` | `F` |
+| `Temperature` | `temp` | `C` |
+
+`as_str()` 返回 Box 名称。
+
+### `DmmOptions`
+
+```rust
+let opts = DmmOptions::new()     // auto-range, the meter's own NPLC and sensor
+    .range(20.0)                 // full-scale value in the function's unit
+    .nplc(10.0)                  // integration time in power-line cycles
+    .sensor("ther:k");           // temperature probe
+```
+
+这些字段是公开的，可以读取。请用 `DmmOptions::new()` 和构建器方法构造该值。结构体字面量无法编译，因此以后新增字段时不会破坏您的代码。
+
+### `DmmReading`
+
+```rust
+pub struct DmmReading {
+    pub value: Option<f64>,  // None on overload or an open input
+    pub unit: String,        // "V", "A", "ohm", "Hz", "s", "F" or "C"
+    pub overload: bool,
+}
+```
+
+## 方法参考
+
+### `measure(function: DmmFunction, options: &DmmOptions) -> Result<DmmReading>`
+
+为 `function` 配置万用表，并读取一次读数。
+
+```rust
+let r = dmm.measure(DmmFunction::DcVolts, &DmmOptions::new().range(20.0).nplc(10.0))?;
+let volts = r.value.expect("VBAT over range");
+assert!((3.2..3.4).contains(&volts), "VBAT out of tolerance: {volts:.6} V");
+```
+
+**返回：** 一个 `DmmReading`。万用表超量程时，`value` 为 `None`，`overload` 为 `true`。对于 `Continuity` 和 `Diode`，开路输入的读数也是这样。
+
+Box 会先对照万用表检查请求。如果万用表不支持该功能、量程、NPLC 值或传感器，调用会以 `Error::Box`（HTTP 400）失败。消息会给出原因，Box 也不会操作万用表。各仪器的有效量程和 NPLC 值见 [CLI 参考](/source/reference/cli/dmm#supported-hardware)。
+
+### `identify() -> Result<String>`
+
+返回万用表的 `*IDN?` 回复。
+
+### `errors() -> Result<Vec<String>>`
+
+读取并清空万用表的错误队列。队列为空时，列表为空。
+
+## 示例
+
+### 测量分流电阻并检查开路
+
+```rust
+use lager::{DmmFunction, DmmOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let dmm = lager.dmm("dmm1");
+
+let shunt = dmm.measure(DmmFunction::FourWireResistance, &DmmOptions::new().range(200.0))?;
+println!("shunt: {:?} {}", shunt.value, shunt.unit);
+
+let link = dmm.measure(DmmFunction::Continuity, &DmmOptions::new())?;
+assert!(!link.overload, "the link is open");
+```
+
+## 受支持的硬件
+
+| 仪器 | 功能 |
+|---|---|
+| Siglent SDM3065X | 全部十二种 |
+
+## 说明
+
+- 在最高的电容量程上，或万用表自动量程时，一次读数可能需要几秒。crate 为它预留 75 秒。
+- 0.62.0 之前的 Box 没有 `dmm` 角色。它会以 HTTP 501 回应，调用会以 `Error::UnsupportedByBox` 失败。提供该角色的 Box 会在 `status().capabilities.net_command_roles` 中列出 `dmm`。

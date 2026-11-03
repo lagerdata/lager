@@ -23,6 +23,7 @@ let load = lager.eload("eload1");
 | `state()` | Mode, input enable and measurements in one transaction |
 | `set()` | Switch mode and apply its setpoint atomically |
 | `setpoint()` | Read the stored setpoint for a mode |
+| `enable()` / `disable()` | Switch the load's input on or off |
 
 ## Types
 
@@ -83,6 +84,12 @@ setting `Cc` gives you the constant-voltage setpoint, not the current you just s
 
 Current mode, whether the input is enabled, and the measurements.
 
+### `enable() -> Result<()>` and `disable() -> Result<()>`
+
+Switch the load's input on or off. With the input on, the load sinks current at the
+setpoint of its mode. These require box software 0.62.0 or later. An older box fails
+with `Error::UnsupportedByBox`.
+
 ## Examples
 
 ### Step the load and watch the rail hold up
@@ -109,6 +116,7 @@ for amps in [0.1_f64, 0.5, 1.0, 1.5] {
 }
 
 load.set(EloadMode::Cc, 0.0)?;
+load.disable()?;
 supply.disable()?;
 ```
 
@@ -122,7 +130,7 @@ supply.disable()?;
 
 - Prefer `set()` over changing mode and setpoint separately — that is the whole
   reason it takes both.
-- Return the load to zero in teardown. A load left drawing current keeps drawing it
+- Return the load to zero in teardown, and call `disable()` on box 0.62.0 or later. A load left drawing current keeps drawing it
   after your test exits.
 - `measured_voltage` is the voltage at the load's terminals, which includes any drop
   in the wiring between it and the DUT. For a rail measurement at the DUT, use an ADC

@@ -1,0 +1,136 @@
+---
+title: DMM
+description: Take bench digital multimeter readings from Rust
+---
+
+Take one reading from a bench digital multimeter (DMM) net. A DMM net requires box
+software 0.62.0 or later.
+
+## Handle
+
+```rust
+use lager::{DmmFunction, DmmOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let dmm = lager.dmm("dmm1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `measure()` | Configure the meter and take one reading |
+| `identify()` | Return the meter's `*IDN?` reply |
+| `errors()` | Read and clear the meter's error queue |
+
+## Types
+
+### `DmmFunction`
+
+```rust
+pub enum DmmFunction {
+    DcVolts, AcVolts, DcCurrent, AcCurrent, Resistance, FourWireResistance,
+    Continuity, Diode, Frequency, Period, Capacitance, Temperature,
+}
+```
+
+| Variant | Box name | Unit |
+|---|---|---|
+| `DcVolts` | `dcv` | `V` |
+| `AcVolts` | `acv` | `V` |
+| `DcCurrent` | `dci` | `A` |
+| `AcCurrent` | `aci` | `A` |
+| `Resistance` | `res` | `ohm` |
+| `FourWireResistance` | `fres` | `ohm` |
+| `Continuity` | `cont` | `ohm` |
+| `Diode` | `diode` | `V` |
+| `Frequency` | `freq` | `Hz` |
+| `Period` | `period` | `s` |
+| `Capacitance` | `cap` | `F` |
+| `Temperature` | `temp` | `C` |
+
+`as_str()` returns the box name.
+
+### `DmmOptions`
+
+```rust
+let opts = DmmOptions::new()     // auto-range, the meter's own NPLC and sensor
+    .range(20.0)                 // full-scale value in the function's unit
+    .nplc(10.0)                  // integration time in power-line cycles
+    .sensor("ther:k");           // temperature probe
+```
+
+The fields are public to read. Build the value with `DmmOptions::new()` and the
+builder methods. A struct literal does not compile, so a field added later does not
+break your code.
+
+### `DmmReading`
+
+```rust
+pub struct DmmReading {
+    pub value: Option<f64>,  // None on overload or an open input
+    pub unit: String,        // "V", "A", "ohm", "Hz", "s", "F" or "C"
+    pub overload: bool,
+}
+```
+
+## Method Reference
+
+### `measure(function: DmmFunction, options: &DmmOptions) -> Result<DmmReading>`
+
+Configure the meter for `function` and take one reading.
+
+```rust
+let r = dmm.measure(DmmFunction::DcVolts, &DmmOptions::new().range(20.0).nplc(10.0))?;
+let volts = r.value.expect("VBAT over range");
+assert!((3.2..3.4).contains(&volts), "VBAT out of tolerance: {volts:.6} V");
+```
+
+**Returns:** a `DmmReading`. When the meter is over range, `value` is `None` and
+`overload` is `true`. For `Continuity` and `Diode`, an open input reads the same way.
+
+The box checks the request against the meter first. If the meter cannot do the
+function, range, NPLC value or sensor, the call fails with `Error::Box` (HTTP 400).
+The message gives the reason, and the box does not touch the meter. The valid ranges
+and NPLC values per instrument are in the
+[CLI reference](/source/reference/cli/dmm#supported-hardware).
+
+### `identify() -> Result<String>`
+
+Return the meter's `*IDN?` reply.
+
+### `errors() -> Result<Vec<String>>`
+
+Read and clear the meter's error queue. The list is empty when the queue is clear.
+
+## Examples
+
+### Measure a shunt and check for an open circuit
+
+```rust
+use lager::{DmmFunction, DmmOptions, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let dmm = lager.dmm("dmm1");
+
+let shunt = dmm.measure(DmmFunction::FourWireResistance, &DmmOptions::new().range(200.0))?;
+println!("shunt: {:?} {}", shunt.value, shunt.unit);
+
+let link = dmm.measure(DmmFunction::Continuity, &DmmOptions::new())?;
+assert!(!link.overload, "the link is open");
+```
+
+## Supported Hardware
+
+| Instrument | Functions |
+|---|---|
+| Siglent SDM3065X | All twelve |
+
+## Notes
+
+- One reading can take several seconds on the top capacitance ranges, or when the
+  meter auto-ranges. The crate allows 75 seconds for it.
+- A box older than 0.62.0 has no `dmm` role. It answers HTTP 501, and the call fails
+  with `Error::UnsupportedByBox`. A box that serves the role lists `dmm` in
+  `status().capabilities.net_command_roles`.

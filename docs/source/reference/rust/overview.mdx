@@ -10,7 +10,7 @@ and run with `cargo test`. No Python is required.
 The crate is a pure HTTP/JSON client of the Lager Box API. It covers:
 
 - power supplies, battery simulators, e-loads and solar simulators
-- GPIO, ADC, DAC, thermocouples, watt meters and energy analyzers
+- GPIO, ADC, DAC, thermocouples, bench multimeters, watt meters and energy analyzers
 - SPI, I2C, USB hub ports, robot arms, webcams and routers
 - oscilloscopes and YubiHSM 2 HSMs
 - nets that a custom driver on the box runs
@@ -36,7 +36,7 @@ Add the crate to your firmware project's dev-dependencies:
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.9" }
+lager = { package = "lager-net", version = "0.10" }
 ```
 
 The crate requires Rust **1.75** or newer and builds on edition 2021.
@@ -87,7 +87,7 @@ Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.9", features = ["async"] }
+lager = { package = "lager-net", version = "0.10", features = ["async"] }
 ```
 
 ## Errors
@@ -147,6 +147,7 @@ Logic-analyzer nets are not on the box HTTP API yet. The work list is in the cra
 - [Oscilloscope](/source/reference/rust/scope)
 - [ADC](/source/reference/rust/adc)
 - [Thermocouple](/source/reference/rust/thermocouple)
+- [DMM](/source/reference/rust/dmm)
 
 ### I/O and communication
 
