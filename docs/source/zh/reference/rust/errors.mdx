@@ -97,8 +97,9 @@ Box 也可能用 **HTTP 200** 加 `success: false` 来报告失败 —— 跨角
 | `scope()` | 0.55.0 |
 | `hsm()`, `custom()` | 0.59.0 |
 | `DebugNet::halt()`, `Arm::get_acceleration()` | 0.60.0 |
+| `dmm()`, the GATT methods on `ble()`, JTAG on `DebugNet::connect_with()` | 0.62.0 |
 
-`erase_range()` 和 `halt()` 在发送任何内容之前，会先检查调试服务的功能。因此旧 Box 会在碰到目标之前就以这个变体失败。
+`erase_range()`、`halt()` 和 JTAG 连接在发送任何内容之前，会先检查调试服务的功能。因此旧 Box 会在碰到目标之前就以这个变体失败。
 
 ### `NotSupportedByBox { feature, details }`
 

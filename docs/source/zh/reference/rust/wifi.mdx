@@ -29,6 +29,7 @@ WiFi 是 **Box 级**能力，不是一个 Net。它没有 Net 名称，也没有
 | `connect()` | 加入一个网络 |
 | `connect_on()` | 在指定接口上加入一个网络 |
 | `delete()` | 删除一份已保存的连接配置 |
+| `disconnect()` | 关闭一个无线接口 |
 
 ## 类型
 
@@ -81,6 +82,14 @@ for ap in wifi.scan("wlan0")? {
 ### `delete(ssid: &str) -> Result<()>`
 
 按 SSID 删除一份已保存的连接配置。
+
+### `disconnect(interface: &str) -> Result<()>`
+
+关闭一个无线接口，例如 `"wlan0"`。它需要Box 软件 0.62.0 或更高版本。较旧的 Box 会以 `Error::UnsupportedByBox` 失败。
+
+<Warning>
+  如果您通过这个接口访问 Box，请不要断开它。该接口会一直保持关闭，直到一次 `connect()` 或重启，在此之前 Box 会离线。
+</Warning>
 
 ## 示例
 

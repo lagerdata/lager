@@ -29,6 +29,7 @@ let supply = lager.supply("supply1");
 | `set_ocp()` | 设置并启用过流保护 |
 | `clear_ovp()` | 清除一次过压跳闸 |
 | `clear_ocp()` | 清除一次过流跳闸 |
+| `disable_ovp()` / `disable_ocp()` | 关闭一项保护 |
 | `state()` | 在一次事务中取得完整的结构化状态 |
 
 ## 类型
@@ -106,6 +107,15 @@ supply.set_voltage_with(3.3, &ProtectionLimits {
 ### `clear_ovp() -> Result<()>` 和 `clear_ocp() -> Result<()>`
 
 清除已经触发的跳闸。在您清除之前，输出会一直保持关闭。
+
+### `disable_ovp() -> Result<()>` 和 `disable_ocp() -> Result<()>`
+
+关闭过压保护或过流保护。`set_ovp()` 和 `set_ocp()` 会重新打开它。它们需要Box 软件 0.62.0 或更高版本。较旧的 Box 会以 `Error::UnsupportedByBox` 失败。
+
+在两种情况下，Box 会以 `Error::Box` 拒绝：
+
+- 仪器无法关闭该保护。EA、Keithley 2281S 和 Keysight E36300 都不能关闭。
+- 该 Net 在这项保护背后设有安全上限。`max_voltage` 上限让过压保护保持打开，`max_current` 上限让过流保护保持打开。
 
 ### `state() -> Result<SupplyState>`
 

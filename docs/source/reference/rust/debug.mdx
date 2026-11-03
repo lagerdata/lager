@@ -62,12 +62,20 @@ pub struct ConnectOptions {
     pub swo_port: Option<u16>,          // probe slot's default ports; SWO and
     pub telnet_port: Option<u16>,       // telnet are J-Link only
     pub rtt_telnet_port: Option<u16>,
+    pub transport: Option<Transport>,   // None or Transport::Swd is SWD
 }
 ```
 
 `Default` sets `gdb: true` and everything else off, so `connect()` starts a GDB
 server. Build the struct with `..Default::default()`, so a field added later does
-not break your code.
+not break your code. A struct literal without it stopped compiling in lager-net 0.10,
+which added `transport`.
+
+`transport: Some(Transport::Jtag)` starts the probe on JTAG. It requires box software
+0.62.0 or later. The crate first checks the debug service's features for
+`connect_transport`. An older box fails with `Error::UnsupportedByBox`, because it
+starts SWD whatever the request says. A net with its own OpenOCD config keeps the
+transport of that config.
 
 `jlink_script` and `openocd_config` replace a script saved on the net, for this
 connection only. An OpenOCD config must be complete and must select the adapter
@@ -138,7 +146,8 @@ if let Some(gdb) = &conn.gdb_server {
 ```
 
 **Returns:** `DebugConnection`, carrying the device, probe, serial, backend, and a
-`GdbServer` with the ports that were opened. On a J-Link these come back as gdb 2331,
+`GdbServer` with the ports that were opened. Its `transport` is `"SWD"` or `"JTAG"`,
+or `None` from a box older than 0.62.0, which always runs SWD. On a J-Link these come back as gdb 2331,
 SWO 2332, telnet 2333 and RTT telnet 9090. `tcl_port` is OpenOCD-only and is `None`
 on a J-Link, just as `swo_port` is J-Link-only.
 
@@ -154,6 +163,18 @@ dbg.connect_with(&ConnectOptions {
     halt: true,
     ..Default::default()
 })?;
+```
+
+To connect over JTAG:
+
+```rust
+use lager::{ConnectOptions, Transport};
+
+let conn = dbg.connect_with(&ConnectOptions {
+    transport: Some(Transport::Jtag),
+    ..Default::default()
+})?;
+assert_eq!(conn.transport.as_deref(), Some("JTAG"));
 ```
 
 `halt: true` resets the target and then halts it. On a part that executes in place

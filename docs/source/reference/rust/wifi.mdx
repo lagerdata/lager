@@ -33,6 +33,7 @@ WiFi is a **box-level** capability, not a net. There is no net name and no `name
 | `connect()` | Join a network |
 | `connect_on()` | Join a network on a named interface |
 | `delete()` | Delete a saved connection profile |
+| `disconnect()` | Take a wireless interface down |
 
 ## Types
 
@@ -85,6 +86,16 @@ Join a network on an interface other than `wlan0`.
 ### `delete(ssid: &str) -> Result<()>`
 
 Delete a saved connection profile by SSID.
+
+### `disconnect(interface: &str) -> Result<()>`
+
+Take a wireless interface down, for example `"wlan0"`. This requires box software
+0.62.0 or later. An older box fails with `Error::UnsupportedByBox`.
+
+<Warning>
+  If you reach the box over this interface, do not disconnect it. The interface stays
+  down until a `connect()` or a reboot, and the box goes offline until then.
+</Warning>
 
 ## Examples
 

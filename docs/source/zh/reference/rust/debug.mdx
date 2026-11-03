@@ -57,10 +57,13 @@ pub struct ConnectOptions {
     pub swo_port: Option<u16>,          // probe slot's default ports; SWO and
     pub telnet_port: Option<u16>,       // telnet are J-Link only
     pub rtt_telnet_port: Option<u16>,
+    pub transport: Option<Transport>,   // None or Transport::Swd is SWD
 }
 ```
 
-`Default` 把 `gdb` 设为 `true`，其余全部关闭，因此 `connect()` 会启动一个 GDB 服务器。请用 `..Default::default()` 构造该结构体，这样以后新增字段时不会破坏您的代码。
+`Default` 把 `gdb` 设为 `true`，其余全部关闭，因此 `connect()` 会启动一个 GDB 服务器。请用 `..Default::default()` 构造该结构体，这样以后新增字段时不会破坏您的代码。不带它的结构体字面量从 lager-net 0.10 起无法编译，因为该版本新增了 `transport`。
+
+`transport: Some(Transport::Jtag)` 让探针以 JTAG 启动。它需要Box 软件 0.62.0 或更高版本。crate 会先检查调试服务的功能列表中是否有 `connect_transport`。较旧的 Box 会以 `Error::UnsupportedByBox` 失败，因为它无论请求如何都会以 SWD 启动。带有自己 OpenOCD 配置的 Net 会沿用该配置的传输方式。
 
 `jlink_script` 和 `openocd_config` 会替换保存在 Net 上的脚本，只对本次连接生效。OpenOCD 配置必须是完整的，并且必须选定适配器驱动。
 
@@ -125,7 +128,7 @@ if let Some(gdb) = &conn.gdb_server {
 }
 ```
 
-**返回：** `DebugConnection`，携带设备、探针、序列号、后端，以及一个带有已打开端口的 `GdbServer`。在 J-Link 上返回的是 gdb 2331、SWO 2332、telnet 2333 和 RTT telnet 9090。`tcl_port` 仅 OpenOCD 才有，在 J-Link 上为 `None`；同理 `swo_port` 仅 J-Link 才有。
+**返回：** `DebugConnection`，携带设备、探针、序列号、后端，以及一个带有已打开端口的 `GdbServer`。它的 `transport` 为 `"SWD"` 或 `"JTAG"`；来自 0.62.0 之前 Box 的结果为 `None`，这类 Box 总是运行 SWD。在 J-Link 上返回的是 gdb 2331、SWO 2332、telnet 2333 和 RTT telnet 9090。`tcl_port` 仅 OpenOCD 才有，在 J-Link 上为 `None`；同理 `swo_port` 仅 J-Link 才有。
 
 ### `connect_with(opts: &ConnectOptions) -> Result<DebugConnection>`
 
@@ -139,6 +142,18 @@ dbg.connect_with(&ConnectOptions {
     halt: true,
     ..Default::default()
 })?;
+```
+
+以 JTAG 连接：
+
+```rust
+use lager::{ConnectOptions, Transport};
+
+let conn = dbg.connect_with(&ConnectOptions {
+    transport: Some(Transport::Jtag),
+    ..Default::default()
+})?;
+assert_eq!(conn.transport.as_deref(), Some("JTAG"));
 ```
 
 `halt: true` 会先复位目标，再暂停它。在从 QSPI 原地执行（XIP）的器件上，这次复位会再次运行引导程序。要在不复位的情况下让内核停下，请使用 `halt()`。

@@ -28,6 +28,10 @@ is no net name and no `name()`.
 | `info()`, `info_with_timeout()` | Connect briefly and enumerate GATT services |
 | `connect()`, `connect_with_timeout()` | Connect, enumerating services to verify |
 | `disconnect()` | Ensure a device is disconnected from the box |
+| `read()` | Read a GATT characteristic |
+| `write()`, `write_with_response()` | Write a GATT characteristic |
+| `notify()` | Collect a characteristic's notifications for a time |
+| `pair()` | Pair with a device and keep the bond |
 
 ## Types
 
@@ -56,7 +60,20 @@ pub struct BleCharacteristic {
     pub description: Option<String>,
     pub properties: Vec<String>,   // e.g. ["read", "notify"]
 }
+
+pub enum GattChar {
+    Uuid(String),   // from a &str or String
+    Handle(u16),    // from a u16
+}
+
+pub struct BleNotifications {
+    pub messages: Vec<Vec<u8>>,   // each payload, in arrival order
+    pub timed_out: bool,          // true when fewer than max_messages arrived
+}
 ```
+
+The GATT methods take `impl Into<GattChar>`, so pass a UUID string or a handle. Use a
+handle when a device has two characteristics with the same UUID.
 
 ## Method Reference
 
@@ -90,6 +107,36 @@ Connect to, or ensure disconnection from, a device by address.
 ### `info_with_timeout(address: &str, timeout: f64)` and `connect_with_timeout(address: &str, timeout: f64)`
 
 The same calls, for a device that needs longer than the default 10 s connect timeout.
+
+### `read(address: &str, characteristic: impl Into<GattChar>) -> Result<Vec<u8>>`
+
+Read a GATT characteristic's value.
+
+```rust
+const BATTERY_LEVEL: &str = "00002a19-0000-1000-8000-00805f9b34fb";
+let level = ble.read("AA:BB:CC:DD:EE:FF", BATTERY_LEVEL)?;
+assert_eq!(level.len(), 1);
+```
+
+### `write(address: &str, characteristic: impl Into<GattChar>, data: &[u8]) -> Result<()>`
+
+Write a GATT characteristic. The box picks write-with-response or
+write-without-response from the characteristic's properties.
+`write_with_response(address, characteristic, data, response: bool)` lets you choose:
+`true` for with-response, `false` for without.
+
+### `notify(address: &str, characteristic: impl Into<GattChar>, max_messages: u32, duration: f64) -> Result<BleNotifications>`
+
+Subscribe to a characteristic and collect its notifications. Collection stops when
+`max_messages` (1-10000) arrive, or after `duration` seconds (0.1-300). The box then
+unsubscribes. A short count is not an error: it comes back with `timed_out` set.
+
+### `pair(address: &str) -> Result<()>`
+
+Pair with a device through the box's BlueZ, which keeps the bond.
+
+The GATT methods and `pair()` require box software 0.62.0 or later. An older box
+fails with `Error::UnsupportedByBox`.
 
 ## Examples
 
@@ -131,5 +178,8 @@ supply.disable()?;
   capability flag. `lager update` installs BlueZ on the host.
 - The box-side connect timeout for `info`, `connect` and `disconnect` is 10 seconds;
   the client allows that plus 30.
+- Each GATT call connects, does its one operation and disconnects. So this API cannot
+  drive a device that needs one connection held across operations. Data is bytes in
+  the API and hex on the wire.
 - `rssi` is a snapshot from the advertisement that happened to be received. Treat it
   as an ordering hint, not a measurement.

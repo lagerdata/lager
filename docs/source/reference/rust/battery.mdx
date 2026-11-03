@@ -32,6 +32,7 @@ let battery = lager.battery("battery1");
 | `models()` | List the simulator's battery models |
 | `export_model()` | Read a model's points |
 | `create_model()` | Write a model to a slot |
+| `set_esr()` / `esr()` | Set or read the series-resistance offset |
 | `set_ovp()` / `set_ocp()` | Set protection trips |
 | `clear_ovp()` / `clear_ocp()` / `clear()` | Clear trips |
 | `enable()` / `disable()` | Turn the simulated pack on or off |
@@ -130,6 +131,22 @@ Write a model to a slot.
 <Warning>
   `create_model` overwrites the slot. The instrument cannot delete or protect a model.
 </Warning>
+
+### `set_esr(ohms: f64) -> Result<f64>` and `esr() -> Result<f64>`
+
+Set or read the series-resistance (ESR) offset in ohms. The instrument adds it to the
+model's internal resistance.
+
+```rust
+let applied = battery.set_esr(0.25)?;
+println!("ESR offset {applied} ohm");
+```
+
+**Returns:** the offset the instrument applied. It can differ from `ohms`, because
+the instrument clamps the value.
+
+These require box software 0.62.0 or later. An older box fails with
+`Error::UnsupportedByBox`.
 
 ### `enable() -> Result<()>` and `disable() -> Result<()>`
 

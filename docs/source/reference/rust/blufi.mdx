@@ -29,6 +29,8 @@ Bluetooth adapter with BLE.
 | `wifi_scan()`, `wifi_scan_for()` | Ask the target to scan for networks it can see |
 | `status()` | The target's current WiFi state |
 | `version()` | The target's BluFi firmware version |
+| `set_mode()` | Set the target's WiFi operation mode |
+| `send_custom_data()` | Send BluFi custom data and collect the replies |
 
 ## Types
 
@@ -52,6 +54,18 @@ pub struct BlufiProvisionResult {
 pub struct BlufiNetwork {
     pub ssid: String,
     pub rssi: Option<i64>,   // dBm, as seen by the target
+}
+
+pub enum BlufiOpMode { Null, Sta, SoftAp, StaSoftAp }   // code() gives 0 to 3
+
+pub struct BlufiModeReport {
+    pub requested: Option<i64>,   // the op-mode code sent
+    pub status: BlufiStatus,      // the WiFi state the target reports afterwards
+}
+
+pub struct BlufiCustomDataReply {
+    pub sent: usize,              // bytes sent
+    pub replies: Vec<Vec<u8>>,    // one entry per frame the target sent back
 }
 ```
 
@@ -92,6 +106,30 @@ Give the target longer than the default 15 s for its WiFi scan.
 ### `status(device_name: &str) -> Result<BlufiStatus>` and `version(device_name: &str) -> Result<Option<String>>`
 
 The target's current WiFi state, and its BluFi firmware version.
+
+### `set_mode(device_name: &str, mode: BlufiOpMode) -> Result<BlufiModeReport>`
+
+Set the target's WiFi operation mode.
+
+```rust
+use lager::BlufiOpMode;
+
+let report = blufi.set_mode("BLUFI_DEVICE", BlufiOpMode::Sta)?;
+println!("now {:?}", report.status.op_mode_name);
+```
+
+**Returns:** the mode code sent, and the WiFi state that the target reports after the
+change. The two can differ without an error. A SoftAP mode can need more setup before
+the target shows it.
+
+### `send_custom_data(device_name: &str, data: &[u8], reply_window: f64) -> Result<BlufiCustomDataReply>`
+
+Send BluFi custom data to the target. `data` must not be empty. The box then collects
+the custom data that the target sends back for `reply_window` seconds (0-60). With 0,
+the call returns when the data is sent, with no replies.
+
+`set_mode()` and `send_custom_data()` require box software 0.62.0 or later. An older
+box fails with `Error::UnsupportedByBox`.
 
 ## Examples
 

@@ -239,7 +239,8 @@
                 "pages": [
                   "source/reference/rust/scope",
                   "source/reference/rust/adc",
-                  "source/reference/rust/thermocouple"
+                  "source/reference/rust/thermocouple",
+                  "source/reference/rust/dmm"
                 ]
               },
               {
@@ -745,7 +746,8 @@
                 "pages": [
                   "source/zh/reference/rust/scope",
                   "source/zh/reference/rust/adc",
-                  "source/zh/reference/rust/thermocouple"
+                  "source/zh/reference/rust/thermocouple",
+                  "source/zh/reference/rust/dmm"
                 ]
               },
               {

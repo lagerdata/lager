@@ -27,6 +27,7 @@ let port = lager.usb("usb1");
 | `cycle()`, `cycle_with_off_time()` | Power off, wait, power on, and report whether the device came back |
 | `cycle_report()` | Like `cycle()`, and also say why a device did not come back |
 | `recover()` | Power a port back on after an interrupted command |
+| `recover_report()` | Like `recover()`, and also list the ports the box powered on |
 
 ## Method Reference
 
@@ -99,6 +100,19 @@ The outcome tells an empty port apart from a port the box did not watch:
 
 Power the port on again after a command stopped partway through. On a Plugable dock,
 this powers every port of that dock.
+
+### `recover_report() -> Result<UsbRecoverReport>`
+
+Do the same as `recover()`, and return what the box reports.
+
+| Field | Meaning |
+|---|---|
+| `ports` | The hub ports the driver powered on, or `None` |
+| `message` | The box's message |
+
+`ports` is set only when the driver powers more than the net's own port, as on a
+Plugable dock. It needs box software 0.62.0 or later. An older box sends no list, so
+`ports` is `None`.
 
 ## Examples
 
