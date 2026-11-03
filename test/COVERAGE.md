@@ -18,7 +18,7 @@ with a real description.
 ## What runs in CI
 
 Six workflows run on `pull_request`: `unit-tests.yml`, `static-checks.yml`, `rust-checks.yml`,
-`packaging.yml`, `xplat-smoke.yml` and `box-image-pr.yml`, the last only when `box/lager/docker/`
+`packaging.yml`, `xplat-smoke.yml` and `box-image-pr.yml`, the last only when `box/lager/`
 changes. The others run on a schedule, through `workflow_call`, on a tag push, or on manual dispatch.
 
 | Workflow | Trigger | Runner | Gates a PR |
@@ -28,7 +28,7 @@ changes. The others run on a schedule, through `workflow_call`, on a tag push, o
 | `rust-checks.yml` | `pull_request`, dispatch; push to `main` **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | **Yes** |
 | `packaging.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
 | `xplat-smoke.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `macos-latest`, `windows-latest` | **Yes** |
-| `box-image-pr.yml` | `pull_request`, path-filtered to `box/lager/docker/**` | GitHub-hosted `ubuntu-latest` | No (path-filtered, so not a required context) |
+| `box-image-pr.yml` | `pull_request`, path-filtered to `box/lager/**` | GitHub-hosted `ubuntu-latest` | No (path-filtered, so not a required context) |
 | `integration-tests.yml` | `workflow_call`, dispatch | self-hosted `lager-bench` | No (disabled) |
 | `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No (disabled) |
 | `nightly-bench.yml` | nightly schedule, push of a `v*` tag, dispatch | orchestrator | No (disabled) |

@@ -15,13 +15,20 @@
 # So there is no `cache-to`, no registry login, and no `packages` permission.
 # A cache miss (the package is unreadable, or the layers changed) is a slower
 # build, not a failure.
+#
+# The path filter is the whole build context, `box/lager/`, not only
+# `box/lager/docker/`. The Dockerfile COPYs the box package from that context,
+# and its last step import-checks it, so a box-side Python change can break
+# the image as surely as a pin can. With no hardware run on merges, this is
+# the only check that a box-side change still builds into an image and
+# imports. Anything under box/ but outside box/lager/ never enters the image.
 
 name: "Box Image: PR Build"
 
 on:
   pull_request:
     paths:
-      - 'box/lager/docker/**'
+      - 'box/lager/**'
       - '.github/workflows/box-image-pr.yml'
 
 permissions:
