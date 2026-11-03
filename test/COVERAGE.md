@@ -29,14 +29,18 @@ changes. The others run on a schedule, through `workflow_call`, on a tag push, o
 | `packaging.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
 | `xplat-smoke.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `macos-latest`, `windows-latest` | **Yes** |
 | `box-image-pr.yml` | `pull_request`, path-filtered to `box/lager/docker/**` | GitHub-hosted `ubuntu-latest` | No (path-filtered, so not a required context) |
-| `integration-tests.yml` | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
-| `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
-| `nightly-bench.yml` | nightly schedule, push to `main` (docs-only pushes skipped), dispatch | orchestrator | No |
-| `bench-extended.yml` | weekly schedule, dispatch | self-hosted `lager-bench` | No |
-| `bench-watchdog.yml` | schedule every 6 hours, dispatch | GitHub-hosted `ubuntu-latest` | No |
+| `integration-tests.yml` | `workflow_call`, dispatch | self-hosted `lager-bench` | No (disabled) |
+| `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No (disabled) |
+| `nightly-bench.yml` | nightly schedule, push of a `v*` tag, dispatch | orchestrator | No (disabled) |
+| `bench-extended.yml` | weekly schedule, dispatch | self-hosted `lager-bench` | No (disabled) |
+| `bench-watchdog.yml` | schedule every 6 hours, dispatch | GitHub-hosted `ubuntu-latest` | No (disabled) |
 
 `nightly-bench.yml` reaches the other two bench workflows above it through `workflow_call`, so
 neither of those carries a `schedule` or `push` trigger of its own.
+
+The hardware bench is offline at this time, and all five bench workflows are disabled. Until
+the bench returns, no suite in this file runs on hardware. Each "nightly" entry below describes
+the coverage that the bench gives when it runs.
 
 A job only *blocks* a merge once its status context is listed in branch ruleset 14535039.
 Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `compat (...)` jobs,

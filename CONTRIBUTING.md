@@ -37,7 +37,8 @@ required check passes. Run the local equivalents before you push, to save a roun
 
 [`.github/workflows/README.md`](.github/workflows/README.md) lists every workflow and
 the exact required checks. The bench workflows drive real hardware, and ordinary pull
-requests do not trigger them.
+requests do not trigger them. The hardware bench is offline at this time, so the bench
+workflows are disabled. No merge gets a hardware run until the bench returns.
 
 ### Unit tests (no hardware)
 
