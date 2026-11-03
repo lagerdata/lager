@@ -313,8 +313,12 @@ class TestPullRequestBuild:
         return build["with"]
 
     def test_runs_on_a_pull_request_that_touches_the_image(self):
+        """The filter covers the whole build context, not only docker/: the
+        Dockerfile COPYs the box package from that context and import-checks
+        it, so a box-side Python change can break the image too."""
         paths = _triggers(self._workflow())["pull_request"]["paths"]
-        assert "box/lager/docker/**" in paths
+        context = self._build()["context"]
+        assert f"{context}/**" in paths
 
     def test_pushes_nothing_and_reads_the_cache_only(self):
         build = self._build()
