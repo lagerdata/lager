@@ -1,0 +1,116 @@
+---
+title: "Version 0.62.0"
+description: "November 2, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** Most of this release runs on the box. Run
+  `lager update --box <box-name>` after you upgrade the CLI.
+- **The first update downloads the whole box image.** The box image moves to a new
+  Python base image, so every layer changes. Expect a download of about 1 GB per box.
+- **`lager nets add-all` names a scope's instrument net `oscilloscope1`.** It used to name
+  the instrument net and its channel 1 net `scope1`. Nets that are already saved keep their
+  names. A script that creates nets with `add-all` and then uses the instrument net by name
+  must use the new name.
+- **`lager nets add` needs this CLI to accept a `UVC_Camera`.** Older CLIs refuse the new
+  instrument name. `lager nets add-all` and the nets TUI accept it from older CLIs.
+
+## <u>Features</u>
+
+- **`lager update --fork` and `lager install --fork` deploy box code from a GitHub fork.**
+  Push a branch to your own public fork, then run
+  `lager update --box <box> --fork <owner>/<repo> --version <branch>`.
+  - `--version` is required with `--fork`.
+  - A fork deploy always builds on the box, because pre-built images exist only for release
+    tags.
+  - The box keeps `lagerdata/lager` as `origin`, and the fork's tags never replace release
+    tags.
+  - `lager hello` marks the box as a fork build. The next update without `--fork` returns
+    the box to `lagerdata/lager`.
+- **Any USB video class camera can be a webcam net.** Cameras no longer need to be on a list.
+  `lager instruments` lists an unknown camera as `UVC_Camera` with its product name. This
+  includes a box's built-in camera. HDMI capture cards stay out.
+- **Bench multimeters are supported, starting with the Siglent SDM3065X.** The new `dmm` net
+  role and `lager dmm NET [FUNCTION]` take one reading. Functions include DC and AC volts and
+  current, 2- and 4-wire resistance, continuity, diode, frequency, period, capacitance and
+  temperature. The options are `--range`, `--nplc` and `--sensor`. Python scripts use
+  `Net.get(name, NetType.DMM).measure(...)`.
+- **Siglent SPD1168X supplies are supported.** The SPD1168X is a single-channel
+  `power-supply` net for `lager supply`. `lager instruments` and `lager nets add-all` detect
+  it over USB (`f4ec:1410`). Over LAN, create the net with `lager nets add-batch`, with
+  `"instrument": "Siglent_SPD1168X"` and a `TCPIP::<ip>::INSTR` address.
+- **Rigol DS1000Z-series scopes (DS1054Z, DS1074Z, DS1104Z) work as scope nets.** The scope
+  daemon reads the model from `*IDN?` and drives a DS1000Z over SCPI alone. `lager
+  instruments` lists it (`1ab1:04ce`), and `lager scope` controls it.
+- **The box HTTP API covers more of the Python API.** Each new action has a `/status`
+  capability or a response field, so a client can tell an older box apart. None of these
+  actions has a `lager` command yet, and none has run on real instruments.
+  - `enable` and `disable` on an e-load net switch its input (`eloadInputSwitch`).
+  - `set_esr` on `/battery/command` sets or reads the series-resistance offset (`batteryEsr`).
+  - `disable_ocp` and `disable_ovp` on `/supply/command` turn a supply's protection off
+    (`supplyProtectionOff`). Setting a limit turns it back on.
+  - `recover` on `/usb/command` returns the `ports` that it powers back on.
+  - `disconnect` on `/wifi/command` takes the box's wlan interface down until a `connect` or
+    a host reboot (`wifiDisconnect`). A box that you reach over that interface goes offline.
+  - `read`, `write`, `notify` and `pair` on `/ble/command` work on one GATT characteristic
+    (`bleGatt`).
+  - `set_mode` and `custom_data` on `/blufi/command` set an ESP32's op mode and exchange
+    bytes with it (`blufiDeviceMode`, `blufiCustomData`).
+
+## <u>Bug Fixes</u>
+
+- **`lager python` shows why a box refused a run.** For an HTTP error, the CLI now prints
+  the reason from the box. It used to print a generic hint, such as "Try again later" for a
+  503. A box in collected run-record mode that cannot record a run now names the cause and
+  the fix. The box also repairs the ownership of `/etc/lager/run_records` when it starts.
+- **Webcam nets keep their camera when `/dev/video*` numbers change.** A net opened the
+  device number that was saved with it, so a different plug-in order could start the wrong
+  camera. The net now finds its camera from its address each time. It reports a missing
+  camera and does not open another one.
+- **Two identical cameras can both be webcam nets.** A camera with no serial, or with a
+  serial that another camera shares, now has its USB port as its address, such as
+  `usb-port:1-1.4`. Two of these cameras used to share an address, so `lager nets add`
+  refused both.
+- **`/debug/connect` uses the `transport` that you ask for.** It takes `SWD` or `JTAG` and
+  returns the transport that it used. It used to start J-Link and OpenOCD with SWD for every
+  request. A net with its own OpenOCD config keeps the transport from that config.
+- **`lager nets add-all` no longer gives two nets the same name.** A scope's instrument net
+  and its channel 1 net were both `scope1`. No new net now reuses a name that the box already
+  holds under another role.
+
+## <u>Improvements</u>
+
+- **A net with a safety ceiling keeps its protection on.** With `max_voltage` set, OVP stays
+  on. With `max_current` set, OCP stays on. The hardware service enforces this, so it also
+  covers a script that calls a driver's own `disable_*_protection` methods.
+
+## <u>Known Limitations</u>
+
+- **The Siglent SPD1168X has no OVP or OCP.** `--ovp`, `--ocp`, `clear-ovp` and `clear-ocp`
+  return an error. Its readings update about every 0.35 s, so a reading soon after a
+  setpoint change shows the old value.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.62.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.62.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.62.0/)
