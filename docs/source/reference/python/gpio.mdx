@@ -122,6 +122,9 @@ except TimeoutError:
 | LabJack T7 | Hardware streaming (`ljm.eStreamStart`) | 20,000 Hz |
 | LabJack U3 | Software polling | 100 Hz (10 ms interval) |
 | USB-202 | Software polling | 100 Hz (10 ms interval) |
+| FTDI FT232H / FT2232H / FT4232H | Software polling | 100 Hz (10 ms interval) |
+| Aardvark | Software polling | 100 Hz (10 ms interval) |
+| YKUSH3 | Software polling | 100 Hz (10 ms interval) |
 
 ## Examples
 
@@ -216,6 +219,8 @@ for i in range(10):
 | MCC USB-202 | DIO0-DIO7 | 5V TTL |
 | FTDI FT232H / FT2232H | ADBUS0-7, ACBUS0-7 (16 bits per channel) | 3.3V |
 | FTDI FT4232H | 8 pins per channel | 3.3V |
+| Total Phase Aardvark | `SCL`, `SDA`, `MISO`, `SCK`, `MOSI`, `SS` (bits 0-5) | 3.3V |
+| YKUSH3 hub | `1`, `2`, `3` | Not verified |
 
 ### Pin Naming
 

@@ -1,6 +1,6 @@
 ---
 title: Logic Analyzer (Preview)
-description: Digital signal capture and protocol decoding
+description: Digital signal capture and triggers
 ---
 
 Capture and analyze digital signals using the logic analyzer functionality of mixed-signal oscilloscopes.
@@ -159,6 +159,8 @@ logic.trigger_settings.set_mode_normal()
 | `edge.set_slope_falling()` | Trigger on falling edge |
 | `edge.set_slope_both()` | Trigger on either edge |
 | `edge.get_slope()` | Get current slope setting |
+| `edge.set_level(level)` | Set the trigger level in volts |
+| `edge.get_level()` | Get the trigger level in volts, or `None` |
 
 ### Pulse Trigger
 
@@ -228,6 +230,21 @@ clk.trigger_settings.spi.set_trigger_data(bits=8, data=0xAA)
 clk.trigger_settings.spi.set_trigger_on_cs_low()
 ```
 
+**SPI trigger methods:**
+
+| Method | Description |
+|--------|-------------|
+| `spi.set_source(net_sck, net_mosi_miso, net_cs)` | Set the clock, data and chip-select nets (keyword arguments) |
+| `spi.set_clk_edge_positive()` / `spi.set_clk_edge_negative()` | Sample data on the rising or falling clock edge |
+| `spi.get_clk_edge_slope()` | Get the clock edge setting |
+| `spi.set_trigger_on_cs_low()` / `spi.set_trigger_on_cs_high()` | Trigger while chip select is low or high |
+| `spi.set_trigger_on_timeout(timeout)` | Trigger after the clock is idle for `timeout` seconds |
+| `spi.get_trigger_timeout()` | Get the idle timeout |
+| `spi.set_trigger_data(bits, data)` | Trigger on a data value (keyword arguments) |
+| `spi.set_sck_trigger_level(level)` / `spi.get_sck_trigger_level()` | Clock threshold in volts |
+| `spi.set_mosi_miso_trigger_level(level)` / `spi.get_mosi_miso_trigger_level()` | Data threshold in volts |
+| `spi.set_cs_trigger_level(level)` / `spi.get_cs_trigger_level()` | Chip-select threshold in volts |
+
 #### CAN Trigger
 
 ```python
@@ -245,21 +262,12 @@ can.trigger_settings.can.set_trigger_on_error_frame()
 
 ### Valid Ranges
 
-A value outside these ranges raises `ValueError`, and the message names the valid range.
+These ranges apply to the SPI trigger, the only protocol trigger the MSO5000 accepts. A value outside them raises `ValueError`, and the message names the valid range.
 
 | Method | Parameter | Valid values |
 |--------|-----------|--------------|
-| `uart.set_uart_params()` | `bits` | 5 to 8 |
-| `uart.set_trigger_on_data()` | `data` | 0 to 2^bits − 1 |
-| `i2c.set_trigger_on_address()` | `bits` | 7, 8 or 10 |
-| `i2c.set_trigger_on_address()` | `address` | Up to 127 (7-bit), 255 (8-bit) or 1023 (10-bit) |
-| `i2c.set_trigger_on_data()` | `width` | 1 to 5 bytes |
-| `i2c.set_trigger_on_data()` | `data` | 0 to 2^(8 × width) − 1 |
 | `spi.set_trigger_data()` | `bits` | 4 to 32 |
 | `spi.set_trigger_data()` | `data` | 0 to 2^bits − 1 |
-| `BusUART.set_data_bits()` | `bits` | 5 to 9 |
-| `BusUART.set_stop_bits()` | `bits` | 1, 1.5 or 2 |
-| `BusSPI.set_data_width()` | `bits` | 4 to 32 |
 
 ## Measurements
 
@@ -439,13 +447,13 @@ uart_tx.disable()
 
 | Manufacturer | Model | Features |
 |--------------|-------|----------|
-| Rigol | MSO5000 series | 16 digital channels, protocol decode |
+| Rigol | MSO5000 series | 16 digital channels, edge and SPI triggers |
 
 ## Notes
 
 - Logic channels are numbered D0-D15
 - Channels D0-D7 share one threshold voltage, D8-D15 share another
-- Protocol decoding requires enabling bus analysis mode
+- Bus decoders are refused; creating one raises `UnsupportedScopeFeature`
 - Use `NetType.Logic` for digital channels, `NetType.Analog` for analog
-- Bus decoders work with both Logic and Analog nets as sources
+- Only the edge and SPI triggers work; the others raise `UnsupportedScopeFeature`
 - The trigger can use any combination of analog and digital channels

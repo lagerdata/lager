@@ -25,6 +25,8 @@ from lager import Net, NetType
 | `controls()` | 摄像头的图像控制项，含当前值和范围 |
 | `set_control(name, value)` | 设置一个摄像头控制项，并为该 Net 保存 |
 | `lock_controls(**overrides)` | 关闭所有自动模式，并保持每个控制项的当前值 |
+| `video_device` | 属性：摄像头当前的 `/dev/video` 节点，根据该 Net 的地址查找 |
+| `get_config()` | 返回该 Net 原始配置 dict 的副本 |
 
 ## 方法参考
 
@@ -248,7 +250,7 @@ webcam.set_control('focus', 383)
 
 **返回：** `bool` - 摄像头接受该值时为 True
 
-**异常：** 名称不是摄像头控制项时抛出 `ValueError`
+**异常：** 名称不是摄像头控制项时抛出 `ValueError`。摄像头未连接时抛出 `VideoDeviceNotFound`（一种 `RuntimeError`）。`controls()` 也会抛出它。
 
 ### `lock_controls(**overrides)`
 
@@ -544,7 +546,7 @@ Net 每次启动时都会重新找到自己的摄像头，因此 `/dev/video*` �
 
 ## 说明
 
-- 摄像头 Net 必须在 Lager Box 上配置，并指定视频设备路径
+- 摄像头 Net 按摄像头的地址配置，即序列号或 `usb-port:` 路径。该 Net 每次使用时都会根据这个地址查找摄像头的视频设备
 - 串流使用从 8086 开始的端口
 - 每一路串流使用一个独立端口，由系统自动分配
 - 串流会一直保持，直到被显式停止或其进程结束

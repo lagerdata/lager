@@ -73,7 +73,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `uart` | 否 | 通过 Box 的 Socket.IO `/uart` 命名空间进行 `Uart` 流式会话；同时启用 `async` 时还有 `AsyncUart` |
 | `rtt` | 否 | 通过 Box 的 Socket.IO 命名空间进行 RTT 日志流式传输，用于读取运行中目标的 `defmt` 输出；同时启用 `async` 时还有 `AsyncRttSession` |
 | `scope-trace` | 否 | 示波器波形样本：`Scope::capture()` 和 `Scope::stream()` |
-| `admin` | 否 | 通过 `admin()` 设置 Box：已保存的 Net、元数据、驱动、二进制文件、文件下载、自定义设备和诊断 |
+| `admin` | 否 | 通过 `admin()` 设置 Box：已保存的 Net、元数据、仪器、实验台清单、驱动、二进制文件、文件下载、自定义设备和诊断。同时启用 `async` 时为 `AsyncAdmin` |
 
 两种客户端执行的是完全相同的请求构造器和响应解析器，因此这两条传输路径不会各自跑偏。
 
@@ -96,6 +96,9 @@ lager = { package = "lager-net", version = "0.11", features = ["async"] }
 | `AuthRequired` | Box 的网关需要 bearer 令牌，而当前没有可用的令牌 |
 | `NotSupportedByBox` | 为兼容性而保留；没有任何 Net 类型会返回它 |
 | `UartInUse` | 另一个会话占用了该 UART Net 或其串行设备 |
+| `Decode` | Box 的响应无法解析为预期的结构 |
+| `Config` | 客户端配置问题，例如主机字符串有误或缺少环境变量 |
+| `Stream` | 串流会话报告了错误，例如设备消失 |
 
 ## 要求
 

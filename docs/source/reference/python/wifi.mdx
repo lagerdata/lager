@@ -8,7 +8,9 @@ Manage WiFi network connections on Lager Boxes. WiFi operations are box-level fu
 ## Import
 
 ```python
-from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi
+from lager.protocols.wifi import (
+    scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi, delete_wifi_connection,
+)
 ```
 
 ## Function Reference
@@ -19,6 +21,7 @@ from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status, di
 | `connect_to_wifi(ssid, password, interface)` | Connect to a WiFi network |
 | `get_wifi_status()` | Get current WiFi connection status |
 | `disconnect_wifi(interface)` | Disconnect from WiFi network |
+| `delete_wifi_connection(connection_name)` | Delete a saved WiFi connection |
 
 ### `scan_wifi(interface='wlan0')`
 
@@ -44,6 +47,9 @@ for network in networks:
 - `ssid` - Network name
 - `strength` - Signal strength as percentage (0-100)
 - `security` - Security type ('Open' or 'Secured')
+
+When the scan fails, the dict has an `error` key and no `access_points` key. Use
+`result.get('access_points', [])` and check `result.get('error')`.
 
 ### `connect_to_wifi(ssid, password, interface='wlan0')`
 
@@ -116,6 +122,20 @@ else:
 - `success` - Boolean indicating disconnect success
 - `message` - Success message (when `success` is True)
 - `error` - Error message (when `success` is False)
+
+### `delete_wifi_connection(connection_name)`
+
+Delete a saved WiFi connection by name, which is usually the SSID.
+
+```python
+from lager.protocols.wifi import delete_wifi_connection
+
+result = delete_wifi_connection('OfficeNet')
+if not result['deleted']:
+    print(result.get('error'))  # For example "Connection not found"
+```
+
+**Returns:** `dict` with `connection` (the name), `deleted` (bool) and, on failure, `error`
 
 ## Router Internet Access Control
 

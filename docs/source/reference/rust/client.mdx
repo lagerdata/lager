@@ -82,15 +82,22 @@ for net in lager.nets()? {
 | `ble_command` | `bleCommand` | BLE route registered |
 | `wifi_command` | `wifiCommand` | WiFi route registered |
 | `blufi_command` | `blufiCommand` | BluFi route registered |
-| `custom_devices` | `customDevices` | Not used by this crate |
-| `binaries` | `binaries` | Not used by this crate |
+| `custom_devices` | `customDevices` | The box serves `admin().custom_devices()` and the assign calls; see [Admin](/source/reference/rust/admin) |
+| `binaries` | `binaries` | The box serves `admin().binaries()`, `add_binary()`, `remove_binary()` and `download_file()` |
 | `safety_limits` | `safetyLimits` | `PUT /nets/<name>/safety-limits`, box 0.35.0+ |
 | `custom_drivers` | `customDrivers` | Custom-driver nets; see [Net Types](/source/reference/rust/net-types#custom-driver-nets) |
-| `custom_driver_deps` | `customDriverDeps` | Not used by this crate |
-| `net_metadata_sync`, `box_metadata_sync` | `netMetadataSync`, `boxMetadataSync` | Not used by this crate |
-| `bench_manifest` | `benchManifest` | Not used by this crate |
+| `custom_driver_deps` | `customDriverDeps` | A custom driver can declare Python packages; `admin().reinstall_driver_deps()` works (box 0.60.0+) |
+| `net_metadata_sync`, `box_metadata_sync` | `netMetadataSync`, `boxMetadataSync` | The box serves `admin().net_metadata()`/`set_net_metadata()` and `box_metadata()`/`set_box_metadata()` (box 0.46.0+) |
+| `bench_manifest` | `benchManifest` | The box serves `admin().bench_manifest()` (box 0.50.0+) |
 | `nets_state_enabled` | `netsStateEnabled` | `NetState::enabled` is reliable |
 | `nets_state_stream` | `netsStateStream` | Not used by this crate |
+| `eload_input_switch` | `eloadInputSwitch` | `Eload::enable()` / `disable()` (box 0.62.0+) |
+| `battery_esr` | `batteryEsr` | `Battery::set_esr()` (box 0.62.0+) |
+| `supply_protection_off` | `supplyProtectionOff` | `Supply::disable_ocp()` / `disable_ovp()` (box 0.62.0+) |
+| `wifi_disconnect` | `wifiDisconnect` | `Wifi::disconnect()` (box 0.62.0+) |
+| `ble_gatt` | `bleGatt` | The BLE GATT calls `read`, `write`, `notify` and `pair` (box 0.62.0+) |
+| `blufi_device_mode` | `blufiDeviceMode` | `Blufi::set_mode()` (box 0.62.0+) |
+| `blufi_custom_data` | `blufiCustomData` | `Blufi::send_custom_data()` (box 0.62.0+) |
 
 A field the box does not send reads as `false`. `BoxCapabilities` is
 `#[non_exhaustive]`, so a field added later does not break your code.

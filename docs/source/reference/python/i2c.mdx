@@ -87,7 +87,7 @@ temp = (data[0] << 8) | data[1]
 | `address` | `int` | 7-bit device address (`0x00`-`0x7F`) |
 | `num_bytes` | `int` | Number of bytes to read |
 | `output_format` | `str` | `"list"` (default), `"hex"`, `"bytes"`, or `"json"` |
-| `overrides` | `dict` or `None` | Per-call config overrides (e.g., `{"frequency_hz": 400000}`) |
+| `overrides` | `dict` or `None` | Config overrides (e.g., `{"frequency_hz": 400000}`). They stay in effect for later calls on the net |
 
 **Returns:** `list[int]` - Received bytes as integers (when `output_format="list"`)
 
@@ -103,7 +103,7 @@ i2c.write(address=0x48, data=[0x0A, 0x03])
 |-----------|------|-------------|
 | `address` | `int` | 7-bit device address (`0x00`-`0x7F`) |
 | `data` | `list[int]` | Bytes to write |
-| `overrides` | `dict` or `None` | Per-call config overrides (e.g., `{"frequency_hz": 400000}`) |
+| `overrides` | `dict` or `None` | Config overrides (e.g., `{"frequency_hz": 400000}`). They stay in effect for later calls on the net |
 
 ### `write_read(address, data, num_bytes, output_format, overrides)`
 
@@ -121,7 +121,7 @@ temperature = (temp_bytes[0] << 8) | temp_bytes[1]
 | `data` | `list[int]` | Bytes to write before reading (typically a register address) |
 | `num_bytes` | `int` | Number of bytes to read after writing |
 | `output_format` | `str` | `"list"` (default), `"hex"`, `"bytes"`, or `"json"` |
-| `overrides` | `dict` or `None` | Per-call config overrides (e.g., `{"frequency_hz": 400000}`) |
+| `overrides` | `dict` or `None` | Config overrides (e.g., `{"frequency_hz": 400000}`). They stay in effect for later calls on the net |
 
 **Returns:** `list[int]` - Received bytes as integers (when `output_format="list"`)
 
@@ -235,7 +235,13 @@ data = i2c.read(address=0x48, num_bytes=2)
 # One device needs fast mode for this transaction
 data = i2c.read(address=0x50, num_bytes=256,
                 overrides={"frequency_hz": 400_000})
+
+# The override stays in effect, so set the rate back for the next device
+i2c.config(frequency_hz=100_000)
 ```
+
+An override changes the net's driver for the rest of the script, not only the one call. Set
+the value back with `config()` when the next transaction needs the old one. See [#848](https://github.com/lagerdata/lager/issues/848).
 
 ## Supported Hardware
 

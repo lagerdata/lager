@@ -34,6 +34,7 @@ pub struct EnergyReading {
     pub energy_wh: Option<f64>,   // watt-hours
     pub charge_ah: Option<f64>,   // amp-hours
     pub duration_s: Option<f64>,  // the window actually used
+    pub extra: Map<String, Value>, // any other field the box sends
 }
 ```
 
@@ -44,6 +45,7 @@ pub struct EnergyStats {
     pub current: Option<StatSummary>,  // amps
     pub voltage: Option<StatSummary>,  // volts
     pub power: Option<StatSummary>,    // watts
+    pub extra: Map<String, Value>,     // any other field the box sends
 }
 
 pub struct StatSummary {
@@ -51,6 +53,7 @@ pub struct StatSummary {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub std: Option<f64>,
+    pub extra: Map<String, Value>,
 }
 ```
 

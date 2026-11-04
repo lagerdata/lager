@@ -256,6 +256,6 @@ device.close()
 - Lager supports native `pyserial` for serial communication
 - Serial ports are designated during Lager setup configuration
 - Supports both raw UART and USB CDC connections
-- Default baud rate is 115200
+- `serial.Serial` defaults to 9600 baud; pass the rate your device uses, such as 115200. A UART net defaults to 115200
 - Always handle `SerialException` errors appropriately
 - Use `decode('utf-8')` for string conversion

@@ -73,7 +73,7 @@ print(f"Position: X={x}, Y={y}, Z={z}")
 
 **Returns:** `tuple[float, float, float]` - (x, y, z) coordinates in mm
 
-### `move_to(x, y, z, timeout=15.0)`
+### `move_to(x, y, z, *, timeout=15.0)`
 
 Move the arm to absolute coordinates with blocking wait.
 
@@ -82,7 +82,7 @@ Move the arm to absolute coordinates with blocking wait.
 arm.move_to(100, 200, 50)
 
 # Move with longer timeout
-arm.move_to(100, 200, 50, timeout=10.0)
+arm.move_to(100, 200, 50, timeout=30.0)
 ```
 
 **Parameters:**
@@ -100,7 +100,7 @@ arm.move_to(100, 200, 50, timeout=10.0)
 - `NotHomedError` if the arm is not homed after power-on
 - `MovementTimeoutError` if position not reached within timeout
 
-### `move_relative(dx=0, dy=0, dz=0, timeout=15.0)`
+### `move_relative(dx=0, dy=0, dz=0, *, timeout=15.0)`
 
 Move relative to current position.
 
@@ -127,6 +127,9 @@ new_x, new_y, new_z = arm.move_relative(dx=10, dy=10, dz=-5)
 - `UnsupportedFirmwareError` if the arm firmware is older than V2.1.4, or the arm did not report its version. Nothing is sent to the arm.
 - `OutOfBoundsError` if the current position plus the offsets is outside the workspace bounds. The arm does not move.
 - `NotHomedError` if the arm is not homed after power-on
+- `MovementTimeoutError` if position not reached within timeout
+
+`timeout` is keyword-only in `move_to()` and `move_relative()`.
 
 ### `go_home(timeout=20.0)`
 
@@ -276,6 +279,23 @@ module = arm.get_module_type()
 print(f"Module: {module}")  # 'PEN', 'LASER', 'PUMP', or '3D'
 ```
 
+### Other Methods
+
+| Method | Description |
+|--------|-------------|
+| `read_and_save_position()` | Read the position, then recalibrate on it with `M889`. Returns the `(x, y, z)` read first. This replaces the stored calibration; see `save_position()` |
+| `set_workorigin()` | Define the current position as the work origin, X0 Y0 Z0 (`G92`) |
+| `check_bounds(x, y, z)` | Raise `OutOfBoundsError` if the point is outside the workspace |
+| `get_bounds_string()` | Return the workspace bounds as text |
+| `BOUNDS_X_MIN` ... `BOUNDS_Z_MAX` | Workspace bounds in mm: X -300 to 300, Y 170 to 360, Z -140 to 100 |
+| `move_to_blocking(x=None, y=None, z=None, e=None, feedrate=2000, mode="G1", wait=True, *, timeout=15.0)` | Move and wait until the arm is there. An axis left as `None` does not change |
+| `move_to_gcode(x=None, y=None, z=None, e=None, feedrate=2000, mode="G1", wait=True)` | Send a raw G-code move. Returns the reply lines when `wait` is `True` |
+| `fast_move_to(x=None, y=None, z=None, feedrate=2000, wait=True)` | A `G0` move |
+| `close()` | Release the serial port |
+
+`move_to_blocking()`, `move_to_gcode()` and `fast_move_to()` do not check the workspace
+bounds or the firmware version. `move_to()` and `move_relative()` do.
+
 ## Examples
 
 ### Basic Movement
@@ -381,6 +401,7 @@ arm.go_home()
 from lager import Net, NetType
 from lager import InvalidNetError
 from lager.automation.arm import (
+    ArmBackendError,
     MovementTimeoutError,
     NotHomedError,
     OutOfBoundsError,
@@ -400,6 +421,8 @@ except OutOfBoundsError as e:
     print(f"Target is outside the workspace: {e}")
 except MovementTimeoutError as e:
     print(f"Arm did not reach the target: {e}")
+except ArmBackendError as e:
+    print(f"Arm error: {e}")  # Every other arm error, such as SettingNotAppliedError
 except RuntimeError as e:
     print(f"Arm error: {e}")
 ```
@@ -419,7 +442,8 @@ except RuntimeError as e:
 | `NotHomedError` | `lager.automation.arm.arm_net` | The arm is not homed after power-on. |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | Arm didn't reach target position in time |
 | `SettingNotAppliedError` | `lager.automation.arm.arm_net` | The arm reports a different setting from the value written (`set_acceleration`). |
-| `RuntimeError` | builtin | Arm device not found or cannot be opened |
+| `ArmBackendError` | `lager.automation.arm` | Base class of every arm exception above. Catch it to handle any arm error. |
+| `RuntimeError` | builtin | Arm device not found or cannot be opened. `DeviceNotFoundError` is not raised for this ([#851](https://github.com/lagerdata/lager/issues/851)) |
 
 ## Notes
 

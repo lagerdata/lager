@@ -78,15 +78,22 @@ for net in lager.nets()? {
 | `ble_command` | `bleCommand` | 已注册 BLE 路由 |
 | `wifi_command` | `wifiCommand` | 已注册 WiFi 路由 |
 | `blufi_command` | `blufiCommand` | 已注册 BluFi 路由 |
-| `custom_devices` | `customDevices` | 本 crate 未使用 |
-| `binaries` | `binaries` | 本 crate 未使用 |
+| `custom_devices` | `customDevices` | Box 提供 `admin().custom_devices()` 和分配调用；请参阅 [Admin](/source/zh/reference/rust/admin) |
+| `binaries` | `binaries` | Box 提供 `admin().binaries()`、`add_binary()`、`remove_binary()` 和 `download_file()` |
 | `safety_limits` | `safetyLimits` | `PUT /nets/<name>/safety-limits`，Box 0.35.0 及以上 |
 | `custom_drivers` | `customDrivers` | 自定义驱动 Net；请参阅 [Net 类型](/source/zh/reference/rust/net-types#自定义驱动-net) |
-| `custom_driver_deps` | `customDriverDeps` | 本 crate 未使用 |
-| `net_metadata_sync`, `box_metadata_sync` | `netMetadataSync`, `boxMetadataSync` | 本 crate 未使用 |
-| `bench_manifest` | `benchManifest` | 本 crate 未使用 |
+| `custom_driver_deps` | `customDriverDeps` | 自定义驱动可以声明 Python 包；`admin().reinstall_driver_deps()` 可用（box 0.60.0+） |
+| `net_metadata_sync`, `box_metadata_sync` | `netMetadataSync`, `boxMetadataSync` | Box 提供 `admin().net_metadata()`/`set_net_metadata()` 和 `box_metadata()`/`set_box_metadata()`（box 0.46.0+） |
+| `bench_manifest` | `benchManifest` | Box 提供 `admin().bench_manifest()`（box 0.50.0+） |
 | `nets_state_enabled` | `netsStateEnabled` | `NetState::enabled` 是可靠的 |
 | `nets_state_stream` | `netsStateStream` | 本 crate 未使用 |
+| `eload_input_switch` | `eloadInputSwitch` | `Eload::enable()` / `disable()`（box 0.62.0+） |
+| `battery_esr` | `batteryEsr` | `Battery::set_esr()`（box 0.62.0+） |
+| `supply_protection_off` | `supplyProtectionOff` | `Supply::disable_ocp()` / `disable_ovp()`（box 0.62.0+） |
+| `wifi_disconnect` | `wifiDisconnect` | `Wifi::disconnect()`（box 0.62.0+） |
+| `ble_gatt` | `bleGatt` | BLE GATT 调用 `read`、`write`、`notify` 和 `pair`（box 0.62.0+） |
+| `blufi_device_mode` | `blufiDeviceMode` | `Blufi::set_mode()`（box 0.62.0+） |
+| `blufi_custom_data` | `blufiCustomData` | `Blufi::send_custom_data()`（box 0.62.0+） |
 
 Box 没有发送的字段读作 `false`。`BoxCapabilities` 带有 `#[non_exhaustive]`，因此以后新增的字段不会破坏您的代码。
 

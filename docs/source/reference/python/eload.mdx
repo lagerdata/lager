@@ -24,7 +24,9 @@ The Net-based API provides methods that can either get or set values. When calle
 | `power(value)` | Set or read constant power (W) |
 | `enable()` | Enable electronic load input |
 | `disable()` | Disable electronic load input |
-| `print_state()` | Print comprehensive state |
+| `print_state()` | Print the state to the box's hardware-service log; returns `None` |
+| `get_state_dict()` | Read the full state; returns a dict |
+| `get_input_state()` | Read whether the input is on (returns bool) |
 | `measured_voltage()` | Read measured voltage (returns float) |
 | `measured_current()` | Read measured current (returns float) |
 | `measured_power()` | Read measured power (returns float) |
@@ -114,7 +116,8 @@ print(f"Voltage setting: {v}V")
 
 Set or read the constant resistance setting. Values below 0.02 ohms are at the
 minimum range limit of the instrument, and the instrument can clamp them. It prints
-a warning when the applied value differs from the requested value.
+a warning to the box's hardware-service log when the applied value differs from the
+requested value.
 
 ```python
 # Set CR mode resistance
@@ -151,11 +154,37 @@ eload.disable()  # Stop sinking current
 
 ### `print_state()`
 
-Print comprehensive electronic load state.
+Print comprehensive electronic load state. The text goes to the box's hardware-service log,
+not to your script, and the call returns `None`. In a script, use `get_state_dict()`. See [#845](https://github.com/lagerdata/lager/issues/845).
 
 ```python
 eload.print_state()
 # Prints: mode, current/voltage/resistance/power settings, measured values, input state
+```
+
+### `get_state_dict()`
+
+Return the full electronic load state as a dict.
+
+```python
+state = eload.get_state_dict()
+print(state['mode'], state['measured_current'], state['input_enabled'])
+```
+
+| Key | Description |
+|-----|-------------|
+| `mode` | `CC`, `CV`, `CR` or `CW` |
+| `input_enabled` | `True`, `False`, or `None` for an unrecognized reply |
+| `measured_voltage`, `measured_current`, `measured_power` | Measured values |
+| `current_setting`, `voltage_setting`, `resistance_setting`, `power_setting` | The setting for the active mode only |
+
+### `get_input_state()`
+
+Return `True` when the input is on. An unrecognized reply reads as `False`.
+
+```python
+if eload.get_input_state():
+    print("Load is on")
 ```
 
 ### `measured_voltage()` / `measured_current()` / `measured_power()`
@@ -274,7 +303,7 @@ psu.disable()
 - Use `mode()` to set the operation mode before setting the corresponding value
 - Methods like `current()`, `voltage()`, `resistance()`, `power()` can get or set values
 - `measured_voltage()`, `measured_current()`, `measured_power()` return actual measurements
-- `print_state()` prints state (for debugging), measurement methods return values (for code)
+- `print_state()` prints to the box's hardware-service log; `get_state_dict()` and the measurement methods return values (for code)
 - Always call `enable()` to start sinking current
 - Always call `disable()` when finished
 - The instrument can clamp resistance values below 0.02 ohms

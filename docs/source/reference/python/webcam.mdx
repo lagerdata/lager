@@ -25,6 +25,8 @@ from lager import Net, NetType
 | `controls()` | The camera's image controls, with their values and ranges |
 | `set_control(name, value)` | Set one camera control, and keep it for this net |
 | `lock_controls(**overrides)` | Turn every auto mode off and keep every control as it is |
+| `video_device` | Property: the camera's `/dev/video` node now, found from the net's address |
+| `get_config()` | Return a copy of the net's raw configuration dict |
 
 ## Method Reference
 
@@ -262,7 +264,7 @@ webcam.set_control('focus', 383)
 
 **Returns:** `bool` - True if the camera took the value
 
-**Raises:** `ValueError` for a name that is not a camera control
+**Raises:** `ValueError` for a name that is not a camera control. `VideoDeviceNotFound`, a `RuntimeError`, when the camera is not connected. `controls()` raises it too.
 
 ### `lock_controls(**overrides)`
 
@@ -601,7 +603,7 @@ every unit, so two on one box use port addresses.
 
 ## Notes
 
-- Webcam nets must be configured on the Lager Box with video device path
+- A webcam net is configured by the camera's address, its serial number or a `usb-port:` path. The net finds the camera's video device from that address each time it is used
 - Streams run on ports starting from 8086
 - Each stream uses a separate port, automatically allocated
 - Streams persist until explicitly stopped or the process dies

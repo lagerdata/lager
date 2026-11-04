@@ -15,7 +15,8 @@ from lager import (
     USBBackendError,
     LibraryMissingError,
     DeviceNotFoundError,
-    PortStateError
+    PortStateError,
+    HubOperationTimeout,
 )
 ```
 
@@ -38,7 +39,8 @@ from lager import (
 | `USBBackendError` | Base class for USB hub errors |
 | `LibraryMissingError` | Required vendor SDK not installed |
 | `DeviceNotFoundError` | USB hub not found |
-| `PortStateError` | Error changing port state |
+| `PortStateError` | Error changing port state. A YKUSH raises it when a port does not switch |
+| `HubOperationTimeout` | A hub operation blocked past its deadline and was abandoned. A subclass of `USBBackendError` |
 
 ## Method Reference
 
@@ -185,6 +187,8 @@ from lager import Net, NetType
 
 Net.get('DUT_USB', type=NetType.Usb).recover()
 ```
+
+**Returns:** On a Plugable dock, the list of ports it re-powered. On other hubs, `None`.
 
 ## Examples
 
@@ -343,8 +347,9 @@ for i in range(5):
 
 | Hardware | Features |
 |----------|----------|
-| Acroname BrainStem USB Hub | Individual port power control, current monitoring |
+| Acroname BrainStem USB Hub | Individual port power control |
 | YKUSH USB Hub | Per-port power switching |
+| YKUSH3 USB Hub | Per-port power switching; its three GPIO pins are a separate `gpio` net |
 | Plugable RTS5411 dock | Per-port power switching on the four external Type-A sockets |
 
 ### Backend classes

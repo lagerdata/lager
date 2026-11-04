@@ -42,7 +42,11 @@ DP711 还需要在电源和 RS232 转 USB 适配器之间加一根**零调制解
 \*\* 通过 USB 连接时会被检测到（`f4ec:1410`）。通过 LAN 连接时不会被检测到：请用
 [`lager nets add-batch`](/source/zh/reference/cli/nets#add-batch)、
 `"instrument": "Siglent_SPD1168X"` 和 `TCPIP::<ip>::INSTR` 地址来创建它的网络。它不支持
-OVP/OCP，因此 `lager supply` 的 `--ovp`/`--ocp` 选项以及 `clear-ovp`/`clear-ocp` 命令会返回错误。它的测量值大约每 0.35 秒更新一次，因此修改设定值后请至少等待这么长时间再读取。
+OVP/OCP，因此 `lager supply` 的 `--ovp`/`--ocp` 选项以及 `clear-ovp`/`clear-ocp` 命令会返回错误。它的测量值大约每 0.35 秒更新一次，因此修改设定值后请至少等待这么长时间再读取。SPD1305X 的 USB ID 相同，因此它被列为 `Siglent_SPD1168X`。驱动会从仪器读取真实型号。
+
+驱动还支持 Rigol DP712 和 Keysight E36311A。它们都不在自动检测列表中。
+
+**关闭保护。** 在 Rigol DP700、Rigol DP800 和 Keysight E36200 上，Lager 可以关闭 OVP 和 OCP。在 Keysight E36300、Keithley 2281S、Siglent SPD1000X 和 EA 上，关闭保护的请求会返回错误。设置了 `max_voltage` 安全限值的 Net 会保持 OVP 开启，设置了 `max_current` 的 Net 会保持 OCP 开启。
 
 **可以实现：**
 - 自动的电压/电流控制
@@ -192,6 +196,7 @@ Lager 在它自己的 T7 调用中会指明设备类型。在您自己的代码�
 **接口：**
 - I2C（1 条总线）
 - SPI（1 条总线）
+- 6 个 GPIO 引脚（`SCL`、`SDA`、`MISO`、`SCK`、`MOSI`、`SS`）
 
 ### FTDI FT232H
 
@@ -202,6 +207,27 @@ Lager 在它自己的 T7 调用中会指明设备类型。在您自己的代码�
 - I2C（1 条总线）
 - SPI（1 条总线）
 - 12 个 GPIO 引脚
+
+### FTDI FT2232H
+
+**控制命令：** `lager i2c`、`lager spi`、`lager gpi`、
+`lager gpo`、`lager uart`、`lager debug`
+
+**接口：**
+- I2C 和 SPI
+- 12 个 GPIO 引脚（`4`-`15`）
+- UART
+- 两个通道（A 和 B）。Net 的通道请用 `lager nets add --interface` 指定
+
+### FTDI FT4232H
+
+**控制命令：** `lager i2c`、`lager spi`、`lager gpi`、
+`lager gpo`、`lager uart`、`lager debug`
+
+**接口：**
+- I2C 和 SPI，仅限通道 A 和 B
+- 四个通道各有 8 个 GPIO 引脚（`0`-`7`）
+- 每个通道都有 UART
 
 ### Measurement Computing USB-202
 
@@ -232,10 +258,11 @@ Lager 支持业界标准的 ARM 调试探针，全部通过同一条 `lager debu
 | SEGGER | J-Link Base Compact | `lager debug` |
 | SEGGER | J-Link Flasher Pro | `lager debug` |
 | SEGGER | Flasher ARM | `lager debug` |
+| SEGGER | J-Link OB（开发套件上的板载探针，一个或两个 VCOM） | `lager debug` |
 | STMicroelectronics | ST-Link/V2、V2-1、V3（含 V3 Mini 和 V3 2VCP） | `lager debug` |
 | Raspberry Pi | Debug Probe（RP2040 / Picoprobe，CMSIS-DAP） | `lager debug` |
 | FTDI | FT232H（例如 C232HM 线缆、Adafruit FT232H 转接板） | `lager debug` |
-| FTDI | FT2232H（例如 Olimex ARM-USB-OCD-H） | `lager debug` |
+| FTDI | FT2232H（通用 FTDI JTAG 线缆） | `lager debug` |
 | FTDI | FT4232H（需要自定义 `openocd_config`） | `lager debug` |
 | 任意厂商 | 兼容 CMSIS-DAP 的设备（Atmel EDBG、NXP DAPLink 等） | `lager debug` |
 
@@ -250,8 +277,8 @@ Lager 支持业界标准的 ARM 调试探针，全部通过同一条 `lager debu
 - 对上表中的芯片，基于 OpenOCD 的探针会根据 USB VID/PID 自动选择接口配置。
   FT4232H 受支持，但没有安全的默认值，因为四路 MPSSE 的板子接线变体太多。您必须传入一个指向适合您板子的接口 cfg 的 `openocd_config`。同样的方式也适用于接线非标准的 FT232H/FT2232H，以及表中没有的任何探针（例如 Black Magic Probe、Glasgow Interface Explorer）。
 - 多通道 FTDI（FT2232H、FT4232H）把每个 MPSSE 通道作为独立的调试 Net 提供。通道以 `@A`/`@B`/`@C`/`@D` 后缀写在设备字段上，因此单颗芯片可以独立驱动多个目标。FT4232H 上的 C 和 D 通道没有 MPSSE 引擎。它们可以承载 `gpio` 和 `uart` Net，但不能承载 `debug`、`i2c` 或 `spi` Net。`gpio`、`i2c` 和 `spi` Net 的通道请用 `lager nets add --interface` 指定。通道后缀的写法请参阅 [nets 参考](/source/zh/reference/cli/nets)。
-- 对 STM32、nRF5x、RP2040/RP2350、ATSAM、LPC、i.MX RT 和 ESP32 系列，
-  Lager 会根据设备名称选择目标芯片配置。其他芯片则由自定义的 OpenOCD 目标配置驱动。
+- 对 STM32、nRF5x、RP2040/RP2350、ATSAM、LPC、i.MX RT500 和 ESP32 系列，Lager 会根据设备名称选择目标芯片配置。其他芯片（包括 i.MX RT10xx 和 RT11xx）则由自定义的 OpenOCD 目标配置驱动（[#850](https://github.com/lagerdata/lager/issues/850)）。
+- USB 产品 ID 不在表中的 SEGGER 探针仍会被检测到，显示为 `J-Link`。
 
 ---
 
@@ -332,9 +359,10 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 
 | 厂商 | 型号 | 控制命令 |
 |---|---|---|
-| Prolific | PL2303 | `lager uart` |
+| Prolific | PL2303（USB ID `067b:23a3`） | `lager uart` |
 | Silicon Labs | CP210x | `lager uart` |
 | FTDI | FT232R | `lager uart` |
+| FTDI | FT232H、FT2232H、FT4232H | `lager uart` |
 | Espressif | ESP32 JTAG Serial | `lager uart` |
 
 **可以实现：**
@@ -346,7 +374,9 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 
 | 协议 | 控制命令 | 能力 |
 |---|---|---|
-| 低功耗蓝牙（BLE） | `lager ble` | 扫描、连接、断开、服务发现 |
+| 低功耗蓝牙（BLE） | `lager ble` | 扫描、连接、断开、服务发现。可通过 Python API 进行 GATT 读、写和通知 |
+| BluFi（通过 BLE 为 ESP32 配置 WiFi） | `lager blufi` | 扫描、连接、配置 WiFi 凭据、状态、WiFi 扫描 |
+| WiFi（Box 自身的接口） | Python API（`lager.protocols.wifi`） | 扫描、连接、断开、状态、删除已保存的连接 |
 
 **可以实现：**
 - 无线设备测试
@@ -397,6 +427,7 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 | Logitech | C270 | `lager webcam` |
 | Logitech | StreamCam | `lager webcam` |
 | IPEVO | V4K PRO（文档摄像头） | `lager webcam` |
+| ELP | Global Shutter AR0234 | `lager webcam` |
 
 **可以实现：**
 - 对被测设备做目视检查

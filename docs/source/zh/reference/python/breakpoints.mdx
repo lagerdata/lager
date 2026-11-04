@@ -34,9 +34,10 @@ pause("check the DUT before the final step")
 ```
 === lager breakpoint "check the DUT before the final step" at test.py:14  (id 7f3a…e9)
     resume: press Enter here, or `lager python --continue 7f3a…e9 --box mybox`
-    inspect: `lager python --console 7f3a…e9 --box mybox`
     auto-resume in 300s
 ```
+
+使用 `interactive=True` 时，横幅还会多出一行 `inspect:`，给出控制台命令。
 
 当 `pause()` 无法暂停时，它是一个安全的空操作 —— 即脚本不是在 `lager python`
 下运行（没有断点上下文），或者[断点被禁用](#禁用断点)时。它永远不会抛出异常。

@@ -57,7 +57,7 @@ if result.returncode != 0:
 | `text` | `bool` | `True` | 以字符串而不是字节返回 stdout/stderr |
 | `check` | `bool` | `False` | 返回码非零时抛出 `CalledProcessError` |
 | `cwd` | `str` | `None` | 该进程的工作目录 |
-| `env` | `dict` | `None` | 环境变量（为 None 时继承父进程） |
+| `env` | `dict` | `None` | 添加到继承的环境中，或覆盖其中同名项的变量 |
 | `input` | `str` 或 `bytes` | `None` | 发送到 stdin 的输入 |
 
 **返回：** `subprocess.CompletedProcess`，具有以下属性：
@@ -262,4 +262,4 @@ lager binaries remove my_tool --box my-lager-box
 - 程序必须可执行（上传时会自动设置）
 - 默认超时为 30 秒；用 `timeout=None` 表示不限时
 - 交互式或流式输出请使用 `capture_output=False`
-- 除非指定 `env`，否则环境变量继承自父进程
+- 进程总是继承父进程的环境；`env` 向其中添加变量或覆盖同名变量

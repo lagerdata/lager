@@ -49,7 +49,7 @@ stepper/
 
 | 键 | 说明 |
 |-----|-------------|
-| `type` | 2 到 32 个小写字母、数字、`-` 或 `_`。它将成为 Net 角色和 `lager <type>` 命令，不能使用内置角色或命令的名称 |
+| `type` | 2 到 32 个小写字母、数字、`-` 或 `_`，以字母开头。它将成为 Net 角色和 `lager <type>` 命令，不能使用内置角色或命令的名称 |
 | `version` | 自定义的版本字符串，由 `lager drivers list` 显示 |
 | `lager_api` | 驱动接口版本，使用 `1` |
 | `description` | 一行说明，显示在帮助中 |
@@ -58,7 +58,7 @@ stepper/
 | `params` | 与每个 Net 一起保存的设置，通过 `lager nets add-custom --param` 提供 |
 | `actions` | 驱动提供的操作及其 `args` |
 
-每个 param 和 arg 都有一个 `type`：`str`、`int`、`float`、`bool` 或 `choice`。param 还可以是 `net`，表示另一个指定 `role` 的已保存 Net；驱动通过该 Net 访问硬件。字段还可以带有 `required`、`default`、`min` 和 `max`（仅限数字）、`choices`（用于 `choice`）以及 `help`。名称由小写字母、数字和 `_` 组成；CLI 将 `hold_time` 显示为 `--hold-time`。
+每个 param 和 arg 都有一个 `type`：`str`、`int`、`float`、`bool` 或 `choice`。param 还可以是 `net`，表示另一个指定 `role` 的已保存 Net；驱动通过该 Net 访问硬件。字段还可以带有 `required`、`default`、`min` 和 `max`（仅限数字）、`choices`（用于 `choice`）以及 `help`。action、param 和 arg 的名称由 1 到 32 个小写字母、数字和 `_` 组成，并以字母开头。不允许使用 `-`；CLI 将 `hold_time` 显示为 `--hold-time`。以下 arg 名称已被 CLI 占用，因此保留：`box`、`json`、`as_json`、`help`、`netname`、`action`、`role`、`quiet`、`http_timeout`、`ctx`、`box_addr`、`params`。
 
 ## 驱动代码
 
@@ -165,6 +165,8 @@ with open_driver("RIG_1") as rig:
     rig.home()
     rig.jog(seconds=3)
 ```
+
+`open_driver()` 在脚本自身的进程中加载驱动。它在进入时运行 `setup()`，在退出时运行 `teardown()`。当该 Net 不是自定义 Net，或某个 `net` 类型的 param 指向不存在的 Net 或角色不符的 Net 时，它会引发 `ManifestError`。当驱动无法导入或没有该 action 时，它会引发 `DriverFailed`。`lager.drivers` 还导出 `DriverBusy`、`DriverTimeout` 和 `DriverUnavailable`，Box 的 HTTP API 用它们表示 Net 忙、超时以及驱动未安装。
 
 ## 安装和使用
 

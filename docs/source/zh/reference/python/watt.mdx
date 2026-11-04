@@ -94,6 +94,31 @@ print(f"Power: {measurements['power']}W")
 | `"voltage"` | `float` | 电压，单位伏特 |
 | `"power"` | `float` | 功率，单位瓦特 |
 
+### `duration` 参数
+
+`read()`、`read_current()`、`read_voltage()` 和 `read_all()` 接受 `duration`，即以秒为单位的平均窗口。默认值为 `0.1`。
+
+```python
+watts = power.read(duration=1.0)  # Average over one second
+```
+
+| 硬件 | 行为 |
+|----------|----------|
+| Yocto-Watt | 忽略 `duration`，返回仪器自身的平均值 |
+| Nordic PPK2 | 至少使用 0.3 秒 |
+| Joulescope JS220 | 超过 10 秒时，改用无间隙的 `read_average()` |
+
+### `read_average(duration)`
+
+**仅限 Joulescope JS220。** 返回长时间窗口内无间隙的平均电流、电压和功率。它使用仪器的电荷与能量累加器，因此不保存采样点，也不会丢失数据。
+
+```python
+avg = power.read_average(60.0)
+print(f"Average power over 60 s: {avg['power']}W")
+```
+
+**返回：** 包含 `current`、`voltage` 和 `power` 键的 `dict`
+
 ## 示例
 
 ### 基本的功率读取
@@ -251,7 +276,7 @@ else:
 - Joulescope JS220 在 0.1 秒内对测量取平均，以获得更高精度
 - Nordic PPK2 在 0.3 秒内取平均，并工作在源模式，提供 0.8–5V 的可配置电压。因此电压读数反映的是配置值，而不是独立测量的结果
 - `read_current()`、`read_voltage()` 和 `read_all()` 仅在 Joulescope JS220 和
-  Nordic PPK2 上可用；在 Yocto-Watt 上调用它们会抛出错误
+  Nordic PPK2 上可用；在 Yocto-Watt 上调用它们会引发 `UnsupportedInstrumentError`（一种 `RuntimeError`）
 - 在 Yocto-Watt 上获取电流：由功率和已知电压计算（I = P / V）
 - 多次读取并取平均可以提高稳定性
 - 设备状态改变之后，请留出稳定时间

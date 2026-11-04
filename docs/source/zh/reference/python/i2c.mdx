@@ -87,7 +87,7 @@ temp = (data[0] << 8) | data[1]
 | `address` | `int` | 7 位设备地址（`0x00`-`0x7F`） |
 | `num_bytes` | `int` | 要读取的字节数 |
 | `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
-| `overrides` | `dict` 或 `None` | 本次调用的配置覆盖（例如 `{"frequency_hz": 400000}`） |
+| `overrides` | `dict` 或 `None` | 配置覆盖（例如 `{"frequency_hz": 400000}`）。之后对该 Net 的调用也会沿用 |
 
 **返回：** `list[int]` - 收到的字节，以整数表示（当 `output_format="list"` 时）
 
@@ -103,7 +103,7 @@ i2c.write(address=0x48, data=[0x0A, 0x03])
 |-----------|------|-------------|
 | `address` | `int` | 7 位设备地址（`0x00`-`0x7F`） |
 | `data` | `list[int]` | 要写入的字节 |
-| `overrides` | `dict` 或 `None` | 本次调用的配置覆盖（例如 `{"frequency_hz": 400000}`） |
+| `overrides` | `dict` 或 `None` | 配置覆盖（例如 `{"frequency_hz": 400000}`）。之后对该 Net 的调用也会沿用 |
 
 ### `write_read(address, data, num_bytes, output_format, overrides)`
 
@@ -121,7 +121,7 @@ temperature = (temp_bytes[0] << 8) | temp_bytes[1]
 | `data` | `list[int]` | 读取之前要写入的字节（通常是一个寄存器地址） |
 | `num_bytes` | `int` | 写入之后要读取的字节数 |
 | `output_format` | `str` | `"list"`（默认）、`"hex"`、`"bytes"` 或 `"json"` |
-| `overrides` | `dict` 或 `None` | 本次调用的配置覆盖（例如 `{"frequency_hz": 400000}`） |
+| `overrides` | `dict` 或 `None` | 配置覆盖（例如 `{"frequency_hz": 400000}`）。之后对该 Net 的调用也会沿用 |
 
 **返回：** `list[int]` - 收到的字节，以整数表示（当 `output_format="list"` 时）
 
@@ -235,7 +235,12 @@ data = i2c.read(address=0x48, num_bytes=2)
 # One device needs fast mode for this transaction
 data = i2c.read(address=0x50, num_bytes=256,
                 overrides={"frequency_hz": 400_000})
+
+# The override stays in effect, so set the rate back for the next device
+i2c.config(frequency_hz=100_000)
 ```
+
+覆盖会在脚本的剩余部分改变该 Net 的驱动，而不仅仅是这一次调用。当下一次传输需要原来的值时，请用 `config()` 把它设回去。请参阅 [#848](https://github.com/lagerdata/lager/issues/848)。
 
 ## 受支持的硬件
 

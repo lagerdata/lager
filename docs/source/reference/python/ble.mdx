@@ -44,7 +44,7 @@ central = Central()
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `loop` | `asyncio.EventLoop` | Event loop (optional, uses default) |
+| `loop` | `asyncio.EventLoop` | Event loop (optional). Without one, `Central` creates its own with `asyncio.new_event_loop()` |
 
 ### `scan(scan_time=5.0, name=None, address=None)`
 
@@ -81,7 +81,7 @@ Connect to a BLE device by address.
 
 ```python
 central = Central()
-client = central.connect("AA:BB:CC:DD:EE:FF")
+ok = central.connect("AA:BB:CC:DD:EE:FF")
 ```
 
 **Parameters:**
@@ -90,7 +90,13 @@ client = central.connect("AA:BB:CC:DD:EE:FF")
 |-----------|------|-------------|
 | `address` | `str` | MAC address of the device |
 
-**Returns:** `Client` - Connected BLE client
+**Returns:** `bool` - The result of Bleak's `connect()`
+
+<Warning>
+`connect()` and `pair()` do not return a `Client`. The client they create is not kept, so
+the script cannot use or close that connection. To work with a device, create the client
+yourself on the central's loop, as in [Creating a Client](#creating-a-client). See [#847](https://github.com/lagerdata/lager/issues/847).
+</Warning>
 
 ### `pair(address)`
 
@@ -98,7 +104,7 @@ Pair with a BLE device.
 
 ```python
 central = Central()
-client = central.pair("AA:BB:CC:DD:EE:FF")
+ok = central.pair("AA:BB:CC:DD:EE:FF")  # Returns a bool, not a Client
 ```
 
 ## Client Class
@@ -112,12 +118,14 @@ from lager.ble import Client, Central
 from bleak import BleakClient
 import asyncio
 
-# Method 1: Using Central
+# Method 1: On a Central's loop, after a scan
 central = Central()
-client = central.connect("AA:BB:CC:DD:EE:FF")
+with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=central.loop) as client:
+    # Use client
+    pass
 
-# Method 2: Direct creation with context manager
-loop = asyncio.get_event_loop()
+# Method 2: On a loop of your own
+loop = asyncio.new_event_loop()
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Use client
     pass
@@ -226,7 +234,7 @@ Subscribe to characteristic notifications.
 from lager.ble import noop_handler
 
 # Simple notification subscription
-def my_callback(handle, data):
+def my_callback(characteristic, data):
     print(f"Received: {data.hex()}")
 
 timed_out, messages = client.start_notify(
@@ -248,7 +256,7 @@ else:
 |-----------|------|-------------|
 | `char_specifier` | `str` or `int` | Characteristic UUID or handle |
 | `callback` | `callable` | Function called for each notification |
-| `max_messages` | `int` | Stop after receiving this many messages |
+| `max_messages` | `int` | Stop after this many messages. The call returns when one more notification arrives, and that one is not kept, so exactly `max_messages` notifications end in a timeout ([#847](https://github.com/lagerdata/lager/issues/847)) |
 | `timeout` | `float` | Timeout in seconds |
 
 **Returns:** `tuple[bool, list]` - (timed_out, messages) where timed_out is True if timeout occurred
@@ -323,7 +331,7 @@ import asyncio
 BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
 BATTERY_LEVEL = "00002a19-0000-1000-8000-00805f9b34fb"
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Check if battery service exists
@@ -341,10 +349,10 @@ import asyncio
 
 NOTIFY_UUID = "your-characteristic-uuid"
 
-def handle_notification(handle, data):
+def handle_notification(characteristic, data):
     print(f"Notification from {handle}: {data.hex()}")
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Subscribe and wait for 10 messages or 30 seconds
@@ -377,7 +385,7 @@ import asyncio
 WRITE_UUID = "write-characteristic-uuid"
 READ_UUID = "read-characteristic-uuid"
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Send command
@@ -405,7 +413,7 @@ FIRMWARE_REVISION = "00002a26-0000-1000-8000-00805f9b34fb"
 MANUFACTURER_NAME = "00002a29-0000-1000-8000-00805f9b34fb"
 
 def check_device_info(address):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
 
     with Client(BleakClient(address), loop=loop) as client:
         # Read manufacturer
@@ -437,7 +445,7 @@ TEST_CHAR = "test-characteristic-uuid"
 
 def ble_production_test():
     central = Central()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
 
     # Step 1: Scan for DUT
     print("Scanning for DUT...")
@@ -495,7 +503,7 @@ The BLE module uses [Bleak](https://bleak.readthedocs.io/) as the underlying BLE
 
 - BLE operations are synchronous wrappers around async Bleak operations
 - The Client class supports context manager (`with` statement) for automatic cleanup
-- Notification callbacks receive `(handle, data)` parameters
+- Notification callbacks receive `(characteristic, data)`: a `BleakGATTCharacteristic` and a `bytearray`
 - Use `max_messages` and `timeout` together to control notification collection
 - MAC addresses are typically in format `AA:BB:CC:DD:EE:FF`
 - Some BLE operations require pairing before they work

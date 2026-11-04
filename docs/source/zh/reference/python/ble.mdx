@@ -44,7 +44,7 @@ central = Central()
 
 | 参数 | 类型 | 说明 |
 |-----------|------|-------------|
-| `loop` | `asyncio.EventLoop` | 事件循环（可选，默认使用默认循环） |
+| `loop` | `asyncio.EventLoop` | 事件循环（可选）。不传时，`Central` 会用 `asyncio.new_event_loop()` 创建自己的循环 |
 
 ### `scan(scan_time=5.0, name=None, address=None)`
 
@@ -81,7 +81,7 @@ devices = central.scan(address="AA:BB:CC:DD:EE:FF")
 
 ```python
 central = Central()
-client = central.connect("AA:BB:CC:DD:EE:FF")
+ok = central.connect("AA:BB:CC:DD:EE:FF")
 ```
 
 **参数：**
@@ -90,7 +90,11 @@ client = central.connect("AA:BB:CC:DD:EE:FF")
 |-----------|------|-------------|
 | `address` | `str` | 该设备的 MAC 地址 |
 
-**返回：** `Client` - 已连接的 BLE 客户端
+**返回：** `bool` - Bleak 的 `connect()` 的结果
+
+<Warning>
+`connect()` 和 `pair()` 不返回 `Client`。它们创建的客户端不会被保留，因此脚本无法使用或关闭该连接。若要操作设备，请在 central 的循环上自行创建客户端，如[创建 Client](#创建-client)所示。请参阅 [#847](https://github.com/lagerdata/lager/issues/847)。
+</Warning>
 
 ### `pair(address)`
 
@@ -98,7 +102,7 @@ client = central.connect("AA:BB:CC:DD:EE:FF")
 
 ```python
 central = Central()
-client = central.pair("AA:BB:CC:DD:EE:FF")
+ok = central.pair("AA:BB:CC:DD:EE:FF")  # Returns a bool, not a Client
 ```
 
 ## Client 类
@@ -112,12 +116,14 @@ from lager.ble import Client, Central
 from bleak import BleakClient
 import asyncio
 
-# Method 1: Using Central
+# Method 1: On a Central's loop, after a scan
 central = Central()
-client = central.connect("AA:BB:CC:DD:EE:FF")
+with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=central.loop) as client:
+    # Use client
+    pass
 
-# Method 2: Direct creation with context manager
-loop = asyncio.get_event_loop()
+# Method 2: On a loop of your own
+loop = asyncio.new_event_loop()
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Use client
     pass
@@ -226,7 +232,7 @@ client.write_gatt_char("characteristic-uuid", "hello".encode('utf-8'))
 from lager.ble import noop_handler
 
 # Simple notification subscription
-def my_callback(handle, data):
+def my_callback(characteristic, data):
     print(f"Received: {data.hex()}")
 
 timed_out, messages = client.start_notify(
@@ -248,7 +254,7 @@ else:
 |-----------|------|-------------|
 | `char_specifier` | `str` 或 `int` | 特征 UUID 或句柄 |
 | `callback` | `callable` | 每收到一条通知就调用的函数 |
-| `max_messages` | `int` | 收到这么多条消息之后停止 |
+| `max_messages` | `int` | 收到这么多条消息之后停止。调用要等再到达一条通知才返回，且这一条不会保留，因此恰好收到 `max_messages` 条通知时会以超时结束（[#847](https://github.com/lagerdata/lager/issues/847)） |
 | `timeout` | `float` | 超时时间，单位秒 |
 
 **返回：** `tuple[bool, list]` - (timed_out, messages)，其中 timed_out 在超时时为 True
@@ -323,7 +329,7 @@ import asyncio
 BATTERY_SERVICE = "0000180f-0000-1000-8000-00805f9b34fb"
 BATTERY_LEVEL = "00002a19-0000-1000-8000-00805f9b34fb"
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Check if battery service exists
@@ -341,10 +347,10 @@ import asyncio
 
 NOTIFY_UUID = "your-characteristic-uuid"
 
-def handle_notification(handle, data):
+def handle_notification(characteristic, data):
     print(f"Notification from {handle}: {data.hex()}")
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Subscribe and wait for 10 messages or 30 seconds
@@ -377,7 +383,7 @@ import asyncio
 WRITE_UUID = "write-characteristic-uuid"
 READ_UUID = "read-characteristic-uuid"
 
-loop = asyncio.get_event_loop()
+loop = asyncio.new_event_loop()
 
 with Client(BleakClient("AA:BB:CC:DD:EE:FF"), loop=loop) as client:
     # Send command
@@ -405,7 +411,7 @@ FIRMWARE_REVISION = "00002a26-0000-1000-8000-00805f9b34fb"
 MANUFACTURER_NAME = "00002a29-0000-1000-8000-00805f9b34fb"
 
 def check_device_info(address):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
 
     with Client(BleakClient(address), loop=loop) as client:
         # Read manufacturer
@@ -437,7 +443,7 @@ TEST_CHAR = "test-characteristic-uuid"
 
 def ble_production_test():
     central = Central()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
 
     # Step 1: Scan for DUT
     print("Scanning for DUT...")
@@ -495,7 +501,7 @@ BLE 模块底层使用 [Bleak](https://bleak.readthedocs.io/) 作为 BLE 库，�
 
 - BLE 操作是对 Bleak 异步操作的同步封装
 - Client 类支持上下文管理器（`with` 语句），可自动清理
-- 通知回调函数接收 `(handle, data)` 参数
+- 通知回调函数接收 `(characteristic, data)`：一个 `BleakGATTCharacteristic` 和一个 `bytearray`
 - 请把 `max_messages` 和 `timeout` 配合使用，以控制通知的收集
 - MAC 地址的常见格式为 `AA:BB:CC:DD:EE:FF`
 - 有些 BLE 操作必须先完成配对才能工作

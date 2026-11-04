@@ -85,8 +85,13 @@ response = ser.readline()
 | `parity` | `str` | 校验位：`'none'`、`'even'`、`'odd'`、`'mark'` 或 `'space'`，或 pyserial 的 `'N'`、`'E'`、`'O'`、`'M'` 或 `'S'` |
 | `stopbits` | `float` | 停止位（1、1.5 或 2） |
 | `timeout` | `float` | 读取超时，单位为秒（默认 0.1）。`None` 表示一直等到有数据到达。 |
+| `xonxoff` | `bool` | 软件流控（默认 `False`） |
+| `rtscts` | `bool` | RTS/CTS 硬件流控（默认 `False`） |
+| `dsrdtr` | `bool` | DSR/DTR 硬件流控（默认 `False`） |
 
 **返回：** `serial.Serial` - 已连接的 pyserial 对象
+
+**异常：** UART 设备未连接时抛出 `FileNotFoundError`。不是参数的键会被静默忽略，不报错，因此请检查每个键的拼写。
 
 <Note>
 对于不在上表中的 `parity` 值，`connect()` 会抛出 `ValueError`。

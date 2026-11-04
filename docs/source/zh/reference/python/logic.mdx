@@ -1,6 +1,6 @@
 ---
 title: 逻辑分析仪（预览）
-description: 数字信号采集与协议解码
+description: 数字信号采集与触发
 ---
 
 用混合信号示波器的逻辑分析仪功能采集并分析数字信号。
@@ -159,6 +159,8 @@ logic.trigger_settings.set_mode_normal()
 | `edge.set_slope_falling()` | 在下降沿触发 |
 | `edge.set_slope_both()` | 在任一边沿触发 |
 | `edge.get_slope()` | 获取当前的边沿设置 |
+| `edge.set_level(level)` | 设置触发电平，单位伏特 |
+| `edge.get_level()` | 获取触发电平，单位伏特；不可读时为 `None` |
 
 ### 脉冲触发
 
@@ -228,6 +230,21 @@ clk.trigger_settings.spi.set_trigger_data(bits=8, data=0xAA)
 clk.trigger_settings.spi.set_trigger_on_cs_low()
 ```
 
+**SPI 触发方法：**
+
+| 方法 | 说明 |
+|--------|-------------|
+| `spi.set_source(net_sck, net_mosi_miso, net_cs)` | 设置时钟、数据和片选 Net（关键字参数） |
+| `spi.set_clk_edge_positive()` / `spi.set_clk_edge_negative()` | 在时钟上升沿或下降沿采样数据 |
+| `spi.get_clk_edge_slope()` | 获取时钟边沿设置 |
+| `spi.set_trigger_on_cs_low()` / `spi.set_trigger_on_cs_high()` | 在片选为低或高时触发 |
+| `spi.set_trigger_on_timeout(timeout)` | 时钟空闲 `timeout` 秒后触发 |
+| `spi.get_trigger_timeout()` | 获取空闲超时 |
+| `spi.set_trigger_data(bits, data)` | 按数据值触发（关键字参数） |
+| `spi.set_sck_trigger_level(level)` / `spi.get_sck_trigger_level()` | 时钟阈值，单位伏特 |
+| `spi.set_mosi_miso_trigger_level(level)` / `spi.get_mosi_miso_trigger_level()` | 数据阈值，单位伏特 |
+| `spi.set_cs_trigger_level(level)` / `spi.get_cs_trigger_level()` | 片选阈值，单位伏特 |
+
 #### CAN 触发
 
 ```python
@@ -245,21 +262,12 @@ can.trigger_settings.can.set_trigger_on_error_frame()
 
 ### 有效取值范围
 
-超出这些范围的值会抛出 `ValueError`，错误信息中会指明有效范围。
+这些范围适用于 SPI 触发，它是 MSO5000 唯一接受的协议触发。超出这些范围的值会抛出 `ValueError`，错误信息中会指明有效范围。
 
 | 方法 | 参数 | 有效值 |
 |--------|-----------|--------------|
-| `uart.set_uart_params()` | `bits` | 5 至 8 |
-| `uart.set_trigger_on_data()` | `data` | 0 至 2^bits − 1 |
-| `i2c.set_trigger_on_address()` | `bits` | 7、8 或 10 |
-| `i2c.set_trigger_on_address()` | `address` | 最大 127（7 位）、255（8 位）或 1023（10 位） |
-| `i2c.set_trigger_on_data()` | `width` | 1 至 5 字节 |
-| `i2c.set_trigger_on_data()` | `data` | 0 至 2^(8 × width) − 1 |
 | `spi.set_trigger_data()` | `bits` | 4 至 32 |
 | `spi.set_trigger_data()` | `data` | 0 至 2^bits − 1 |
-| `BusUART.set_data_bits()` | `bits` | 5 至 9 |
-| `BusUART.set_stop_bits()` | `bits` | 1、1.5 或 2 |
-| `BusSPI.set_data_width()` | `bits` | 4 至 32 |
 
 ## 测量
 
@@ -439,13 +447,13 @@ uart_tx.disable()
 
 | 厂商 | 型号 | 特性 |
 |--------------|-------|----------|
-| Rigol | MSO5000 系列 | 16 个数字通道，协议解码 |
+| Rigol | MSO5000 系列 | 16 个数字通道，边沿与 SPI 触发 |
 
 ## 说明
 
 - 逻辑通道编号为 D0-D15
 - 通道 D0-D7 共用一个阈值电压，D8-D15 共用另一个
-- 协议解码需要启用总线分析模式
+- 总线解码器会被拒绝；创建一个会引发 `UnsupportedScopeFeature`
 - 数字通道请用 `NetType.Logic`，模拟通道请用 `NetType.Analog`
-- 总线解码器可以同时以 Logic Net 和 Analog Net 作为信号源
+- 只有边沿触发和 SPI 触发可用；其他触发会引发 `UnsupportedScopeFeature`
 - 触发可以使用模拟通道和数字通道的任意组合

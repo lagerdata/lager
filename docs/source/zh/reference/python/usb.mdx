@@ -15,7 +15,8 @@ from lager import (
     USBBackendError,
     LibraryMissingError,
     DeviceNotFoundError,
-    PortStateError
+    PortStateError,
+    HubOperationTimeout,
 )
 ```
 
@@ -38,7 +39,8 @@ from lager import (
 | `USBBackendError` | USB 集线器错误的基类 |
 | `LibraryMissingError` | 未安装所需的厂商 SDK |
 | `DeviceNotFoundError` | 找不到 USB 集线器 |
-| `PortStateError` | 改变端口状态时出错 |
+| `PortStateError` | 改变端口状态时出错。端口没有切换时，YKUSH 会引发它 |
+| `HubOperationTimeout` | 集线器操作阻塞超过期限而被放弃。它是 `USBBackendError` 的子类 |
 
 ## 方法参考
 
@@ -155,6 +157,8 @@ from lager import Net, NetType
 
 Net.get('DUT_USB', type=NetType.Usb).recover()
 ```
+
+**返回：** 在 Plugable 扩展坞上，返回重新上电的端口列表。在其他集线器上返回 `None`。
 
 ## 示例
 
@@ -313,8 +317,9 @@ for i in range(5):
 
 | 硬件 | 功能 |
 |----------|----------|
-| Acroname BrainStem USB 集线器 | 逐端口供电控制、电流监测 |
+| Acroname BrainStem USB 集线器 | 逐端口供电控制 |
 | YKUSH USB 集线器 | 逐端口供电切换 |
+| YKUSH3 USB 集线器 | 逐端口供电切换；它的三个 GPIO 引脚是单独的 `gpio` Net |
 | Plugable RTS5411 扩展坞 | 在 4 个外部 Type-A 插座上逐端口切换供电 |
 
 ### 后端类

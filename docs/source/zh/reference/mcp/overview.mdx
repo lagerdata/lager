@@ -112,7 +112,7 @@ lager box-config mcp-token enable --box <BOX>
 | `plan_firmware_test(firmware_description, test_goals)` | 生成分阶段的测试计划，限定到相关的 Net，并附上 DUT 上下文和文档引用。 |
 | `assess_suitability(test_type)` | 检查这个实验台能否运行某一类测试。 |
 | `get_test_example(query)` | 按 Net 类型、模式或关键字查找示例。每个匹配项都带有其 Net 类型的精选代码片段，以及指向 lager 仓库中完整脚本的链接；这些脚本并不在 Box 上。 |
-| `box_manage(action)` | `health` 健康检查，或从磁盘 `reload` 实验台配置。 |
+| `box_manage(action?)` | `health` 健康检查（默认），或从磁盘 `reload` 实验台配置。 |
 
 每个工具的回复都带有 `box_id`，下面受开关控制的工具也不例外，因此通过一个会话与多台 Box 对话的客户端可以区分它们。
 
@@ -148,8 +148,8 @@ Box 的 MCP 服务器在启动时会注册额外的工具。每一个都会扩�
 
 | 工具 | 用途 |
 |------|---------|
-| `box_exec(command, timeout_s, cwd)` | 在 Box 上运行任意 shell 命令并捕获结果。 |
-| `read_file(path, max_bytes)` | 读取 Box 上的文件（配置、源码、日志）。 |
+| `box_exec(command, timeout_s?, cwd?)` | 在 Box 上运行任意 shell 命令并捕获结果。`timeout_s` 默认为 60。 |
+| `read_file(path, max_bytes?)` | 读取 Box 上的文件（配置、源码、日志）。 |
 | `write_file(path, content)` | 原子地写入文件，并备份此前的版本。 |
 | `list_dir(path)` | 列出 Box 上某个目录中的条目。 |
 

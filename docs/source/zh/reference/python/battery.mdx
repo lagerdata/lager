@@ -13,7 +13,11 @@ from lager import Net, NetType
 
 ## 方法
 
-基于 Net 的 API 提供的方法既能读取也能设置。不带值参数调用时，方法读取并打印当前值；带值调用时，则设置该值。
+基于 Net 的 API 提供的方法既能读取也能设置。带值调用时，方法设置该值。不带值调用时，方法打印当前值并返回 `None`。
+
+<Warning>
+`soc()`、`voc()`、`mode()`、`capacity()`、`current_limit()`、`ovp()`、`ocp()` 或 `model()` 这类读取方法在 Box 的硬件服务中运行。数值写入 Box 上的 `/tmp/lager-hardware-service.log`，而不是您的脚本，并且调用返回 `None`。`print_state()` 和容量钳位警告也写入同一个日志。若要在脚本中读取数值，请使用 [`get_monitor_state()`](#get_monitor_state)、`terminal_voltage()`、`current()` 或 `esr()`。请参阅 [#845](https://github.com/lagerdata/lager/issues/845)。
+</Warning>
 
 | 方法 | 说明 |
 |--------|-------------|
@@ -36,10 +40,13 @@ from lager import Net, NetType
 | `disable()` | 禁用电池仿真输出 |
 | `clear_ovp()` | 清除过压保护故障 |
 | `clear_ocp()` | 清除过流保护故障 |
-| `print_state()` | 打印完整的电池状态 |
+| `print_state()` | 把电池状态打印到 Box 的硬件服务日志；返回 `None` |
+| `get_monitor_state()` | 读取完整的电池状态；返回一个 dict |
 | `terminal_voltage()` | 读取端电压（返回 float） |
 | `current()` | 读取电流（返回 float） |
-| `esr()` | 读取 ESR（返回 float） |
+| `esr(value=None)` | 读取 ESR（返回 float），或设置串联电阻偏移 |
+| `set_esr(value)` | 设置串联电阻偏移（-100 到 +100 欧姆） |
+| `current_model()` | 读取当前电池模型的名称（返回 str） |
 
 ## 方法参考
 
@@ -165,7 +172,7 @@ batt.voltage_empty()
 
 ### `capacity(value=None)`
 
-设置或读取电池容量。必须大于 0。仪器可能把该值钳位到它支持的范围内。实际应用的值与请求值不同时，它会给出警告。
+设置或读取电池容量。必须大于 0。仪器可能把该值钳位到它支持的范围内。实际应用的值与请求值不同时，它会向硬件服务日志写入一条警告。
 
 ```python
 # Set capacity
@@ -285,7 +292,7 @@ batt.clear_ocp()  # Clear over-current fault
 
 ### `print_state()`
 
-打印电池仿真器的完整状态。
+打印电池仿真器的完整状态。文本写入 Box 的硬件服务日志，而不是您的脚本，并且调用返回 `None`。
 
 ```python
 batt.print_state()
@@ -305,6 +312,43 @@ print(f"Voltage: {v}V, Current: {i}A, ESR: {r} ohms")
 ```
 
 **返回：** `float` - 测量值
+
+### `esr(value)` / `set_esr(value)`
+
+设置串联电阻偏移。Keithley 2281S 没有设置绝对电阻的命令。该偏移的范围是 -100 到 +100 欧姆，会串联叠加在当前模型的电阻之上。不带值的 `esr()` 读取叠加后的总值。
+
+```python
+batt.set_esr(0.4)   # Add 400 mOhm in series
+print(batt.esr())   # The model resistance plus the offset
+```
+
+超出 -100 到 +100 欧姆的值会引发错误。
+
+### `current_model()`
+
+返回当前电池模型的名称。
+
+```python
+print(batt.current_model())
+```
+
+### `get_monitor_state()`
+
+一次调用读取完整的电池状态，并以 dict 返回。这是在脚本中读取状态的方法。
+
+```python
+state = batt.get_monitor_state()
+print(state['soc'], state['terminal_voltage'], state['ovp_tripped'])
+```
+
+| 键 | 说明 |
+|-----|-------------|
+| `terminal_voltage`、`current`、`soc`、`voc` | 实时读数；读取失败时为 `None` |
+| `esr` | 内阻（欧姆） |
+| `enabled`、`mode`、`model` | 输出状态、仿真模式、当前模型 |
+| `capacity`、`current_limit` | 已配置的值 |
+| `volt_full`、`volt_empty` | 满电和空电电压 |
+| `ocp_limit`、`ovp_limit`、`ocp_tripped`、`ovp_tripped` | 保护限值与触发状态 |
 
 ## 示例
 
@@ -327,7 +371,7 @@ batt.capacity(2.5)
 batt.enable()
 
 # Read state
-batt.print_state()
+print(batt.get_monitor_state())
 print(f"Terminal voltage: {batt.terminal_voltage()}V")
 
 # Disable when done
@@ -406,7 +450,7 @@ batt.disable()
 - 参数固定时请用 `mode('static')`，需要行为随时间演变时请用 `mode('dynamic')`
 - 结束时请务必调用 `disable()`
 - `terminal_voltage()`、`current()` 和 `esr()` 返回数值（供代码使用）
-- `print_state()` 打印数值（用于调试）
+- `print_state()` 和读取方法打印到 Box 的硬件服务日志；在代码中请使用 `get_monitor_state()`
 - 保护阈值有助于避免损坏您的被测设备
 - Keithley 2281S 的限制：输出 0-20 V，电流 0.001-6.0 A，容量必须大于 0
 - OVP 范围：0-60 V；OCP 范围：0.001-6.0 A

@@ -322,9 +322,10 @@ it by `lager nets set-capture`. Until one is paired, `stream_start()`,
 A DS1000Z streams its screen record and needs no pairing. `capture()` reads the
 scope's own record and needs no live view.
 
-### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
+### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling, channels)`
 
-Start streaming acquisition.
+Start streaming acquisition. Every parameter is optional. Only the settings you give are
+applied, so a later call with a new trigger level keeps the coupling set earlier.
 
 **Parameters:**
 - `channel` (str): Channel to enable - `"A"`, `"B"`, `"1"`, `"2"`
@@ -334,6 +335,7 @@ Start streaming acquisition.
 - `trigger_slope` (str): `"rising"`, `"falling"`, `"either"`
 - `capture_mode` (str): `"auto"`, `"normal"`, `"single"`
 - `coupling` (str): `"dc"`, `"ac"`
+- `channels` (list): Several channels for a multi-channel capture. With `channel` as well, both are enabled. With neither, the net's own channel is used
 
 <Note>
 `"gnd"` is accepted by the API but refused by 2000-series units, which have no
@@ -361,7 +363,7 @@ Stop streaming acquisition.
 scope.stream_stop()
 ```
 
-### `stream_capture(output, duration, samples)`
+### `stream_capture(output=None, duration=1.0, samples=None, timeout=None)`
 
 Capture for `duration` seconds, writing a CSV.
 
@@ -369,6 +371,7 @@ Capture for `duration` seconds, writing a CSV.
 - `output` (str): Output file path. Omit it to count samples without writing a file
 - `duration` (float): Capture duration in seconds
 - `samples` (int): Cap on rows per channel (optional). A cap, not a target: the capture still stops at `duration`
+- `timeout` (float): Seconds to wait for a capture before giving up (optional). Defaults to `duration`
 
 Returns a summary rather than the samples themselves — `captures`,
 `samples_per_channel`, `rows` and `output`. The CSV columns are `capture`,
@@ -504,7 +507,7 @@ Time/div is one tenth of the capture, as on a ten-division screen, so
 for. A scope samples at a fixed ladder of intervals, each twice the last. The
 box rounds a request to the closest one: 1 ms/div on a 2204A is really
 1.024 ms/div. Read it back if you need the exact window. Better still, use
-`get_sample_rate()` and the frame's own time axis, not arithmetic on the value
+`get_sample_rate()` (PicoScope only) and the frame's own time axis, not arithmetic on the value
 you set.
 
 The fastest screen a unit can reach depends on the block depth and the maximum
@@ -585,6 +588,10 @@ readings["trace_delta_v"]   # the trace's voltage change between them
 
 The box holds the pair. Cursors placed from a script, the terminal CLI or the
 web UI's console are the same two markers, and the web UI draws them.
+
+`set_cursors()`, `measure_cursors()`, `get_sample_rate()` and `capabilities()` are
+PicoScope-only in Python. On a Rigol net they fail with "Function not found". On a Rigol,
+use `lager scope <net> cursor time` to read cursors over the captured samples. See [#849](https://github.com/lagerdata/lager/issues/849).
 </Note>
 
 ```python

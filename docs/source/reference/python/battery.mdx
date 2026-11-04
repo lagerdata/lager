@@ -13,7 +13,11 @@ from lager import Net, NetType
 
 ## Methods
 
-The Net-based API provides methods that can either get or set values. When called without a value parameter, methods read and print the current value. When called with a value, they set it.
+The Net-based API provides methods that can either get or set values. When called with a value, they set it. When called without a value, they print the current value and return `None`.
+
+<Warning>
+A getter such as `soc()`, `voc()`, `mode()`, `capacity()`, `current_limit()`, `ovp()`, `ocp()` or `model()` runs in the box's hardware service. The value goes to `/tmp/lager-hardware-service.log` on the box, not to your script, and the call returns `None`. `print_state()` and the capacity clamp warning go to the same log. To read values in a script, use [`get_monitor_state()`](#get_monitor_state), `terminal_voltage()`, `current()` or `esr()`. See [#845](https://github.com/lagerdata/lager/issues/845).
+</Warning>
 
 | Method | Description |
 |--------|-------------|
@@ -36,10 +40,13 @@ The Net-based API provides methods that can either get or set values. When calle
 | `disable()` | Disable battery simulation output |
 | `clear_ovp()` | Clear over-voltage protection fault |
 | `clear_ocp()` | Clear over-current protection fault |
-| `print_state()` | Print comprehensive battery state |
+| `print_state()` | Print the battery state to the box's hardware-service log; returns `None` |
+| `get_monitor_state()` | Read the full battery state; returns a dict |
 | `terminal_voltage()` | Read terminal voltage (returns float) |
 | `current()` | Read current (returns float) |
-| `esr()` | Read ESR (returns float) |
+| `esr(value=None)` | Read ESR (returns float), or set the series-resistance offset |
+| `set_esr(value)` | Set the series-resistance offset (-100 to +100 ohms) |
+| `current_model()` | Read the name of the active battery model (returns str) |
 
 ## Method Reference
 
@@ -166,8 +173,8 @@ batt.voltage_empty()
 ### `capacity(value=None)`
 
 Set or read the battery capacity. Must be greater than 0. The instrument can clamp
-the value to its supported range. It prints a warning when the applied value
-differs from the requested value.
+the value to its supported range. It prints a warning to the hardware-service log when
+the applied value differs from the requested value.
 
 ```python
 # Set capacity
@@ -302,7 +309,7 @@ batt.clear_ocp()  # Clear over-current fault
 
 ### `print_state()`
 
-Print comprehensive battery simulator state.
+Print comprehensive battery simulator state. The text goes to the box's hardware-service log, not to your script, and the call returns `None`.
 
 ```python
 batt.print_state()
@@ -322,6 +329,46 @@ print(f"Voltage: {v}V, Current: {i}A, ESR: {r} ohms")
 ```
 
 **Returns:** `float` - Measurement value
+
+### `esr(value)` / `set_esr(value)`
+
+Set the series-resistance offset. The Keithley 2281S has no command for an absolute
+resistance. The offset, from -100 to +100 ohms, is added in series on top of the active
+model's resistance. `esr()` with no value reads the resulting total.
+
+```python
+batt.set_esr(0.4)   # Add 400 mOhm in series
+print(batt.esr())   # The model resistance plus the offset
+```
+
+A value outside -100 to +100 ohms raises an error.
+
+### `current_model()`
+
+Return the name of the active battery model.
+
+```python
+print(batt.current_model())
+```
+
+### `get_monitor_state()`
+
+Read the full battery state in one call, and return it as a dict. This is the way to read
+the state in a script.
+
+```python
+state = batt.get_monitor_state()
+print(state['soc'], state['terminal_voltage'], state['ovp_tripped'])
+```
+
+| Key | Description |
+|-----|-------------|
+| `terminal_voltage`, `current`, `soc`, `voc` | Live readings, or `None` when a read fails |
+| `esr` | Internal resistance (ohms) |
+| `enabled`, `mode`, `model` | Output state, simulation mode, active model |
+| `capacity`, `current_limit` | Configured values |
+| `volt_full`, `volt_empty` | Full and empty voltages |
+| `ocp_limit`, `ovp_limit`, `ocp_tripped`, `ovp_tripped` | Protection limits and trip state |
 
 ## Examples
 
@@ -344,7 +391,7 @@ batt.capacity(2.5)
 batt.enable()
 
 # Read state
-batt.print_state()
+print(batt.get_monitor_state())
 print(f"Terminal voltage: {batt.terminal_voltage()}V")
 
 # Disable when done
@@ -423,7 +470,7 @@ batt.disable()
 - Use `mode('static')` for fixed parameters, `mode('dynamic')` for evolving behavior
 - Always call `disable()` when finished
 - `terminal_voltage()`, `current()`, and `esr()` return values (for use in code)
-- `print_state()` prints values (for debugging)
+- `print_state()` and the getters print to the box's hardware-service log; use `get_monitor_state()` in code
 - Protection thresholds help prevent damage to your DUT
 - Keithley 2281S limits: 0-20 V output, 0.001-6.0 A current, capacity must be > 0
 - OVP range: 0-60 V; OCP range: 0.001-6.0 A

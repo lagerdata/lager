@@ -52,6 +52,7 @@ pub struct EloadState {
     pub voltage_setting: Option<f64>,      // V, in CV mode
     pub resistance_setting: Option<f64>,   // ohms, in CR mode
     pub power_setting: Option<f64>,        // W, in constant-power mode
+    pub extra: Map<String, Value>,         // any other field the box sends
 }
 ```
 

@@ -1,0 +1,138 @@
+---
+title: HSM
+description: Use a YubiHSM 2 from a Lager Python script
+---
+
+Use a Yubico YubiHSM 2 on the Lager Box to generate keys, import keys and sign data. The
+private keys stay in the HSM.
+
+## Import
+
+```python
+from lager import Net, NetType
+```
+
+## Methods
+
+| Method | Login | Description |
+|--------|-------|-------------|
+| `info()` | No | Read firmware, serial, log use and the supported algorithms |
+| `echo(data)` | No | Send bytes and read them back |
+| `blink(seconds=5)` | Yes | Blink the HSM's LED |
+| `list_objects(type=None, label=None)` | Yes | List the stored objects |
+| `get_object_info(object_id, object_type='asymmetric-key')` | Yes | Read one object's details |
+| `delete_object(object_id, object_type='asymmetric-key')` | Yes | Delete one object |
+| `generate_key(object_id, algorithm, label='', domains=(1,), capabilities=None)` | Yes | Generate an asymmetric key in the HSM |
+| `import_key(object_id, private_key_pem, label='', domains=(1,), capabilities=None)` | Yes | Import a private key |
+| `get_public_key(object_id)` | Yes | Read a key's public half as PEM |
+| `sign(object_id, data, mechanism)` | Yes | Sign data with a stored key |
+| `reset()` | Yes | Factory-reset the HSM |
+| `session()` | Yes | Context manager that yields a logged-in `yubihsm` session |
+
+Every method marked **Yes** takes two keyword-only arguments: `auth_key_id=1` and
+`password`. The password is required. The driver does not store it, and it is never put in
+an exception message.
+
+## Method Reference
+
+### `Net.get(name, type=NetType.Hsm)`
+
+Get an HSM net by name.
+
+```python
+from lager import Net, NetType
+
+hsm = Net.get('HSM1', type=NetType.Hsm)
+```
+
+**Returns:** `YubiHsm2`
+
+Each call opens the device, runs one operation and closes the device again. The driver does
+not hold the USB device between calls.
+
+### `info()`
+
+```python
+print(hsm.info())
+```
+
+**Returns:** `dict` with `firmware`, `serial`, `log_used`, `log_size`, `part_number` and
+`algorithms`
+
+### `generate_key(object_id, algorithm, label='', domains=(1,), capabilities=None, *, auth_key_id=1, password)`
+
+Generate an asymmetric key in the HSM.
+
+```python
+import os
+
+password = os.environ['HSM_PASSWORD']
+key = hsm.generate_key(0x0101, 'ec-p256', label='device-key', password=password)
+print(key['id'], key['public_key_pem'])
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `object_id` | `int` | 0 to 65535. `0` lets the HSM choose an ID |
+| `algorithm` | `str` | `ec-p256`, `ec-p384`, `ec-p521`, `ec-k256`, `ed25519`, `rsa2048`, `rsa3072` or `rsa4096` |
+| `label` | `str` | Object label |
+| `domains` | `sequence[int]` | Domains the key belongs to |
+| `capabilities` | `sequence[str]` | Capabilities of the key. The default is the signing capability for the algorithm |
+
+**Returns:** `dict` with `id` and `public_key_pem`
+
+RSA key generation can take several minutes. The call waits up to 300 seconds for an RSA key.
+
+### `sign(object_id, data, mechanism, *, auth_key_id=1, password)`
+
+Sign `data` with the stored key.
+
+```python
+signature = hsm.sign(0x0101, b'firmware digest', 'ecdsa-sha256', password=password)
+```
+
+`mechanism` is one of `ecdsa-sha256`, `ecdsa-sha384`, `ecdsa-sha512`, `eddsa`,
+`rsa-pkcs1-sha256`, `rsa-pkcs1-sha384`, `rsa-pkcs1-sha512`, `rsa-pss-sha256`,
+`rsa-pss-sha384` or `rsa-pss-sha512`.
+
+**Returns:** `bytes` - The signature
+
+### `import_key(object_id, private_key_pem, label='', domains=(1,), capabilities=None, *, auth_key_id=1, password)`
+
+Import an unencrypted PEM private key. **Returns:** `int` - The object ID
+
+### `list_objects(type=None, label=None, *, auth_key_id=1, password)`
+
+**Returns:** `list[dict]`, each with `id`, `type`, `label`, `algorithm`, `domains`,
+`capabilities`, `size` and `sequence`. `get_object_info()` returns one such dict.
+
+`type` and `object_type` take `asymmetric-key`, `authentication-key`, `opaque`, `wrap-key`,
+`hmac-key`, `template` or `otp-aead-key`.
+
+### `reset(*, auth_key_id=1, password)`
+
+Factory-reset the HSM and wait up to 10 seconds for it to come back. **This deletes every
+key on the HSM.**
+
+### `session(*, auth_key_id=1, password)`
+
+A context manager that yields a logged-in session of the `yubihsm` package, for an operation
+that this driver does not wrap.
+
+```python
+with hsm.session(password=password) as session:
+    print(session.get_pseudo_random(16).hex())
+```
+
+## Errors
+
+| Exception | When |
+|-----------|------|
+| `ValueError` | An unknown algorithm, object type or mechanism, or an out-of-range ID or blink time |
+| `HsmBackendError` | The HSM refused the login or the operation, or did not answer |
+
+## Notes
+
+- Read the password from the environment or a file, not from the script source
+- The CLI equivalent is [`lager hsm`](/source/reference/cli/hsm)
+- The Rust equivalent is in the [Rust HSM reference](/source/reference/rust/hsm)

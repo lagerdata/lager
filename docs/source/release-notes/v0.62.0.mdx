@@ -49,12 +49,16 @@ description: "November 2, 2026"
   - `enable` and `disable` on an e-load net switch its input (`eloadInputSwitch`).
   - `set_esr` on `/battery/command` sets or reads the series-resistance offset (`batteryEsr`).
   - `disable_ocp` and `disable_ovp` on `/supply/command` turn a supply's protection off
-    (`supplyProtectionOff`). Setting a limit turns it back on.
-  - `recover` on `/usb/command` returns the `ports` that it powers back on.
+    (`supplyProtectionOff`). Setting a limit turns it back on. The Rigol DP700 and DP800 and
+    the Keysight E36200 can do this. The EA, the Keithley 2281S and the Keysight E36300 say
+    they cannot.
+  - `recover` on `/usb/command` returns the `ports` that it powers back on, when the hub's
+    driver reports them.
   - `disconnect` on `/wifi/command` takes the box's wlan interface down until a `connect` or
     a host reboot (`wifiDisconnect`). A box that you reach over that interface goes offline.
   - `read`, `write`, `notify` and `pair` on `/ble/command` work on one GATT characteristic
-    (`bleGatt`).
+    (`bleGatt`). Each call connects and disconnects on its own. `notify` collects up to
+    `max_messages` for at most `duration` seconds.
   - `set_mode` and `custom_data` on `/blufi/command` set an ESP32's op mode and exchange
     bytes with it (`blufiDeviceMode`, `blufiCustomData`).
 
@@ -71,10 +75,12 @@ description: "November 2, 2026"
 - **Two identical cameras can both be webcam nets.** A camera with no serial, or with a
   serial that another camera shares, now has its USB port as its address, such as
   `usb-port:1-1.4`. Two of these cameras used to share an address, so `lager nets add`
-  refused both.
+  refused both. A camera that was on a list but had no video node is no longer offered as a
+  net.
 - **`/debug/connect` uses the `transport` that you ask for.** It takes `SWD` or `JTAG` and
   returns the transport that it used. It used to start J-Link and OpenOCD with SWD for every
-  request. A net with its own OpenOCD config keeps the transport from that config.
+  request. A net with its own OpenOCD config keeps the transport from that config. The debug
+  service's `/health` lists `connect_transport`.
 - **`lager nets add-all` no longer gives two nets the same name.** A scope's instrument net
   and its channel 1 net were both `scope1`. No new net now reuses a name that the box already
   holds under another role.

@@ -93,6 +93,34 @@ print(f"Power: {measurements['power']}W")
 | `"voltage"` | `float` | Voltage in volts |
 | `"power"` | `float` | Power in watts |
 
+### The `duration` parameter
+
+`read()`, `read_current()`, `read_voltage()` and `read_all()` take `duration`, the averaging
+window in seconds. The default is `0.1`.
+
+```python
+watts = power.read(duration=1.0)  # Average over one second
+```
+
+| Hardware | Behavior |
+|----------|----------|
+| Yocto-Watt | Ignores `duration` and returns the instrument's own averaged value |
+| Nordic PPK2 | Uses at least 0.3 s |
+| Joulescope JS220 | Above 10 s, switches to the gapless `read_average()` |
+
+### `read_average(duration)`
+
+**Joulescope JS220 only.** Return the gapless average current, voltage and power over a long
+window. It uses the instrument's charge and energy accumulators, so it holds no samples and
+drops no data.
+
+```python
+avg = power.read_average(60.0)
+print(f"Average power over 60 s: {avg['power']}W")
+```
+
+**Returns:** `dict` with keys `current`, `voltage` and `power`
+
 ## Examples
 
 ### Basic Power Reading
@@ -251,7 +279,7 @@ else:
 - Nordic PPK2 averages measurements over 0.3 seconds and operates in source mode,
   where it supplies a configurable voltage of 0.8–5V. Voltage readings therefore
   reflect the configured value, not an independent measurement
-- `read_current()`, `read_voltage()`, and `read_all()` are available on the Joulescope JS220 and Nordic PPK2; calling them on a Yocto-Watt will raise an error
+- `read_current()`, `read_voltage()`, and `read_all()` are available on the Joulescope JS220 and Nordic PPK2; calling them on a Yocto-Watt raises `UnsupportedInstrumentError`, a `RuntimeError`
 - For current on Yocto-Watt: calculate from power and known voltage (I = P / V)
 - Use multiple readings and averaging for stability
 - Allow settling time after device state changes

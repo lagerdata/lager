@@ -24,7 +24,9 @@ from lager import Net, NetType
 | `power(value)` | 设置或读取恒功率值（W） |
 | `enable()` | 打开电子负载输入 |
 | `disable()` | 关闭电子负载输入 |
-| `print_state()` | 打印完整状态 |
+| `print_state()` | 把状态打印到 Box 的硬件服务日志；返回 `None` |
+| `get_state_dict()` | 读取完整状态；返回一个 dict |
+| `get_input_state()` | 读取输入是否打开（返回 bool） |
 | `measured_voltage()` | 读取实测电压（返回浮点数） |
 | `measured_current()` | 读取实测电流（返回浮点数） |
 | `measured_power()` | 读取实测功率（返回浮点数） |
@@ -112,7 +114,7 @@ print(f"Voltage setting: {v}V")
 
 ### `resistance(value=None)`
 
-设置或读取恒阻设定值。低于 0.02 欧姆的值处于仪器量程的下限，仪器可能对其进行钳位。当实际生效的值与请求的值不同时，它会打印一条警告。
+设置或读取恒阻设定值。低于 0.02 欧姆的值处于仪器量程的下限，仪器可能对其进行钳位。当实际生效的值与请求的值不同时，它会向 Box 的硬件服务日志打印一条警告。
 
 ```python
 # Set CR mode resistance
@@ -149,11 +151,36 @@ eload.disable()  # Stop sinking current
 
 ### `print_state()`
 
-打印电子负载的完整状态。
+打印电子负载的完整状态。文本写入 Box 的硬件服务日志，而不是您的脚本，并且调用返回 `None`。在脚本中请使用 `get_state_dict()`。请参阅 [#845](https://github.com/lagerdata/lager/issues/845)。
 
 ```python
 eload.print_state()
 # Prints: mode, current/voltage/resistance/power settings, measured values, input state
+```
+
+### `get_state_dict()`
+
+以 dict 返回电子负载的完整状态。
+
+```python
+state = eload.get_state_dict()
+print(state['mode'], state['measured_current'], state['input_enabled'])
+```
+
+| 键 | 说明 |
+|-----|-------------|
+| `mode` | `CC`、`CV`、`CR` 或 `CW` |
+| `input_enabled` | `True`、`False`；无法识别的应答为 `None` |
+| `measured_voltage`、`measured_current`、`measured_power` | 实测值 |
+| `current_setting`、`voltage_setting`、`resistance_setting`、`power_setting` | 仅当前模式对应的设定值 |
+
+### `get_input_state()`
+
+输入打开时返回 `True`。无法识别的应答读作 `False`。
+
+```python
+if eload.get_input_state():
+    print("Load is on")
 ```
 
 ### `measured_voltage()` / `measured_current()` / `measured_power()`
@@ -272,7 +299,7 @@ psu.disable()
 - 请先用 `mode()` 设置工作模式，再设置对应的数值
 - `current()`、`voltage()`、`resistance()`、`power()` 等方法既能读取也能设置
 - `measured_voltage()`、`measured_current()`、`measured_power()` 返回实际测量值
-- `print_state()` 打印状态（便于调试），测量方法返回数值（供代码使用）
+- `print_state()` 打印到 Box 的硬件服务日志；`get_state_dict()` 和测量方法返回数值（供代码使用）
 - 请务必调用 `enable()` 才会开始吸收电流
 - 结束时请务必调用 `disable()`
 - 低于 0.02 欧姆的电阻值可能被仪器钳位

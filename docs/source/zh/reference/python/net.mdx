@@ -27,7 +27,7 @@ from lager import InvalidNetError, SetupFunctionRequiredError
 | `Net.delete_local_net()` | 删除一个 Net 配置 |
 | `Net.delete_all_local_nets()` | 删除全部 Net 配置 |
 | `Net.rename_local_net()` | 重命名一个 Net 配置 |
-| `Net.filter_nets()` | 按名称和/或角色过滤 Net |
+| `Net.filter_nets()` | 返回去掉了名称与角色匹配的 Net 之后的列表 |
 
 ## 实例方法
 
@@ -62,7 +62,7 @@ scope = Net.get('PROBE', type=NetType.Analog)
 | `setup_function` | `callable` | 可选函数，在该 Net 被启用时调用 |
 | `teardown_function` | `callable` | 可选函数，在该 Net 被停用时调用 |
 
-**返回：** 与指定类型对应的 Net 实例
+**返回：** 与该 Net 角色对应的对象。对大多数角色而言，这是一个角色专用的类，例如 `LabJackGPIO`、`DebugNet`、`UARTNet`、`YubiHsm2` 或某个电源函数映射器。这些类提供该角色页面上的方法，但不一定有 `enable()` 和 `disable()`。
 
 ### `Net.list_saved()`
 
@@ -77,8 +77,9 @@ for net in nets:
 **返回：** `list[dict]` - Net 配置列表，包含以下键：
 - `name`（str）- Net 名称
 - `role`（str）- Net 类型/角色
-- `channel`（int）- 硬件通道号
+- `pin`（str）- 硬件通道，与 `lager nets add` 保存的值相同
 - `instrument`（str）- 关联的仪器类型
+- `address`（str）- 仪器地址
 
 ### `Net.list_all_from_env()`
 
@@ -100,8 +101,8 @@ for net in nets:
 Net.save_local_net({
     'name': 'VDD',
     'role': 'power-supply',
-    'channel': 1,
-    'instrument': 'rigol_dp800',
+    'pin': '1',
+    'instrument': 'Rigol_DP832',
     'address': '192.168.1.100'
 })
 ```
@@ -168,8 +169,8 @@ for net in nets:
 
 ```python
 Net.save_local_nets([
-    {'name': 'VDD', 'role': 'power-supply', 'channel': 1, 'instrument': 'rigol_dp800', 'address': '192.168.1.100'},
-    {'name': 'GND', 'role': 'power-supply', 'channel': 2, 'instrument': 'rigol_dp800', 'address': '192.168.1.100'}
+    {'name': 'VDD', 'role': 'power-supply', 'pin': '1', 'instrument': 'Rigol_DP832', 'address': '192.168.1.100'},
+    {'name': 'GND', 'role': 'power-supply', 'pin': '2', 'instrument': 'Rigol_DP832', 'address': '192.168.1.100'}
 ])
 ```
 
@@ -191,16 +192,16 @@ Net.delete_all_local_nets()
 
 ### `Net.filter_nets(all_nets, name, role=None)`
 
-按名称过滤一组 Net，也可以同时按角色过滤。
+返回去掉了与名称（以及可选的角色）匹配的 Net 之后的列表。`delete_local_net()` 使用的就是这个辅助函数。若要查找某个 Net，请自行过滤列表：`[n for n in all_nets if n['name'] == 'VDD']`。
 
 ```python
 all_nets = Net.get_local_nets()
 
-# Find all nets named 'VDD'
-vdd_nets = Net.filter_nets(all_nets, 'VDD')
+# Every net except the ones named 'VDD'
+without_vdd = Net.filter_nets(all_nets, 'VDD')
 
-# Find 'VDD' with specific role
-psu_nets = Net.filter_nets(all_nets, 'VDD', role='power-supply')
+# Every net except 'VDD' with this role
+without_vdd_psu = Net.filter_nets(all_nets, 'VDD', role='power-supply')
 ```
 
 **参数：**
@@ -208,10 +209,10 @@ psu_nets = Net.filter_nets(all_nets, 'VDD', role='power-supply')
 | 参数 | 类型 | 说明 |
 |-----------|------|-------------|
 | `all_nets` | `list[dict]` | 要搜索的 Net 列表 |
-| `name` | `str` | 要匹配的 Net 名称 |
+| `name` | `str` | 要去掉的 Net 名称 |
 | `role` | `str` | 可选，要匹配的角色 |
 
-**返回：** `list[dict]` - 匹配的 Net
+**返回：** `list[dict]` - 不匹配的 Net
 
 ### `enable()`
 
@@ -250,9 +251,9 @@ scope.disable(teardown=False)  # Disconnect without teardown
 
 | NetType | 角色字符串 | 说明 |
 |---------|-------------|-------------|
-| `NetType.Analog` | `analog`、`scope` | 示波器模拟输入 |
+| `NetType.Analog` | `analog`、`scope`、`scope-channel` | 示波器。`scope` Net 是整台仪器；`scope-channel` Net 是它的一个通道 |
 | `NetType.Logic` | `logic` | 逻辑分析仪输入 |
-| `NetType.Waveform` | `waveform` | 波形发生器 |
+| `NetType.Waveform` | `waveform` | 尚未实现。没有驱动支持此类型，因此 `Net.get()` 会引发错误。请参阅 [#844](https://github.com/lagerdata/lager/issues/844) |
 | `NetType.Battery` | `battery` | 电池模拟器 |
 | `NetType.PowerSupply` | `power-supply` | 电源 |
 | `NetType.ELoad` | `eload` | 电子负载 |
@@ -275,7 +276,7 @@ scope.disable(teardown=False)  # Disconnect without teardown
 | `NetType.Rotation` | `rotation` | 旋转编码器 |
 | `NetType.Wifi` | `wifi` | WiFi 模块 |
 | `NetType.Actuate` | `actuate` | 执行器控制 |
-| `NetType.PowerSupply2Q` | `power-supply-2q` | 双象限电源（太阳能仿真） |
+| `NetType.PowerSupply2Q` | `power-supply-2q` | 双象限电源。太阳能 Net 以角色 `solar` 保存，不使用此类型；请参阅 [太阳能仿真](/source/zh/reference/python/solar) |
 
 ## 属性
 
@@ -364,8 +365,8 @@ from lager import Net
 Net.save_local_net({
     'name': 'NEW_PSU',
     'role': 'power-supply',
-    'channel': 2,
-    'instrument': 'rigol_dp800',
+    'pin': '2',
+    'instrument': 'Rigol_DP832',
     'address': '192.168.1.100'
 })
 
