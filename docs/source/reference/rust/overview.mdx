@@ -36,7 +36,7 @@ Add the crate to your firmware project's dev-dependencies:
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.10" }
+lager = { package = "lager-net", version = "0.11" }
 ```
 
 The crate requires Rust **1.75** or newer and builds on edition 2021.
@@ -82,12 +82,13 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace; `AsyncUart` when `async` is on too |
 | `rtt` | no | RTT log streaming over the box's Socket.IO namespace, for reading `defmt` output from a running target; `AsyncRttSession` when `async` is on too |
 | `scope-trace` | no | Scope waveform samples: `Scope::capture()` and `Scope::stream()` |
+| `admin` | no | Box setup through `admin()`: saved nets, metadata, drivers, binaries, file download, custom devices and diagnostics |
 
 Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.10", features = ["async"] }
+lager = { package = "lager-net", version = "0.11", features = ["async"] }
 ```
 
 ## Errors
@@ -101,7 +102,7 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 | `Box { status, message }` | The box refused or the hardware failed |
 | `FlashFailed`, `ProbeBusy`, `SafetyRefused` | A debug-probe operation failed in a way the crate names |
 | `DfuFailed` | Box-side `dfu-util` exited non-zero |
-| `UnsupportedByBox` | HTTP 501: the box image predates this endpoint; update the box |
+| `UnsupportedByBox` | The box image predates this endpoint; update the box |
 | `AuthRequired` | The box's gateway wants a bearer token and none is available |
 | `NotSupportedByBox` | Kept for compatibility; no net type returns it |
 | `UartInUse` | Another session holds the UART net or its serial device |
@@ -170,6 +171,10 @@ Logic-analyzer nets are not on the box HTTP API yet. The work list is in the cra
 ### Security
 
 - [HSM](/source/reference/rust/hsm) — YubiHSM 2 keys and signing
+
+### Box setup
+
+- [Box Setup (admin)](/source/reference/rust/admin) — nets, drivers, files and diagnostics, behind the `admin` feature
 
 ### Guides
 

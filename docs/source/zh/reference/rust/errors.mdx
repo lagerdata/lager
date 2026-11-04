@@ -80,7 +80,9 @@ Box 也可能用 **HTTP 200** 加 `success: false` 来报告失败 —— 跨角
 
 ### `UnsupportedByBox { message }`
 
-该端点在 API 中是存在的，但*这台* Box 太旧，提供不了它。信息中会指明所需的版本。
+该端点在 API 中是存在的，但*这台* Box 太旧，提供不了它。已知所需版本时，信息中会指明它。
+
+Box 对它不提供的路由，会用三种方式之一回应：HTTP 501、带有 `"error": "Not found"` 的 JSON 404，或 HTML 405 页面。crate 会把这三种都报告为该变体。路由自身的 404（例如未知的 Net）仍然是 `Error::Box`。在 lager-net 0.11 之前，JSON 404 会以 `Error::Box` 返回。
 
 ```text
 {message}. This box image does not support this endpoint; update the box
@@ -98,6 +100,7 @@ Box 也可能用 **HTTP 200** 加 `success: false` 来报告失败 —— 跨角
 | `hsm()`, `custom()` | 0.59.0 |
 | `DebugNet::halt()`, `Arm::get_acceleration()` | 0.60.0 |
 | `dmm()`, the GATT methods on `ble()`, JTAG on `DebugNet::connect_with()` | 0.62.0 |
+| `admin()` metadata, bench manifest and drivers | 0.46.0, 0.50.0 and 0.59.0 |
 
 `erase_range()`、`halt()` 和 JTAG 连接在发送任何内容之前，会先检查调试服务的功能。因此旧 Box 会在碰到目标之前就以这个变体失败。
 

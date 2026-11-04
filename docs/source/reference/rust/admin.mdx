@@ -1,0 +1,314 @@
+---
+title: Box Setup (admin)
+description: Create nets, install drivers, upload files and run diagnostics from Rust
+---
+
+Set up a Lager Box from Rust, as the `lager` CLI does. You can:
+
+- create and delete saved nets, and edit net and box metadata
+- install custom drivers, upload binaries and download files
+- assign USB-serial cables to device definitions, and run diagnostics
+
+A CI job can then build its bench before its tests run, with no Python step.
+
+These calls are behind the `admin` feature, which adds no dependency:
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.11", features = ["admin"] }
+```
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let admin = lager.admin();
+```
+
+`AsyncLagerBox::admin()` returns the same methods for the async client.
+
+<Warning>
+  The box does not check the box lock on these routes. The `lager` CLI checks it before
+  it sends a change. Hold `lock_guard()` around your changes, so that another user's
+  session cannot interleave with them.
+</Warning>
+
+```rust
+let _lock = lager.lock_guard("ci")?;
+admin.save_net(&NetRecord::new("supply1", "power-supply", "Rigol_DP832").pin(1))?;
+```
+
+## Methods
+
+| Method | Description | CLI equivalent |
+|--------|-------------|----------------|
+| `save_net()` | Create a net, or replace the record with the same name and role | `lager nets add` |
+| `rename_net()` | Save a record in place of another name | `lager nets rename` |
+| `delete_net()` | Delete a net, or only its record with one role | `lager nets delete` |
+| `delete_all_nets()` | Delete every saved net | `lager nets delete-all` |
+| `net_metadata()`, `set_net_metadata()` | Read and change a net's purpose, notes, tags, DUT connection and test hints | `lager nets describe` |
+| `box_metadata()`, `set_box_metadata()` | Read and replace the box description | |
+| `instruments()` | List the instruments the box sees | `lager instruments` |
+| `bench_manifest()` | Read the bench manifest | `lager box bench export` |
+| `drivers()`, `driver()` | List custom drivers | `lager drivers list`, `show` |
+| `install_driver()` | Install a driver from its zip bundle | `lager drivers install` |
+| `reinstall_driver_deps()` | Install a driver's Python packages again | `lager drivers reinstall-deps` |
+| `remove_driver()` | Remove a driver | `lager drivers remove` |
+| `binaries()`, `add_binary()`, `remove_binary()` | Manage the box's binaries directory | `lager binaries` |
+| `download_file()`, `download_file_with_timeout()` | Download a file that a script left on the box | |
+| `custom_devices()` | List device definitions, assignments and free USB-serial cables | `lager nets assign --list` |
+| `assign_custom_device()`, `remove_custom_device()` | Assign a cable to a device definition, or remove the assignment | `lager nets assign` |
+| `diagnose_usb()`, `diagnose_usbhub()`, `diagnose_visa()`, `diagnose_jlink()` | Run the box's checks on an instrument or a probe | `lager diagnose` |
+
+## Saved nets
+
+### `save_net(record: &NetRecord) -> Result<()>`
+
+Create a net, or replace the saved record with the same name and role.
+`NetRecord::new(name, role, instrument)` builds a record. Its builder methods set the
+rest:
+
+```rust
+use lager::NetRecord;
+
+let record = NetRecord::new("supply1", "power-supply", "Rigol_DP832")
+    .pin(1)
+    .address("USB0::0x1AB1::0x0E11::DP8C1::INSTR")
+    .field("serial", "DP8C1");
+admin.save_net(&record)?;
+```
+
+| Builder | Sets |
+|---|---|
+| `pin(value)` | The pin or channel |
+| `address(value)` | The VISA or device address |
+| `param(key, value)` | One role-specific saved parameter |
+| `field(key, value)` | Any other record key, such as `serial` |
+
+A record that `nets()` returns can be changed and saved back. The crate leaves out the
+box's derived `live_path`, as the CLI does.
+
+The box keys a record by name **and** role. A record with the same name and another role
+stays beside the new one. To change a net's role, delete the old record first.
+
+### `rename_net(old_name: &str, record: &NetRecord) -> Result<()>`
+
+Save `record` in place of `old_name`. The box deletes every record named `old_name`,
+whatever its role, then saves `record`.
+
+### `delete_net(name: &str, role: Option<&str>) -> Result<()>` and `delete_all_nets() -> Result<()>`
+
+`delete_net` with a role deletes only the record with that exact role. Without a role, it
+deletes every record with that name. An unknown net is `Error::Box` with HTTP 404.
+
+<Warning>
+  `delete_all_nets()` deletes every saved net on the box, and it cannot be undone. If you
+  need to restore them, read `nets()` first.
+</Warning>
+
+## Metadata
+
+### `net_metadata(name: &str) -> Result<NetMetadata>`
+
+Read a net's metadata. This requires box software 0.46.0 or later.
+
+| Field | Meaning |
+|---|---|
+| `fields` | `purpose`, `notes`, `tags`, `dut_connection` and `test_hints` |
+| `metadata_timestamps` | When each field last changed, by field name |
+| `shadowed_by_override` | Fields that the bench file overrides for this net |
+| `records_updated` | After a write, how many records changed; `None` on a read |
+
+### `set_net_metadata(name: &str, update: &NetMetadataUpdate) -> Result<NetMetadata>`
+
+Change a net's metadata on every record with that name. A field that the update does not
+set keeps its value. `clear()` removes a field.
+
+```rust
+use lager::NetMetadataUpdate;
+
+let update = NetMetadataUpdate::new()
+    .purpose("VBAT for the main board")
+    .tags(["power", "main"])
+    .clear("notes")
+    .timestamp("purpose", "2026-11-04T12:00:00Z");
+admin.set_net_metadata("supply1", &update)?;
+```
+
+The box refuses an unknown field name, and a timestamp for a field that the update does
+not set, with `Error::Box` and HTTP 400.
+
+### `box_metadata()` and `set_box_metadata(description, updated_at)`
+
+Read and replace the box description. A write replaces the whole record: `None` for the
+description clears it.
+
+## Instruments and the bench manifest
+
+### `instruments() -> Result<Vec<Instrument>>`
+
+List the instruments the box sees. Each `Instrument` has a `name` for `NetRecord::new`,
+an `address`, the `net_type` roles it can serve and its `channels`. The rest of the
+scanner's report is in `extra`.
+
+Each call scans the hardware again. To find a robot arm, the scan sends a short handshake
+to serial ports that no saved net uses.
+
+### `bench_manifest() -> Result<BenchManifest>`
+
+Read the bench manifest, the whole box configuration as one document. This requires box
+software 0.50.0 or later. The schema belongs to the box, so `document` holds the JSON.
+`box_id()` and `schema_version()` read two common keys.
+
+## Custom drivers
+
+These require box software 0.59.0 or later.
+
+### `install_driver(driver_type: &str, bundle: &[u8]) -> Result<DriverInstall>`
+
+Upload a driver's zip bundle, and replace an installed version. The box installs the
+Python packages that the manifest declares. That can take minutes, so the call waits up
+to 6 minutes.
+
+```rust
+let bundle = std::fs::read("thermal.zip")?;
+let installed = admin.install_driver("thermal", &bundle)?;
+println!("{} {:?}, replaced: {}", installed.driver_type, installed.version, installed.replaced);
+```
+
+A box older than 0.60.0 installs no Python packages. If the bundle declares packages,
+check `status()?.capabilities.custom_driver_deps` first. The box refuses an oversized
+bundle with HTTP 413, and a pip run past 300 seconds with HTTP 504.
+
+### `drivers()`, `driver(type)`, `reinstall_driver_deps(type)` and `remove_driver(type, force)`
+
+`drivers()` returns a `DriverEntry` per driver. Each entry has its `status`, `version`,
+`deps` and the `nets` that use it. A driver that does not load has `status: "error"` and
+an `error` message.
+
+`remove_driver()` without `force` fails with HTTP 409 while saved nets use the driver.
+The message names the nets. With `force`, the box removes the driver, and
+`orphaned_nets` lists the nets that lost it.
+
+## Binaries and files
+
+### `add_binary(name: &str, data: &[u8]) -> Result<BinaryAdded>`
+
+Upload an executable into the box's binaries directory, and replace a file with the same
+name. `restart_required` is `true` when the container needs a restart to see the file.
+`lager update` does that restart.
+
+`binaries()` lists the directory, and `remove_binary(name)` deletes a file.
+
+### `download_file(path: &str) -> Result<Vec<u8>>`
+
+Download a file that a script left on the box, as bytes.
+
+```rust
+let log = admin.download_file("/tmp/lager-output/run-42/uart.log")?;
+std::fs::write("uart.log", log)?;
+```
+
+The box serves only files under `/tmp/lager-output`, `/tmp/lager-results` and
+`/tmp/lager-job-output`. Any other path is `Error::Box` with HTTP 403. `download_file()`
+has no client-side timeout. `download_file_with_timeout(path, Some(duration))` sets one.
+
+## Custom devices
+
+### `custom_devices() -> Result<CustomDevices>`
+
+List the device definitions the box knows (`catalog`), the current `assignments`, and
+the USB-serial `cables` that have no assignment. The box scans the cables, which takes
+seconds.
+
+### `assign_custom_device(instrument: &str, cable: &CableId, baud: Option<u32>) -> Result<DeviceAssigned>`
+
+Assign a USB-serial cable to a device definition. `CableId` names the cable:
+
+```rust
+use lager::CableId;
+
+let assigned = admin.assign_custom_device(
+    "Acme_Chamber",
+    &CableId::Serial("A1B2C3".into()),
+    Some(9600),
+)?;
+println!("address {:?}, deleted nets {:?}",
+    assigned.assignment.address, assigned.deleted_nets);
+```
+
+Use `CableId::PortPath("1-1.4".into())` for a cable with no serial, or one that shares
+its serial with another cable.
+
+<Warning>
+  An assignment deletes the saved nets that it makes stale, and the generic UART nets on
+  the same cable. `deleted_nets` lists them.
+</Warning>
+
+### `remove_custom_device(cable: &CableId) -> Result<DeviceRemoval>`
+
+Remove a cable's assignment and the saved nets that use it. A cable with no assignment
+returns `removed: false`, not an error.
+
+## Diagnostics
+
+The checks behind `lager diagnose`. Each result gives typed fields for the common facts,
+and an `extra` map for the rest of the box's report. The crate URL-encodes the address.
+
+| Method | What it does | Touches the hardware |
+|---|---|---|
+| `diagnose_usb(address)` | Reports what the box sees of a USB instrument | No |
+| `diagnose_usbhub(address)` | Reports what the box sees of a USB hub | Opens an Acroname hub |
+| `diagnose_visa(address)` | Probes a VISA instrument with `*IDN?` | Opens a session, unless the hardware service holds one |
+| `diagnose_jlink(net)` | Checks a debug net's probe | Connects to the target over SWD when the probe is idle |
+
+A failed or skipped VISA probe is data, not an error: `error`, `error_class` and
+`skipped` say what happened.
+
+<Warning>
+  Do not call `diagnose_jlink()` during a flash. It can connect to the target, and it can
+  take over 30 seconds.
+</Warning>
+
+## Older boxes
+
+A route that the box does not serve fails with `Error::UnsupportedByBox`. Where a version
+is known, the message names it. A refusal that the route explains, such as an unknown
+net, is `Error::Box` with the box's message.
+
+| Calls | Need box |
+|---|---|
+| `net_metadata()`, `set_net_metadata()` | 0.46.0 |
+| `bench_manifest()` | 0.50.0 |
+| The driver calls | 0.59.0; a driver's Python packages, 0.60.0 |
+
+## Example: build the bench in CI, then test
+
+```rust
+use lager::{LagerBox, NetRecord};
+
+#[test]
+fn bench_is_set_up() -> lager::Result<()> {
+    let lager = LagerBox::from_env()?;
+    let admin = lager.admin();
+    let _lock = lager.lock_guard("ci")?;
+
+    let supply = admin
+        .instruments()?
+        .into_iter()
+        .find(|i| i.name == "Rigol_DP832")
+        .expect("no DP832 on this box");
+    let address = supply.address.clone().unwrap_or_default();
+
+    admin.save_net(&NetRecord::new("vbat", "power-supply", "Rigol_DP832").pin(1).address(address))?;
+
+    let vbat = lager.supply("vbat");
+    vbat.set_voltage(3.7)?;
+    vbat.enable()?;
+    assert!(vbat.state()?.voltage.unwrap_or(0.0) > 3.6);
+    vbat.disable()?;
+    Ok(())
+}
+```

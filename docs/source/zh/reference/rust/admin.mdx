@@ -1,0 +1,275 @@
+---
+title: Box 设置（admin）
+description: 用 Rust 创建 Net、安装驱动、上传文件并运行诊断
+---
+
+像 `lager` CLI 一样，用 Rust 设置 Lager Box。您可以：
+
+- 创建和删除已保存的 Net，并编辑 Net 和 Box 的元数据
+- 安装自定义驱动、上传二进制文件并下载文件
+- 把 USB 串口线分配给设备定义，并运行诊断
+
+这样，CI 作业就能在测试运行之前搭建好实验台，无需任何 Python 步骤。
+
+这些调用位于 `admin` 功能之后，该功能不增加任何依赖：
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.11", features = ["admin"] }
+```
+
+## 句柄
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let admin = lager.admin();
+```
+
+`AsyncLagerBox::admin()` 为异步客户端返回相同的方法。
+
+<Warning>
+  Box 在这些路由上不检查 Box 锁。`lager` CLI 会在发送更改之前检查它。请在更改期间持有 `lock_guard()`，这样其他用户的会话就无法与您的更改交错进行。
+</Warning>
+
+```rust
+let _lock = lager.lock_guard("ci")?;
+admin.save_net(&NetRecord::new("supply1", "power-supply", "Rigol_DP832").pin(1))?;
+```
+
+## 方法
+
+| 方法 | 说明 | 对应的 CLI 命令 |
+|--------|-------------|----------------|
+| `save_net()` | 创建一个 Net，或替换名称和角色都相同的记录 | `lager nets add` |
+| `rename_net()` | 用一条记录替换另一个名称 | `lager nets rename` |
+| `delete_net()` | 删除一个 Net，或只删除它某个角色的记录 | `lager nets delete` |
+| `delete_all_nets()` | 删除所有已保存的 Net | `lager nets delete-all` |
+| `net_metadata()`, `set_net_metadata()` | 读取和修改 Net 的用途、备注、标签、被测设备连接和测试提示 | `lager nets describe` |
+| `box_metadata()`, `set_box_metadata()` | 读取和替换 Box 的描述 | |
+| `instruments()` | 列出 Box 看到的仪器 | `lager instruments` |
+| `bench_manifest()` | 读取实验台清单 | `lager box bench export` |
+| `drivers()`, `driver()` | 列出自定义驱动 | `lager drivers list`, `show` |
+| `install_driver()` | 从 zip 包安装驱动 | `lager drivers install` |
+| `reinstall_driver_deps()` | 重新安装驱动的 Python 包 | `lager drivers reinstall-deps` |
+| `remove_driver()` | 移除驱动 | `lager drivers remove` |
+| `binaries()`, `add_binary()`, `remove_binary()` | 管理 Box 的二进制文件目录 | `lager binaries` |
+| `download_file()`, `download_file_with_timeout()` | 下载脚本留在 Box 上的文件 | |
+| `custom_devices()` | 列出设备定义、分配情况和空闲的 USB 串口线 | `lager nets assign --list` |
+| `assign_custom_device()`, `remove_custom_device()` | 把一根串口线分配给设备定义，或移除该分配 | `lager nets assign` |
+| `diagnose_usb()`, `diagnose_usbhub()`, `diagnose_visa()`, `diagnose_jlink()` | 对仪器或探针运行 Box 的检查 | `lager diagnose` |
+
+## 已保存的 Net
+
+### `save_net(record: &NetRecord) -> Result<()>`
+
+创建一个 Net，或替换名称和角色都相同的已保存记录。`NetRecord::new(name, role, instrument)` 构造一条记录，其构建器方法设置其余字段：
+
+```rust
+use lager::NetRecord;
+
+let record = NetRecord::new("supply1", "power-supply", "Rigol_DP832")
+    .pin(1)
+    .address("USB0::0x1AB1::0x0E11::DP8C1::INSTR")
+    .field("serial", "DP8C1");
+admin.save_net(&record)?;
+```
+
+| 构建器 | 设置 |
+|---|---|
+| `pin(value)` | 引脚或通道 |
+| `address(value)` | VISA 或设备地址 |
+| `param(key, value)` | 一个角色特定的已保存参数 |
+| `field(key, value)` | 任何其他记录键，例如 `serial` |
+
+`nets()` 返回的记录可以修改后再保存回去。crate 会像 CLI 一样，去掉 Box 派生出的 `live_path`。
+
+Box 以名称**和**角色作为记录的键。名称相同、角色不同的记录会保留在新记录旁边。要更改 Net 的角色，请先删除旧记录。
+
+### `rename_net(old_name: &str, record: &NetRecord) -> Result<()>`
+
+用 `record` 替换 `old_name`。Box 会删除所有名为 `old_name` 的记录（无论角色如何），然后保存 `record`。
+
+### `delete_net(name: &str, role: Option<&str>) -> Result<()>` 和 `delete_all_nets() -> Result<()>`
+
+带角色的 `delete_net` 只删除角色完全相同的那条记录。不带角色时，它删除所有同名的记录。未知的 Net 是 HTTP 404 的 `Error::Box`。
+
+<Warning>
+  `delete_all_nets()` 会删除 Box 上所有已保存的 Net，且无法撤销。如果需要恢复它们，请先读取 `nets()`。
+</Warning>
+
+## 元数据
+
+### `net_metadata(name: &str) -> Result<NetMetadata>`
+
+读取 Net 的元数据。它需要 Box 软件 0.46.0 或更高版本。
+
+| 字段 | 含义 |
+|---|---|
+| `fields` | `purpose`、`notes`、`tags`、`dut_connection` 和 `test_hints` |
+| `metadata_timestamps` | 每个字段最后一次更改的时间，按字段名 |
+| `shadowed_by_override` | 实验台文件为该 Net 覆盖的字段 |
+| `records_updated` | 写入之后，更改了多少条记录；读取时为 `None` |
+
+### `set_net_metadata(name: &str, update: &NetMetadataUpdate) -> Result<NetMetadata>`
+
+在所有同名记录上修改 Net 的元数据。更新中没有设置的字段保持原值。`clear()` 会移除一个字段。
+
+```rust
+use lager::NetMetadataUpdate;
+
+let update = NetMetadataUpdate::new()
+    .purpose("VBAT for the main board")
+    .tags(["power", "main"])
+    .clear("notes")
+    .timestamp("purpose", "2026-11-04T12:00:00Z");
+admin.set_net_metadata("supply1", &update)?;
+```
+
+对于未知的字段名，以及为更新中没有设置的字段提供的时间戳，Box 会以 HTTP 400 的 `Error::Box` 拒绝。
+
+### `box_metadata()` 和 `set_box_metadata(description, updated_at)`
+
+读取和替换 Box 的描述。写入会替换整条记录：描述传入 `None` 会清除它。
+
+## 仪器和实验台清单
+
+### `instruments() -> Result<Vec<Instrument>>`
+
+列出 Box 看到的仪器。每个 `Instrument` 都有供 `NetRecord::new` 使用的 `name`、一个 `address`、它可以承担的 `net_type` 角色以及它的 `channels`。扫描报告的其余部分在 `extra` 中。
+
+每次调用都会重新扫描硬件。为了找到机械臂，扫描会向没有已保存 Net 使用的串口发送一次简短的握手。
+
+### `bench_manifest() -> Result<BenchManifest>`
+
+读取实验台清单，即作为一个文档的整个 Box 配置。它需要 Box 软件 0.50.0 或更高版本。其模式归 Box 所有，因此 `document` 保存的是 JSON。`box_id()` 和 `schema_version()` 读取两个常用的键。
+
+## 自定义驱动
+
+这些调用需要 Box 软件 0.59.0 或更高版本。
+
+### `install_driver(driver_type: &str, bundle: &[u8]) -> Result<DriverInstall>`
+
+上传驱动的 zip 包，并替换已安装的版本。Box 会安装清单中声明的 Python 包。这可能需要几分钟，因此该调用最多等待 6 分钟。
+
+```rust
+let bundle = std::fs::read("thermal.zip")?;
+let installed = admin.install_driver("thermal", &bundle)?;
+println!("{} {:?}, replaced: {}", installed.driver_type, installed.version, installed.replaced);
+```
+
+0.60.0 之前的 Box 不安装任何 Python 包。如果驱动包声明了依赖包，请先检查 `status()?.capabilities.custom_driver_deps`。Box 会以 HTTP 413 拒绝过大的驱动包，以 HTTP 504 拒绝运行超过 300 秒的 pip。
+
+### `drivers()`、`driver(type)`、`reinstall_driver_deps(type)` 和 `remove_driver(type, force)`
+
+`drivers()` 为每个驱动返回一个 `DriverEntry`。每一项都有它的 `status`、`version`、`deps` 以及使用它的 `nets`。无法加载的驱动的 `status` 为 `"error"`，并带有一条 `error` 信息。
+
+不带 `force` 时，只要还有已保存的 Net 在使用该驱动，`remove_driver()` 就会以 HTTP 409 失败。信息中会列出这些 Net。带 `force` 时，Box 会移除该驱动，`orphaned_nets` 列出失去驱动的 Net。
+
+## 二进制文件和文件
+
+### `add_binary(name: &str, data: &[u8]) -> Result<BinaryAdded>`
+
+把一个可执行文件上传到 Box 的二进制文件目录，并替换同名文件。当容器需要重启才能看到该文件时，`restart_required` 为 `true`。`lager update` 会执行这次重启。
+
+`binaries()` 列出该目录，`remove_binary(name)` 删除一个文件。
+
+### `download_file(path: &str) -> Result<Vec<u8>>`
+
+以字节形式下载脚本留在 Box 上的文件。
+
+```rust
+let log = admin.download_file("/tmp/lager-output/run-42/uart.log")?;
+std::fs::write("uart.log", log)?;
+```
+
+Box 只提供 `/tmp/lager-output`、`/tmp/lager-results` 和 `/tmp/lager-job-output` 下的文件。其他任何路径都是 HTTP 403 的 `Error::Box`。`download_file()` 没有客户端超时。`download_file_with_timeout(path, Some(duration))` 可以设置一个。
+
+## 自定义设备
+
+### `custom_devices() -> Result<CustomDevices>`
+
+列出 Box 知道的设备定义（`catalog`）、当前的分配（`assignments`），以及尚未分配的 USB 串口线（`cables`）。Box 会扫描这些串口线，需要几秒钟。
+
+### `assign_custom_device(instrument: &str, cable: &CableId, baud: Option<u32>) -> Result<DeviceAssigned>`
+
+把一根 USB 串口线分配给一个设备定义。`CableId` 指定该串口线：
+
+```rust
+use lager::CableId;
+
+let assigned = admin.assign_custom_device(
+    "Acme_Chamber",
+    &CableId::Serial("A1B2C3".into()),
+    Some(9600),
+)?;
+println!("address {:?}, deleted nets {:?}",
+    assigned.assignment.address, assigned.deleted_nets);
+```
+
+对于没有序列号的串口线，或与另一根串口线序列号相同的串口线，请使用 `CableId::PortPath("1-1.4".into())`。
+
+<Warning>
+  分配会删除因它而过时的已保存 Net，以及同一根串口线上的通用 UART Net。`deleted_nets` 会列出它们。
+</Warning>
+
+### `remove_custom_device(cable: &CableId) -> Result<DeviceRemoval>`
+
+移除一根串口线的分配，以及使用它的已保存 Net。没有分配的串口线会返回 `removed: false`，而不是错误。
+
+## 诊断
+
+`lager diagnose` 背后的检查。每个结果都为常见事实提供带类型的字段，并用一个 `extra` 映射保存 Box 报告的其余部分。crate 会对地址进行 URL 编码。
+
+| 方法 | 作用 | 是否操作硬件 |
+|---|---|---|
+| `diagnose_usb(address)` | 报告 Box 看到的 USB 仪器情况 | 否 |
+| `diagnose_usbhub(address)` | 报告 Box 看到的 USB 集线器情况 | 会打开 Acroname 集线器 |
+| `diagnose_visa(address)` | 用 `*IDN?` 探测 VISA 仪器 | 会打开一个会话，除非硬件服务已持有一个 |
+| `diagnose_jlink(net)` | 检查调试 Net 的探针 | 探针空闲时，会通过 `SWD` 连接目标 |
+
+VISA 探测失败或被跳过属于数据，而不是错误：`error`、`error_class` 和 `skipped` 说明发生了什么。
+
+<Warning>
+  请不要在烧录期间调用 `diagnose_jlink()`。它可能会连接目标，并且可能需要 30 秒以上。
+</Warning>
+
+## 较旧的 Box
+
+Box 不提供的路由会以 `Error::UnsupportedByBox` 失败。已知所需版本时，信息中会指明它。路由自身说明的拒绝（例如未知的 Net）是带有 Box 信息的 `Error::Box`。
+
+| 调用 | 需要的 Box |
+|---|---|
+| `net_metadata()`, `set_net_metadata()` | 0.46.0 |
+| `bench_manifest()` | 0.50.0 |
+| 驱动相关的调用 | 0.59.0；驱动的 Python 包需要 0.60.0 |
+
+## 示例：在 CI 中搭建实验台，然后测试
+
+```rust
+use lager::{LagerBox, NetRecord};
+
+#[test]
+fn bench_is_set_up() -> lager::Result<()> {
+    let lager = LagerBox::from_env()?;
+    let admin = lager.admin();
+    let _lock = lager.lock_guard("ci")?;
+
+    let supply = admin
+        .instruments()?
+        .into_iter()
+        .find(|i| i.name == "Rigol_DP832")
+        .expect("no DP832 on this box");
+    let address = supply.address.clone().unwrap_or_default();
+
+    admin.save_net(&NetRecord::new("vbat", "power-supply", "Rigol_DP832").pin(1).address(address))?;
+
+    let vbat = lager.supply("vbat");
+    vbat.set_voltage(3.7)?;
+    vbat.enable()?;
+    assert!(vbat.state()?.voltage.unwrap_or(0.0) > 3.6);
+    vbat.disable()?;
+    Ok(())
+}
+```

@@ -272,6 +272,12 @@
                 ]
               },
               {
+                "group": "Box Setup",
+                "pages": [
+                  "source/reference/rust/admin"
+                ]
+              },
+              {
                 "group": "Guides",
                 "pages": [
                   "source/reference/rust/testing",
@@ -776,6 +782,12 @@
                 "group": "安全",
                 "pages": [
                   "source/zh/reference/rust/hsm"
+                ]
+              },
+              {
+                "group": "Box 设置",
+                "pages": [
+                  "source/zh/reference/rust/admin"
                 ]
               },
               {
