@@ -13,6 +13,12 @@ DUT context lives in `/etc/lager/bench.json` and is surfaced to agents through
 the MCP resources `lager://dut/overview.md` and `lager://dut/context`, and the
 `discover_dut()` and `cite_schematic()` tools.
 
+<Note>
+The DUT context is also part of the
+[bench manifest](/source/reference/mcp/overview#the-bench-manifest), and a
+control plane reads and writes it over `GET|PUT /dut` on the box's port 9000.
+</Note>
+
 ## The two things to author
 
 ### 1. Per-net purpose

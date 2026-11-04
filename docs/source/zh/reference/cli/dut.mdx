@@ -94,3 +94,5 @@ MCP 服务器会监视 `/etc/lager/bench.json`、`/etc/lager/saved_nets.json` �
 `/etc/lager/box_id`。其中任何一个在磁盘上发生变化时，服务器会在下一个请求时重新加载，因此智能体无需任何手动操作就能看到您的改动。
 
 若要立即强制重新加载，可以让已连接的智能体以 `action="reload"` 调用 `box_manage` 工具。您也可以重启 Box 服务。
+
+带有 DUT 编辑器的控制平面通过 Box 端口 9000 上的 `PUT /dut` 写入同一个块，`/status` 通过 `capabilities.dutSync` 声明它。[实验台清单](/source/zh/reference/cli/bench)报告 `dut_updated_at`，即写入方记录的时钟和文件 mtime 中较晚的那个，因此双方都能判断哪个副本更新。`lager dut edit` 和 `add-doc` 也记录这个时钟。

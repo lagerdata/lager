@@ -12,6 +12,18 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **The bench manifest carries the driver API reference for the net types on the
+  bench** (`reference_entries`: methods, gotchas and an example snippet per type),
+  so a client that plans tests from the manifest needs nothing else from the box.
+- **`GET|PUT /dut` on the box's port 9000 reads and replaces the DUT context**
+  (the `dut_slots` block of `bench.json`), which only `lager dut` could write over
+  SSH until now. `/status` advertises it as `capabilities.dutSync`. The manifest
+  reports `dut_updated_at`, the later of the clock a writer records and the file's
+  mtime, so a control plane that keeps its own copy can tell which side is newer;
+  `lager dut edit` and `add-doc` record that clock too.
+
 ## [0.62.0] - 2026-11-02
 
 ### Added
@@ -272,6 +284,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   `lager update`. Each driver gets its own packages and cannot replace the box's. A
   `wheels/` folder serves boxes without internet. `lager drivers list` gains a Deps
   column, and `lager drivers reinstall-deps` rebuilds them after a Python upgrade.
+
+### Added
+
 
 ### Changed
 

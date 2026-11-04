@@ -58,10 +58,12 @@ lager bench export --box my-lager-box --out my-lager-box.json
 | `bench.nets` | 每个已保存的 Net，含类型、角色、仪器、通道，以及用户元数据：`purpose`、`notes`、`tags`、`dut_connection`、`test_hints`。 |
 | `bench.instruments` | Box 上检测到的仪器，按角色列出通道。背后的扫描每分钟最多运行一次。 |
 | `bench.dut_slots` | 用 [`lager dut`](/source/zh/reference/cli/dut) 编写的 DUT 上下文，包含文档引用。 |
+| `bench.dut_updated_at` | DUT 上下文最后一次变更的时间（ISO 8601，UTC）：写入方记录的时钟和文件 mtime 中较晚的那个。保存着自己副本的客户端在覆盖任一方之前先比较时钟。 |
 | `bench.interfaces` | 协议接口（SPI、I2C、UART）及其 Net。 |
 | `bench.capability_bindings` | 能力图：一个 Net 能扮演的每个角色各占一条，并带有置信度。 |
 | `bench.metadata_sources` | 每个 Net 的每个字段由哪个文件写入：`bench.json`（`net_overrides` 条目）或 `saved_net`。覆盖值优先，因此这里能看出保存的值何时被遮住。 |
 | `reference_keys` | Net 名称到记载它的 `lager://reference/{net_type}` 条目。 |
+| `reference_entries` | 这些条目本身，只包含 `reference_keys` 中的键：`get_pattern`、`methods`、`gotchas`、`example_snippet`。方法列表从这台 Box 上的驱动内省得到。 |
 
 ## 零开销轮询
 

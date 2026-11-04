@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3851 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5214 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3854 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5227 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 417 |
+| `unit (mcp)` | `test/mcp/unit/` | 425 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9919** |
+| | **Total gated** | **9943** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 344 files)
+### Local Unit Tests (`test/unit/` -- 346 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 186 files)
+#### Box Unit Tests (`test/unit/box/` -- 187 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -675,7 +675,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed |
 | `test_bench_endpoint.py` | `GET /bench` on the box HTTP server: the body is the bench manifest built from the loaded MCP state (`box_id`, nets with `dut_connection`, `reference_keys`, `metadata_sources`, `capability_bindings`); `ETag` is the quoted content hash and a matching `If-None-Match` in any spelling (quoted, weak, bare, listed, `*`) gets 304 with no body; a build failure is a 500 that says why; the first request on a process that never called `init_state` loads from disk once |
-| `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` from the route's registration (never hardcoded), the real app mounts `/bench`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
+| `test_dut_handler.py` | `GET|PUT /dut` on the box HTTP server: a write replaces the whole `dut_slots` list and keeps every other key of bench.json byte for byte (the single-DUT short form is retired so it cannot shadow the list), a slot the loader would skip is a 400 that names it (no name, non-object, duplicate DUT name, bad clock) with nothing written, the clock is the caller's `updated_at` or now in UTC, the first write creates the file, and a file that is not an object is a 500 that is never replaced |
+| `test_status_bench_fields.py` | `/status` advertises `capabilities.benchManifest` and `capabilities.dutSync` from each route's registration (never hardcoded), the real app mounts `/bench` and `/dut`, and the nets block carries `dut_connection` and `test_hints` with the same present-when-unset contract as `purpose` |
 | `test_lscp_codec.py` | The LSCP/1 frame codec in `measurement/scope/lscp.py`: header and per-channel layout, and counts-to-volts scaling, checked against a fixture the Rust encoder produced, so the daemon and the Python decoder cannot drift apart on the wire |
 | `test_picoscope_bench_features.py` | The PicoScope driver's bench-scope settings: acquisition, holdoff and roll tokens, display settings checked before the daemon stores them (persistence, zoom, XY, math, FFT), cursors handed to the daemon so an open page follows, `get_state` naming channels by letter, and the box-side spectrum finding each tone at its frequency and RMS amplitude |
 | `test_picoscope_net_mapper.py` | The PicoScope net mapper that `Net.get(name, NetType.Analog)` returns: calls reach the driver with the net's own channel as the default, and a feature a PicoScope lacks raises and names the gap instead of returning zero |
@@ -701,7 +702,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 134 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 135 files)
 
 | File | What it tests |
 |------|---------------|
@@ -835,6 +836,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
 | `test_bench_export.py` | `lager bench export`: fetches `GET /bench` on :9000 and prints the manifest with sorted keys (or one line with `--compact`, or to a file with `--out` plus a one-line summary on stderr); a 404 is an update prompt naming 0.50.0, other HTTP errors show the status and body, a connection failure points at `lager hello`, and a reply that is not a manifest is refused and never written |
 | `test_nets_describe_fields.py` | `lager nets describe --dut-connection` / `--test-hint` / `--clear-test-hints`: the two control-plane fields are merged onto the saved record next to purpose, notes and tags, duplicate hints collapse, side-car fields survive, and the nothing-given message names the new options |
+| `test_dut_clock.py` | `lager dut add-doc` (and the helper `edit` shares) stamps `dut_updated_at` in ISO 8601 UTC on the bench.json it writes, on an authored bench and on an empty one, so a control plane comparing clocks never mistakes a CLI edit for an older copy |
 | `test_nets_channel_less_roles.py` | Roles with no channel, spelled as an empty channel list: a `scope` net is saved without a pin, because a pin is what tells the box an old record is a channel |
 | `test_update_scope_daemon.py` | Every box carries a scope daemon built from the Rust it runs: `start_box.sh` builds it on install, update and config apply, and rebuilds it when the daemon sources or the installed PicoTech headers change. Any one family's headers are enough to build, so a box with only `libps2000` gets a daemon. `start_box.sh`, `lager update` and the deploy script agree on which headers count, and a box with none and a PicoScope attached is told which package to install. `lager update` installs the SDK on every box with no headers unless `--skip-picoscope`: each sudo in its repo setup is a grant `lager install` writes, its apt-get matches the SETENV grant, the repo is the one install adds, the packages install over `sudo -n` only, and a missing repo or a failed install warns with the command to run instead of failing the update |
 | `test_scope_bench_commands.py` | `lager scope` status, trigger readback, holdoff, acquire, roll, fft and display: each command line is one action on the box's warm handler with its parameters, a value out of range is refused before the box, and a PicoScope edge trigger sends only the settings named while a Rigol keeps the script path. Also `stream start` and `stream web` output: the link on its own line, the gated note under it, a stop hint that replays as a command, and `stream web` pointing at the link when no browser opens |
@@ -907,7 +909,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_bearer_auth.py` | `lager.mcp.auth`, the optional bearer token on the MCP port, driven as a raw ASGI callable: no token file changes nothing; a token file the server cannot use (empty, unreadable, a directory) refuses every request with 503 and never opens the port; a refused request never reaches the app; `enable`, `rotate` and `disable` take effect on the same instance with no restart; and neither the token nor a presented value reaches a log |
 | `test_server_app.py` | `lager.mcp.server.build_app` puts the bearer check in the request path of the BUILT app, each app runs the session manager its own route uses (the SDK makes a new one per build), and the startup posture lines warn when a control or exec tier is on with no token |
 | `test_net_types.py` | The one net-type table (`engine.net_types`): every `NetType` member has a row and every row's role resolves through `NetType.from_role` (the no-enum allowlist stays honest), every `reference` names an `API_REFERENCE` entry and the rows without one are exactly the documented exceptions, role and alias lookups resolve while an enum name is never aliased (`PowerSupply2Q` stays unanswered), and the bench loader, the capability graph and the planner's phase all read the same row |
-| `test_bench_manifest.py` | The bench manifest and what feeds it: `schema_version`, `box_id` and a content hash that ignores `generated_at`, changes with the bench and survives a JSON round trip; `capability_bindings` filled from the graph on a copy (the shared bench is never mutated); `reference_keys` per net; `metadata_sources` naming `bench.json` or `saved_net` per field, a malformed override not credited; the HTTP loader gone; scanner records flattened to descriptors; the instrument cache scanning once per TTL, remembering a failed scan for the TTL, sharing one scan across concurrent callers and handing out copies; and `get_test_example` returning per-type snippets plus a repository link with no file dependency |
+| `test_bench_manifest.py` | The bench manifest and what feeds it: `schema_version`, `box_id` and a content hash that ignores `generated_at`, changes with the bench and survives a JSON round trip; `capability_bindings` filled from the graph on a copy (the shared bench is never mutated); `reference_keys` per net and `reference_entries` for exactly those keys, as copies of the module dicts, inside the hash and bounded in size for a bench of every type; `dut_updated_at` as the later of the bench.json key and the file mtime, normalised to UTC; `metadata_sources` naming `bench.json` or `saved_net` per field, a malformed override not credited; the box-id chain (file, env, hostname) shared by the loader and every tool reply; the HTTP loader gone; scanner records flattened to descriptors; the instrument cache scanning once per TTL, remembering a failed scan for the TTL, sharing one scan across concurrent callers and handing out copies; and `get_test_example` returning per-type snippets plus a repository link with no file dependency |
 | `test_test_patterns.py` | The agent-facing test-pattern catalog names only real `NetType` members, so a script an agent generates cannot fail on an enum member that does not exist |
 
 #### Integration Tests (`test/mcp/integration/` -- 1 file)

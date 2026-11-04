@@ -237,6 +237,14 @@ except Exception as e:
     logger.warning("Bench manifest handler not available: %s", e)
     _has_bench_manifest = False
 
+# Import DUT-context handler (GET|PUT /dut: the dut_slots block of bench.json)
+try:
+    from lager.http_handlers.dut_handler import register_dut_routes
+    _has_dut = True
+except Exception as e:
+    logger.warning("DUT context handler not available: %s", e)
+    _has_dut = False
+
 # Import custom-devices handler (`lager nets assign` backend)
 try:
     from lager.http_handlers.custom_devices_handler import register_custom_devices_routes
@@ -468,6 +476,10 @@ def status():
             # box predating the route is read as "older box", not as "no
             # bench". Absent entirely on such a box, which reads as false.
             'benchManifest': _has_bench_manifest,
+            # GET|PUT /dut is served on :9000. A control plane with a DUT
+            # editor gates its push on this, so a box predating the route is
+            # shown read-only instead of being PUT to and 404ing.
+            'dutSync': _has_dut,
             # GET /nets/state entries carry a structured ``enabled`` for roles
             # with an on/off output, present only when it was read. With this
             # set, a missing ``enabled`` means "not known"; a box predating it
@@ -594,6 +606,14 @@ if _has_drivers:
     print("[INIT] Custom-drivers REST endpoints registered", flush=True)
 else:
     print("[INIT] Custom-drivers REST endpoints NOT available", flush=True)
+
+# Register DUT-context REST handler (if available)
+if _has_dut:
+    register_dut_routes(app)
+    logger.info("DUT context REST endpoints registered")
+    print("[INIT] DUT context REST endpoints registered", flush=True)
+else:
+    print("[INIT] DUT context REST endpoints NOT available", flush=True)
 
 # Register custom-devices REST handlers (if available)
 if _has_custom_devices:

@@ -11,9 +11,9 @@ It wraps the ``BenchDefinition`` the MCP tools already read with:
 - ``content_hash``, a SHA-256 over everything except the timestamp and the
   hash itself, so a consumer can skip an unchanged manifest (the box's
   ``GET /bench`` answers ``304`` to a matching ``If-None-Match``);
-- ``reference_keys``, which ``lager://reference/{net_type}`` entry documents
-  each net, so a consumer can fetch the API reference for exactly the types
-  on this bench.
+- ``reference_keys``, which API reference entry documents each net, and
+  ``reference_entries``, those entries themselves (methods, gotchas, example
+  snippet), so a consumer that plans tests needs nothing else from the box.
 """
 
 from __future__ import annotations
@@ -49,6 +49,12 @@ class BenchManifest(BaseModel):
     #: Net name -> ``API_REFERENCE`` key (``"psu1": "PowerSupply"``). Nets of
     #: a type with no reference are absent.
     reference_keys: dict[str, str] = Field(default_factory=dict)
+    #: ``API_REFERENCE`` key -> the entry (``get_pattern``, ``methods``,
+    #: ``gotchas``, ``example_snippet``, ``source_module``), for the keys in
+    #: ``reference_keys`` only. Inside the content hash on purpose: the method
+    #: list is introspected from the drivers on this box, so a driver change
+    #: is a manifest change a consumer wants to refetch.
+    reference_entries: dict[str, dict] = Field(default_factory=dict)
 
     def hashed_payload(self) -> dict:
         """The JSON-ready view of this manifest that ``content_hash`` covers."""

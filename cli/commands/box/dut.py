@@ -27,6 +27,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import click
@@ -92,6 +93,18 @@ def _bench_sudoers_bootstrap(user: str = "lagerdata") -> str:
         "  sudo chmod 440 /etc/sudoers.d/lager-bench-json\n"
         "\n"
         "Then re-run the command."
+    )
+
+
+def _stamp_dut_clock(payload: dict) -> None:
+    """Record when the DUT context changed, as ISO 8601 UTC.
+
+    ``GET /bench`` reports the later of this key and bench.json's mtime, and
+    a control plane that keeps its own copy of the DUT context compares the
+    two clocks before it overwrites either side.
+    """
+    payload["dut_updated_at"] = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
 
 
@@ -278,6 +291,7 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
                 continue
 
             payload[key] = new_value
+            _stamp_dut_clock(payload)
             if _write_bench_json(resolved, payload):
                 click.secho(f"Saved DUT context on {resolved}.", fg="green")
                 click.echo(
@@ -381,6 +395,7 @@ def add_doc_cmd(
     else:
         payload["dut_context"] = slot
 
+    _stamp_dut_clock(payload)
     if not _write_bench_json(resolved, payload):
         ctx.exit(1)
 
