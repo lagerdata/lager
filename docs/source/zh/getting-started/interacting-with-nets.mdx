@@ -20,7 +20,7 @@ lager defaults add --box my-lager-box
 # 为常见仪器类型设置默认 Net
 lager defaults add --supply-net POWER
 lager defaults add --debug-net DEBUG_NET
-lager defaults add --i2c-net I2C_0
+lager defaults add --uart-net UART_0
 ```
 
 设置默认值之后，命令可以写得更简洁（例如用 `lager supply voltage 3.3` 代替 `lager supply POWER voltage 3.3 --box my-lager-box`）。全部选项请参阅 [defaults 参考](/source/zh/reference/cli/defaults)。

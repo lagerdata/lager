@@ -213,12 +213,12 @@ lager defaults add --uart-net SERIAL
 
 # Now commands are simpler
 lager supply voltage 3.3          # Uses POWER net on my-bench
-lager debug flash fw.hex          # Uses SWD net on my-bench
+lager debug flash --hex fw.hex          # Uses SWD net on my-bench
 lager uart --interactive          # Uses SERIAL net on my-bench
 
 # Override defaults when needed
 lager supply OTHER_SUPPLY voltage 5.0
-lager debug flash fw.hex --box other-lager-box
+lager debug flash --hex fw.hex --box other-lager-box
 ```
 
 ---

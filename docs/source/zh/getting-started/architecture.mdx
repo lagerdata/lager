@@ -145,7 +145,7 @@ flowchart TB
   端口 22 是例外。SSH 是主机自己的守护进程，而不是容器发布的端口，因此 `--no-publish`
   对它没有影响。
 
-  设置了 `lager box-config network-mode host` 的 Box 同样不发布端口。在那种模式下，容器直接在主机上绑定端口，由主机防火墙管辖它们。
+  设置了 `lager box-config network-mode set host` 的 Box 同样不发布端口。在那种模式下，容器直接在主机上绑定端口，由主机防火墙管辖它们。
 </Note>
 
 ### 为什么有两个 HTTP 端口
@@ -202,14 +202,12 @@ flowchart LR
 ```json
 {
   "name": "psu1",
-  "type": "power-supply",
-  "channel": 1,
-  "instrument": {
-    "name": "rigol-dp832",
-    "address": "USB0::0x1AB1::0x0E11::..."
-  },
-  "params": {
-    "voltage_limit": 5.0
+  "role": "power-supply",
+  "address": "USB0::0x1AB1::0x0E11::...",
+  "instrument": "Rigol_DP832",
+  "pin": "1",
+  "safety_limits": {
+    "max_voltage": 5.0
   }
 }
 ```
@@ -220,23 +218,28 @@ flowchart LR
 
 | Net 类型 | 仪器 |
 |----------|-------------|
-| `power-supply` | Rigol DP800、Keithley 2200/2280、Keysight E36x00 |
+| `power-supply` | Rigol DP711、DP811、DP821、DP831、DP832；Keysight E36233A、E36312A、E36313A；Keithley 2281S；Siglent SPD1168X；EA PSB 10060-60、10080-60 |
 | `battery` | Keithley 2281S |
 | `eload` | Rigol DL3021 |
-| `solar` | EA PSI / EL 系列 |
-| `analog` | Rigol MSO5000（示波器模拟通道） |
-| `logic` | Rigol MSO5000（逻辑分析仪通道） |
+| `solar` | EA PSB 10060-60、10080-60 |
+| `scope` | Rigol MSO5204、Rigol DS1000Z、PicoScope（整台仪器） |
+| `scope-channel` | Rigol MSO5204、Rigol DS1000Z、PicoScope（一个模拟通道） |
+| `logic` | Rigol MSO5204（逻辑分析仪通道） |
 | `adc` | LabJack T7、LabJack U3、USB-202 |
 | `dac` | LabJack T7、LabJack U3、USB-202 |
-| `gpio` | LabJack T7、LabJack U3、USB-202 |
+| `gpio` | LabJack T7、LabJack U3、USB-202、FT232H、FT2232H、FT4232H、Aardvark、YKUSH3 |
 | `thermocouple` | Phidget 热电偶 |
-| `watt` | Yocto-Watt、Joulescope JS220 |
-| `debug` | J-Link（J-Link GDB 服务器）；ST-Link、CMSIS-DAP 和 FTDI 调试适配器（OpenOCD） |
-| `uart` | USB 转串口适配器 |
-| `i2c` | Aardvark、LabJack T7、LabJack U3、FT232H |
-| `spi` | LabJack T7、LabJack U3、FT232H |
+| `dmm` | Siglent SDM3065X |
+| `watt-meter` | Yocto-Watt、Joulescope JS220、Nordic PPK2 |
+| `energy-analyzer` | Joulescope JS220、Nordic PPK2 |
+| `debug` | J-Link（J-Link GDB 服务器）；ST-Link、CMSIS-DAP、Picoprobe、Atmel EDBG 和 FTDI 调试适配器（OpenOCD） |
+| `uart` | USB 转串口适配器（FTDI、CP210x、Prolific、ESP32 JTAG 串口） |
+| `i2c` | Aardvark、LabJack T7、LabJack U3、FT232H、FT2232H、FT4232H |
+| `spi` | Aardvark、LabJack T7、LabJack U3、FT232H、FT2232H、FT4232H |
 | `arm` | Rotrics Dexarm |
-| `usb-hub` | Acroname、YKUSH、Plugable |
+| `usb` | Acroname、YKUSH、YKUSH3、Plugable |
+| `webcam` | UVC 摄像头，包括 Logitech、IPEVO 和 ELP 型号 |
+| `hsm` | YubiHSM 2 |
 
 ## 执行流程
 

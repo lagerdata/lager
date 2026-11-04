@@ -16,7 +16,7 @@ lager i2c [NETNAME] [OPTIONS] [SUBCOMMAND]
 
 | 参数 | 说明 |
 |----------|-------------|
-| `NETNAME` | I2C Net 名称（通过 `lager defaults add --i2c-net` 设置了默认值时可省略） |
+| `NETNAME` | I2C Net 名称。不给名称也不给子命令时，命令会列出 I2C Net |
 
 ## 选项
 
@@ -379,7 +379,7 @@ lager i2c MY_I2C read 6 --address 0x76
 
 ## 说明
 
-- 默认 I2C Net 可以用 `lager defaults add --i2c-net NETNAME` 设置
+- `lager defaults` 没有 I2C Net 选项，因此请在每条命令中给出 Net 名称
 - LabJack T7 约在 130 Hz 至 450 kHz 之间运行，LabJack U3 约在 10 kHz 至 150 kHz 之间运行
 - `config` 会打印 LabJack U3 实际使用的时钟速率，它可能与请求值不同
 - Aardvark 适配器支持内部上拉，可以通过 `config --pull-ups` 切换

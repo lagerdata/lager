@@ -134,7 +134,7 @@ The firewall script sets a default deny policy for incoming traffic and allows
 SSH from anywhere. It allows the Lager ports on `lo`, `docker0`, `tailscale0`
 (if Tailscale is up) and the `--corporate-vpn` interface. It denies them on
 every other interface. These rules govern the Lager ports only on a box set to
-`lager box-config network-mode host`, where the container does not publish
+`lager box-config network-mode set host`, where the container does not publish
 ports.
 
 Each run of the script resets ufw first. A later `lager install` without

@@ -68,10 +68,12 @@ Set a default DAC net to avoid specifying the name each time:
 lager defaults add --dac-net VOLTAGE_OUTPUT
 ```
 
-Then:
+Then `lager dac` with no arguments reads the default net. To set a voltage, give the net
+name as well:
 
 ```bash
-lager dac 3.3
+lager dac
+lager dac VOLTAGE_OUTPUT 3.3
 ```
 
 ## Examples

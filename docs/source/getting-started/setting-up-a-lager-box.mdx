@@ -183,7 +183,12 @@ second run continues rather than starts over.
 The install deploys the release tag that matches your CLI version. To install a different
 release, add `--version` -- for example `--version v0.39.0`. To install the latest
 development code, add `--version main`. A branch builds on the box, so that install is much
-slower. See the [Install reference](/source/reference/cli/install) for every option.
+slower.
+
+To install box code from your own public fork of the repository, add
+`--fork <owner>/<repo> --version <branch>`. `--fork` needs `--version`, and a fork install
+always builds on the box. See the [Install reference](/source/reference/cli/install) for
+every option.
 </Note>
 
 ---
@@ -203,7 +208,7 @@ a VPN or an isolated LAN. See the Security Model section of
 [SECURITY.md](https://github.com/lagerdata/lager/blob/main/SECURITY.md#security-model).
 </Warning>
 
-The rules govern the Lager ports only on a box set to `lager box-config network-mode host`.
+The rules govern the Lager ports only on a box set to `lager box-config network-mode set host`.
 There, the container does not publish ports.
 
 How you point it at your network depends on what you use:
@@ -264,7 +269,7 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.47.0 (release)
+Version: 0.62.0 (release)
 
 bench-1 is online and responding!
 ```

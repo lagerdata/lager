@@ -94,6 +94,8 @@ router.reset_to_defaults()
 ```python
 from lager import Net, NetType
 
+DUT_MAC = "AA:BB:CC:DD:EE:FF"  # the DUT's WiFi MAC address
+
 router = Net.get("router1", type=NetType.Router)
 router.connect()
 

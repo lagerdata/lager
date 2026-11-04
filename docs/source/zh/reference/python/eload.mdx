@@ -238,8 +238,8 @@ from lager import Net, NetType
 
 # Input power supply
 psu = Net.get('INPUT', type=NetType.PowerSupply)
-psu.voltage(12.0)
-psu.current(2.0)
+psu.set_voltage(12.0)
+psu.set_current(2.0)
 psu.enable()
 
 # Output load
@@ -249,7 +249,7 @@ eload.current(0.5)
 eload.enable()
 
 # Measure efficiency
-p_in = 12.0 * psu.measured_current()  # Input power
+p_in = psu.power()                     # Input power
 p_out = eload.measured_power()         # Output power
 efficiency = (p_out / p_in) * 100 if p_in > 0 else 0
 

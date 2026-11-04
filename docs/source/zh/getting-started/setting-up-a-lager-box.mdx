@@ -153,7 +153,9 @@ install runs unattended) [Y/n]:
 **如果中途失败，请修复它报告的问题，然后重新运行同一条命令。** `lager install` 可以安全地重复运行。它每次都会重写自己的配置，并跳过已完成的工作，因此第二次运行是继续，而不是从头开始。
 
 <Note>
-安装会部署与您的 CLI 版本相匹配的发布标签。若要安装其他发布版本，请加上 `--version`，例如 `--version v0.39.0`。若要安装最新的开发代码，请加上 `--version main`。分支会在 Box 上构建，因此安装慢得多。全部选项请参阅 [安装参考](/source/zh/reference/cli/install)。
+安装会部署与您的 CLI 版本相匹配的发布标签。若要安装其他发布版本，请加上 `--version`，例如 `--version v0.39.0`。若要安装最新的开发代码，请加上 `--version main`。分支会在 Box 上构建，因此安装慢得多。
+
+若要从您自己的公开仓库分叉安装 Box 代码，请加上 `--fork <owner>/<repo> --version <branch>`。`--fork` 需要 `--version`，并且分叉安装总是在 Box 上构建。全部选项请参阅 [安装参考](/source/zh/reference/cli/install)。
 </Note>
 
 ---
@@ -170,7 +172,7 @@ Docker 转发这些流量的位置在主机防火墙规则之前。因此，一�
 Security Model 部分。
 </Warning>
 
-只有在设置了 `lager box-config network-mode host` 的 Box 上，这些规则才管辖 Lager 的端口。在那种模式下，容器不发布端口。
+只有在设置了 `lager box-config network-mode set host` 的 Box 上，这些规则才管辖 Lager 的端口。在那种模式下，容器不发布端口。
 
 如何把它接入您的网络，取决于您使用什么：
 
@@ -225,7 +227,7 @@ lager hello --box bench-1
 ```
 Box: bench-1
 IP: 100.64.1.42
-Version: 0.47.0 (release)
+Version: 0.62.0 (release)
 
 bench-1 is online and responding!
 ```

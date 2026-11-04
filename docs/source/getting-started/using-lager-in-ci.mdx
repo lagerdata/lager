@@ -35,7 +35,7 @@ as a person:
 ```yaml
 runs-on: [self-hosted, lager-bench]
 steps:
-  - run: pip install lager-cli==0.47.0
+  - run: pip install lager-cli==0.62.0
   - run: lager login "$AUTH_URL" --email "$EMAIL" --password "$PASSWORD"
   - run: lager boxes add --name BENCH-1 --ip "$BOX_IP" --user lagerdata --yes
   - run: lager python tests/hil --box BENCH-1
@@ -238,7 +238,7 @@ file is a JSON file.
 ```json
 {
   "BOXES": {
-    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.47.0" }
+    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.62.0" }
   },
   "DEFAULTS": { "gateway_id": "BENCH-1" }
 }
@@ -276,6 +276,9 @@ The CLI uses this sequence. The first item has the highest priority.
 Set `LAGER_BOX` one time in the `env:` block of the job. Then do not use
 `--box` in the steps. Each workflow is then the same on each bench. To change
 the name of a box, you change one line.
+
+`lager boxes lock` and `lager boxes unlock` do not read `LAGER_BOX`. Their
+`--box` option is required, so give it in those steps: `--box "$LAGER_BOX"`.
 
 ```yaml
 jobs:
@@ -539,11 +542,12 @@ These commands get the lock automatically:
 
 - `lager python`
 - the instrument commands `adc`, `dac`, `gpi`, `gpo`, `thermocouple`, `watt`,
-  `energy`, `scope`, `logic`
+  `energy`, `dmm`, `scope`, `logic`
 - the communication commands `spi`, `i2c`, `uart`, `usb`, `wifi`, `ble`,
   `blufi`, `router`
 - the power commands `supply`, `battery`, `eload`, `solar`
-- the equipment commands `debug`, `arm`, `webcam`
+- the equipment commands `debug`, `arm`, `webcam`, `hsm`
+- `lager custom` and the commands of a custom driver
 - the administration commands `install`, `uninstall`, `update`, `install-wheel`
 
 These commands do not use the lock:
@@ -840,7 +844,7 @@ To change a box to a specified version:
 
 ```bash
 lager update --box BENCH-1 --version main --yes
-lager update --box BENCH-1 --version v0.47.0 --yes
+lager update --box BENCH-1 --version v0.62.0 --yes
 ```
 
 `--version` accepts a release tag or a version number, with or without an
@@ -866,7 +870,7 @@ lager box-config pip list --box BENCH-1
 Export the configuration and import it to make each bench the same:
 
 ```bash
-lager box-config export --box BENCH-1 -o bench-config.json
+lager box-config export bench-config.json --box BENCH-1
 lager box-config import bench-config.json --box BENCH-2
 ```
 
@@ -1549,6 +1553,10 @@ runner account. The CLI also makes the session current again automatically.
 lager login https://gateway.example.com
 lager whoami
 ```
+
+An account that signs in with single sign-on has no password to type. Use
+`lager login https://gateway.example.com --web --no-browser`. The CLI prints a
+link. Open it on any machine, then paste the code that it shows.
 
 Some conditions need a login in the job. Examples are a runner on a different
 machine with no token, or a box that you install again at intervals. For these

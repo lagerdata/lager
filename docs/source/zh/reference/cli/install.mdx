@@ -92,7 +92,7 @@ lager install [OPTIONS]
 </Warning>
 
 防火墙脚本把入站流量的默认策略设为拒绝，并允许来自任意位置的 SSH。它在 `lo`、`docker0`、`tailscale0`（如果 Tailscale 已启动）和 `--corporate-vpn`
-指定的接口上放行 Lager 端口，并在其他所有接口上拒绝它们。只有在设置了 `lager box-config network-mode host` 的 Box 上（容器不发布端口），这些规则才管辖 Lager 端口。
+指定的接口上放行 Lager 端口，并在其他所有接口上拒绝它们。只有在设置了 `lager box-config network-mode set host` 的 Box 上（容器不发布端口），这些规则才管辖 Lager 端口。
 
 该脚本每次运行都会先重置 ufw。因此，之后不带 `--skip-firewall` 的
 `lager install` 会删除您手动添加的防火墙规则。`lager update` 不运行该脚本。
