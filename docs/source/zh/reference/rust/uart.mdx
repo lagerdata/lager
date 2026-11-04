@@ -11,7 +11,7 @@ UART 会话基于 Socket.IO，因此它位于一个 cargo feature 之后：
 
 ```toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.10", features = ["uart"] }
+lager = { package = "lager-net", version = "0.11", features = ["uart"] }
 ```
 
 `uart` feature 隐含启用 `blocking`。要使用 `AsyncUart`，请同时启用 `uart` 和 `async`。`AsyncLagerBox::uart()` 和 `uart_with()` 会打开它，它的方法与 `Uart` 相同，其中 `read`、`wait_for`、`write` 和 `stop` 需要 `.await`。

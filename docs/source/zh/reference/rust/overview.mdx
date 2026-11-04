@@ -28,7 +28,7 @@ Lager Rust crate 让嵌入式开发者以一等公民的方式访问 Lager Net�
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.10" }
+lager = { package = "lager-net", version = "0.11" }
 ```
 
 该 crate 需要 Rust **1.75** 或更高版本，基于 2021 edition 构建。
@@ -73,11 +73,12 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `uart` | 否 | 通过 Box 的 Socket.IO `/uart` 命名空间进行 `Uart` 流式会话；同时启用 `async` 时还有 `AsyncUart` |
 | `rtt` | 否 | 通过 Box 的 Socket.IO 命名空间进行 RTT 日志流式传输，用于读取运行中目标的 `defmt` 输出；同时启用 `async` 时还有 `AsyncRttSession` |
 | `scope-trace` | 否 | 示波器波形样本：`Scope::capture()` 和 `Scope::stream()` |
+| `admin` | 否 | 通过 `admin()` 设置 Box：已保存的 Net、元数据、驱动、二进制文件、文件下载、自定义设备和诊断 |
 
 两种客户端执行的是完全相同的请求构造器和响应解析器，因此这两条传输路径不会各自跑偏。
 
 ```toml
-lager = { package = "lager-net", version = "0.10", features = ["async"] }
+lager = { package = "lager-net", version = "0.11", features = ["async"] }
 ```
 
 ## 错误
@@ -91,7 +92,7 @@ lager = { package = "lager-net", version = "0.10", features = ["async"] }
 | `Box { status, message }` | Box 拒绝了请求，或者硬件出错 |
 | `FlashFailed`, `ProbeBusy`, `SafetyRefused` | 某个调试探针操作以该 crate 有专门命名的方式失败 |
 | `DfuFailed` | Box 端的 `dfu-util` 以非零状态退出 |
-| `UnsupportedByBox` | HTTP 501：Box 镜像早于该端点；请更新 Box |
+| `UnsupportedByBox` | Box 镜像早于该端点；请更新 Box |
 | `AuthRequired` | Box 的网关需要 bearer 令牌，而当前没有可用的令牌 |
 | `NotSupportedByBox` | 为兼容性而保留；没有任何 Net 类型会返回它 |
 | `UartInUse` | 另一个会话占用了该 UART Net 或其串行设备 |
@@ -156,6 +157,10 @@ lager = { package = "lager-net", version = "0.10", features = ["async"] }
 ### 安全
 
 - [HSM](/source/zh/reference/rust/hsm) —— YubiHSM 2 密钥与签名
+
+### Box 设置
+
+- [Box 设置（admin）](/source/zh/reference/rust/admin) —— Net、驱动、文件和诊断，位于 `admin` 功能之后
 
 ### 指南
 
