@@ -1,0 +1,129 @@
+---
+title: Leasing a Box from a Pool
+description: Using lager lease to run a command on any available box that has the necessary equipment
+---
+
+A test usually identifies the box that it uses, for example `--box BENCH-3`.
+With `lager lease`, a test requests a box from a **pool** instead. A pool is a
+named set of requirements, for example "an nRF52840 board and a debug probe".
+A lease server finds a box that agrees with the requirements, is online, and is
+not in use. Lager then runs your command on that box and releases the box when
+the command stops.
+
+The lease server is not part of Lager. Lager sends the pool name and gets one
+box. The server keeps the pools and the record of each lease.
+
+## Syntax
+
+```bash
+lager lease --pool NAME [--ttl SECONDS] [--context KEY=VALUE]... -- COMMAND [ARGS]...
+```
+
+The `--` separates the `lager lease` options from your command. `lager lease`
+does not read the text after `--`.
+
+```text
+lager lease --pool nrf52  --  lager python flash_and_test.py
+\______________________/      \____________________________/
+ options for lager lease       COMMAND: runs as you typed it
+```
+
+## Options
+
+| Option | Description |
+| --- | --- |
+| `--pool NAME` | Name of the pool. Required. |
+| `--ttl SECONDS` | Time that the lease stays active after the last renewal. Range: 60 to 1800. Default: 300. |
+| `--context KEY=VALUE` | Information that the lease server shows with the lease, for example the URL of a CI run. You can use this option up to 10 times. |
+| `--server URL` | The lease server. See [Server and credentials](#server-and-credentials). |
+| `--org ORG` | The organization (id, slug or name). Use it only if your account is in more than one organization. |
+
+## How it operates
+
+1. Lager asks the lease server for a box from the pool.
+2. The server locks one box for the lease, and sends the box address to Lager.
+3. Lager runs COMMAND with these environment variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `LAGER_BOX` | The address of the leased box. |
+   | `LAGER_LOCK_HOLDER` | The lock identity of the lease. |
+   | `LAGER_LEASE_ID` | The identifier of the lease. |
+
+4. While COMMAND runs, Lager renews the lease at the interval that the server
+   sets.
+5. When COMMAND stops, Lager releases the box. This also occurs when COMMAND
+   fails and when you push Ctrl-C.
+
+Every `lager` command in COMMAND uses `LAGER_BOX` and `LAGER_LOCK_HOLDER`. Thus,
+each command uses the leased box, and each command sees the lock of the lease
+as its own lock. See [Box Locking](/source/reference/cli/locking).
+
+<Warning>
+Do not use `--box` in COMMAND. `--box` overrides `LAGER_BOX`. The command then
+uses a different box, and the leased box stays unused until the command stops.
+</Warning>
+
+## Examples
+
+Run one script on a leased box:
+
+```bash
+lager lease --pool nrf52 -- lager python flash_and_test.py
+```
+
+Run more than one command on the same box. The lease holds the box until the
+shell stops:
+
+```bash
+lager lease --pool nrf52 -- sh -c '
+  lager python flash.py &&
+  lager python test_ble.py
+'
+```
+
+Run a test in a GitHub Actions job:
+
+```yaml
+- run: >
+    lager lease --pool nrf52
+    --context run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    -- pytest tests/hardware
+  env:
+    STOUT_URL: https://your-control-plane.example.com
+    STOUT_TOKEN: ${{ secrets.STOUT_TOKEN }}
+```
+
+## Server and credentials
+
+Lager finds the lease server in this sequence:
+
+1. The `--server` option.
+2. The `STOUT_URL` environment variable.
+3. The server of your `lager login` session, if you have exactly one session.
+
+For the credential, Lager uses the `STOUT_TOKEN` environment variable if it is
+set. If not, Lager uses your `lager login` session. See
+[Signing In](/source/reference/cli/login). Use a token in CI, because a CI job
+cannot sign in.
+
+## Exit status
+
+| Status | Meaning |
+| --- | --- |
+| The status of COMMAND | COMMAND ran. A status of 128+N means that signal N stopped COMMAND. |
+| `75` | Lager could not lease a box, so COMMAND did not run. Or, the lease ended while COMMAND ran, so Lager stopped COMMAND. |
+| `127` | Lager could not start COMMAND. |
+
+Status 75 is different from a test failure. Thus, your CI can show "no box
+available" separately from "test failed".
+
+## Problems
+
+| Problem | Result |
+| --- | --- |
+| All the matching boxes are in use. | Lager stops with status 75 and shows that all boxes are in use. |
+| No box agrees with the requirements of the pool. | Lager stops with status 75. Change the requirements of the pool. |
+| The lease server is not available during a renewal. | COMMAND continues. The lease stays active until the TTL ends. Lager shows a warning after half of the TTL. |
+| The job or the computer stops unexpectedly. | The renewals stop. The lease ends, and the box releases itself, after the TTL. |
+| An administrator ends the lease. | Lager stops COMMAND and exits with status 75. Another job can then use the box. |

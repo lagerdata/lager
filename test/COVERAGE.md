@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3851 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3884 (+3 xfailed) |
 | `unit (box)` | `test/unit/box/` | 5214 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9919** |
+| | **Total gated** | **9952** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,7 +504,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 344 files)
+### Local Unit Tests (`test/unit/` -- 345 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 186 files)
 
@@ -701,7 +701,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 134 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 135 files)
 
 | File | What it tests |
 |------|---------------|
@@ -816,6 +816,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_impl_script_dispatch.py` | Every `run_backend`/`get_impl_path` call site names an impl script that exists on disk, against a two-sided `KNOWN_MISSING` baseline (now empty, #261); plus `get_impl_path` subdir/root resolution, its raise-on-missing behavior, and that the formerly-dead `lager logic` subcommands reach the backend |
 | `test_instrument_role_tables.py` | The three instrument role tables -- the box's `SUPPORTED_USB` and `CHANNEL_MAPS`, the CLI's `INSTRUMENT_NET_MAP` -- agree for every instrument; a channel advertised for a role the CLI will not create a net for is a silently unusable capability. Also that every instrument the scanner detects has a `lager nets add` entry |
 | `test_logic_dispatch_actions.py` | Every action `lager logic` sends is one the impl script it targets actually handles -- the contract that broke in #261, which a file-existence check cannot see (the pulse-width pair named an existing file with an action it does not register) |
+| `test_lease.py` | `lager lease` and `lease_client.py` against an in-process fake lease server: server, credential and organization resolution; the 409 reasons as exit 75; the leased box and lock holder reaching a real child process; renewals, a lease ended mid-run, a failed release, and exit-status pass-through |
 | `test_login_commands.py` | `lager login`/`logout`/`whoami`: display-name fallback, MFA prompt wiring, logout URL rstrip, and the four `whoami` session states |
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths and `ByteSizeType` (`--erase-size`: decimal, `0x` hex, `K`/`M` suffixes, never zero) |

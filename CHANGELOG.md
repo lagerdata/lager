@@ -12,6 +12,15 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager lease` runs a command on any available box from a pool.**
+  `lager lease --pool <name> -- <command>` asks a lease server for a box that
+  agrees with the requirements of the pool, runs the command with `LAGER_BOX`
+  set to that box, renews the lease while the command runs, and releases the
+  box when the command stops. It exits with the status of the command, or 75
+  when no box is available.
+
 ## [0.62.0] - 2026-11-02
 
 ### Added
