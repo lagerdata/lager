@@ -47,6 +47,7 @@ async fn rail_comes_up() -> lager::Result<()> {
 | `debug.rtt()` | `RttStream`（`std::io::Read`） | `AsyncRttStream`（`tokio::io::AsyncRead`） |
 | `debug.rtt_interactive()` | 有 | 有，即 `AsyncRttSession` |
 | `Scope::capture()` 和 `Scope::stream()` | 有 | **无** |
+| `admin()`（feature `admin`） | 有 | 有，即 `AsyncAdmin` |
 
 `uart`、`rtt` 和 `scope-trace` 这几个 feature 都隐含启用 `blocking`，因此启用它们就会把阻塞客户端拉进来，无论您是否想要。`AsyncUart` 需要 `uart` 和 `async` 两个 feature，`AsyncRttSession` 需要 `rtt` 和 `async`，`AsyncRttStream` 只需要 `async`。
 
@@ -86,5 +87,5 @@ let (v, temp, power) = tokio::try_join!(
 ## 说明
 
 - `reqwest` 是以 `default-features = false` 引入的，因此没有 TLS 栈。与 Box 之间的流量是本地网络上或 Tailscale 上的明文 HTTP。
-- 异步客户端本身只需要 `tokio` 的 `time` feature。上面代码片段中的 `macros` 和 `rt-multi-thread` 是为了写测试用的。
+- crate 会自行启用异步客户端所需的 `tokio` feature（`time`、`net`、`io-util`、`rt`、`sync`）。上面代码片段中的 `macros` 和 `rt-multi-thread` 是为了写测试用的。
 - 网关认证在两种客户端上的工作方式完全相同，自动刷新令牌也包括在内。

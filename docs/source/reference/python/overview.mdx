@@ -25,30 +25,32 @@ The SDK supports various net types for different hardware:
 
 | NetType | Description | Hardware |
 |---------|-------------|----------|
-| `NetType.PowerSupply` | Programmable power supply | Rigol DP800, Keithley, Keysight |
-| `NetType.PowerSupply2Q` | Two-quadrant supply (solar sim) | EA PSI/EL series |
+| `NetType.PowerSupply` | Programmable power supply | Rigol DP700/DP800, Keysight E36200/E36300, Keithley 2281S, Siglent SPD1000X, EA PSB |
+| `NetType.PowerSupply2Q` | Two-quadrant supply. Not used by solar nets; see [Solar](./solar) | -- |
 | `NetType.Battery` | Battery simulator | Keithley 2281S |
 | `NetType.ELoad` | Electronic load | Rigol DL3000 |
-| `NetType.Analog` | Oscilloscope analog input | Rigol MSO5000 |
+| `NetType.Analog` | Oscilloscope (`scope` and `scope-channel` nets) | Rigol MSO5000, Rigol DS1000Z, PicoScope |
 | `NetType.Logic` | Logic analyzer input | Rigol MSO5000 |
-| `NetType.Waveform` | Waveform generator | Rigol MSO5000 |
-| `NetType.GPIO` | Digital I/O | LabJack T7, LabJack U3, MCC USB-202 |
-| `NetType.ADC` | Analog-to-digital converter | LabJack T7, LabJack U3, MCC USB-202 |
-| `NetType.DAC` | Digital-to-analog converter | LabJack T7, LabJack U3, MCC USB-202 |
+| `NetType.Waveform` | Not implemented | -- |
+| `NetType.GPIO` | Digital I/O | LabJack T7/U3/U6, MCC USB-202, FT232H/FT2232H/FT4232H, Aardvark, YKUSH3 |
+| `NetType.ADC` | Analog-to-digital converter | LabJack T7/U3/U6, MCC USB-202 |
+| `NetType.DAC` | Digital-to-analog converter | LabJack T7/U3/U6, MCC USB-202 |
 | `NetType.Thermocouple` | Temperature sensor | Phidget |
 | `NetType.DMM` | Bench multimeter | Siglent SDM3065X |
-| `NetType.Rotation` | Rotary encoder | Phidget |
-| `NetType.WattMeter` | Power meter | Yocto-Watt, Joulescope JS220 |
+| `NetType.Rotation` | Rotary encoder (legacy, see below) | Phidget encoder |
+| `NetType.WattMeter` | Power meter | Yocto-Watt, Joulescope JS220, Nordic PPK2 |
 | `NetType.UART` | Serial communication | USB Serial |
 | `NetType.Debug` | Debug probe | J-Link, OpenOCD-supported probes |
 | `NetType.Arm` | Robotic arm | Rotrics Dexarm |
-| `NetType.Usb` | USB port control | Acroname, YKUSH, Plugable |
+| `NetType.Usb` | USB port control | Acroname, YKUSH, YKUSH3, Plugable |
 | `NetType.Wifi` | WiFi module | Lager Box WiFi |
-| `NetType.Actuate` | Actuator control | Dexarm actuator |
-| `NetType.SPI` | SPI bus communication | Aardvark, FT232H, LabJack T7, LabJack U3 |
-| `NetType.I2C` | I2C bus communication | Aardvark, FT232H, LabJack T7, LabJack U3 |
-| `NetType.EnergyAnalyzer` | Energy integration measurement | Joulescope JS220 |
-| `NetType.Webcam` | Video streaming | USB Webcam |
+| `NetType.Actuate` | Move an arm to a saved position (legacy, see below) | Rotrics Dexarm |
+| `NetType.SPI` | SPI bus communication | Aardvark, FT232H/FT2232H/FT4232H, LabJack T7, LabJack U3 |
+| `NetType.I2C` | I2C bus communication | Aardvark, FT232H/FT2232H/FT4232H, LabJack T7, LabJack U3 |
+| `NetType.EnergyAnalyzer` | Energy integration measurement | Joulescope JS220, Nordic PPK2 |
+| `NetType.Webcam` | Video streaming | UVC cameras |
+| `NetType.Hsm` | Hardware security module | YubiHSM 2 |
+| `NetType.Router` | Network router control | MikroTik RouterOS |
 
 ## Quick Start
 
@@ -188,6 +190,8 @@ print("Test complete")
 | [Net](./net) | Hardware net management and core operations |
 | [Debug](./debug) | Device flashing, reset, and debug control (includes RTT) |
 | [USB](./usb) | USB device power control |
+| [Custom Drivers](./custom-drivers) | Open a custom driver installed on the box |
+| [Breakpoints](./breakpoints) | Pause a script and inspect it |
 
 ### Power & Simulation
 
@@ -204,7 +208,8 @@ print("Test complete")
 | Page | Description |
 |------|-------------|
 | [Scope](./scope) | Oscilloscope waveform capture and measurements |
-| [Logic Analyzer](./logic) | Digital signal capture and protocol decode |
+| [Logic Analyzer](./logic) | Digital signal capture and triggers |
+| [Energy Analyzer](./energy) | Energy and charge integration |
 | [ADC](./adc) | Analog-to-digital conversion |
 | [Thermocouple](./tc) | Temperature measurement |
 | [DMM](./dmm) | Bench multimeter readings |
@@ -221,6 +226,8 @@ print("Test complete")
 | [Serial](./serial) | Native pyserial support |
 | [BLE](./ble) | Bluetooth Low Energy communication |
 | [WiFi](./wifi) | WiFi configuration |
+| [BluFi](./blufi) | WiFi provisioning of an ESP32 over BLE |
+| [Router](./router) | MikroTik router control |
 
 ### Utilities
 
@@ -228,6 +235,41 @@ print("Test complete")
 |------|-------------|
 | [Robot Arm](./arm) | Robotic arm control |
 | [Webcam](./webcam) | Webcam streaming and video capture |
+| [HSM](./hsm) | YubiHSM 2 key storage and signing |
+
+## Run Records
+
+Two functions connect a script to its run record. Both are top-level exports.
+
+```python
+import os
+from lager import record_value, output_dir
+
+record_value('dut.firmware', '1.4.2')   # A fact only the script knows
+with open(os.path.join(output_dir(), 'results.csv'), 'w') as f:
+    f.write('step,result\n')
+```
+
+| Function | Description |
+|----------|-------------|
+| `record_value(key, value)` | Write `key = value` into the run record's `scriptAsserted` section. Returns `True` when written, and `False` outside a recorded run |
+| `output_dir()` | Return the run's output folder, and create it if necessary. Outside `lager python`, it is `lager-output` in the current directory |
+
+A key is 1-128 letters, digits and `. _ : / -`, and starts with a letter or digit. A value is
+a string of up to 4096 characters, a number, a boolean or `None`. A run records at most 256
+keys, and the last value for a key wins. A value that the record cannot hold raises
+`ValueError`. `lager python --download` brings back the files in `output_dir()` and the run
+record. See [`lager python`](/source/reference/cli/python).
+
+## Legacy Net Types
+
+`NetType.Rotation` and `NetType.Actuate` have no `lager nets add` role. They work only for a
+net that a saved record or `LAGER_MUXES` defines by hand.
+
+| Class | Method | Description |
+|-------|--------|-------------|
+| `Rotation` | `read()` | Read a Phidget encoder. Returns `{'position': value}`. The location is `phidget:<serial>:<port>` |
+| `Actuate` | `actuate()` | Move a Dexarm to the saved position. The location is a dict with `serial_number` and `position` (x, y, z) |
 
 ## Error Handling
 

@@ -26,7 +26,7 @@ The Net-based API provides methods for embedded debugging operations.
 | `read_memory(address, length)` | Read memory from device |
 | `status()` | Get connection status |
 | `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication (raw bytes) |
-| `rtt_defmt(elf, channel)`                            | RTT session decoded through `defmt-print` (yields log lines)    |
+| `rtt_defmt(elf, channel, search_addr, search_size, chunk_size)` | RTT session decoded through `defmt-print` (yields log lines)    |
 | `session(...)` | Scoped session: connect on entry, guaranteed teardown on exit |
 
 ## Method Reference
@@ -123,7 +123,7 @@ Disconnect from the target device.
 dbg.disconnect()
 ```
 
-**Returns:** `dict` - Status dictionary
+**Returns:** `dict` - Status dictionary on a J-Link probe. On an OpenOCD probe it returns `None` ([#850](https://github.com/lagerdata/lager/issues/850)).
 
 ### `reset(halt=False)`
 
@@ -338,7 +338,9 @@ This reports whether a gdbserver process is up for the probe. It is not a
 statement about the target: a server can outlive the part it was attached to.
 The CLI's `lager debug <net> status` reports both states separately.
 
-### `session(speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
+### `session(*, speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
+
+Every parameter is keyword-only. A positional argument raises `TypeError`.
 
 Scoped debug session. It connects on entry and guarantees teardown on exit. The
 safe flash → attach-RTT → reset ordering is therefore encoded once, rather than
@@ -631,6 +633,9 @@ and it is not one.
 | --------- | ---- | ------- | ----------- |
 | `elf` | `str` | required | Path to the firmware ELF flashed on the DUT (relative paths resolve against the script's working dir on the box) |
 | `channel` | `int` | `0` | RTT channel number |
+| `search_addr` | `int` or `None` | `None` | RAM start address for RTT control block search |
+| `search_size` | `int` or `None` | `None` | Size of RAM region to search in bytes |
+| `chunk_size` | `int` or `None` | `None` | Size of each read chunk in bytes |
 | `defmt_print_bin` | `str` or `None` | `None` | Override the `defmt-print` binary (path or name on PATH) |
 | `read_timeout` | `float` | `0.5` | Poll interval (seconds) for the internal RTT read loop |
 

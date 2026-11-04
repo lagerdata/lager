@@ -38,9 +38,10 @@ When the line runs, the script prints a banner and stops:
 ```
 === lager breakpoint "check the DUT before the final step" at test.py:14  (id 7f3a…e9)
     resume: press Enter here, or `lager python --continue 7f3a…e9 --box mybox`
-    inspect: `lager python --console 7f3a…e9 --box mybox`
     auto-resume in 300s
 ```
+
+With `interactive=True`, the banner also has an `inspect:` line that names the console command.
 
 `pause()` is a safe no-op when it can't pause — when the script isn't running under
 `lager python` (no breakpoint context), or when [breakpoints are disabled](#disabling-breakpoints).

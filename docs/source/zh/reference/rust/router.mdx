@@ -57,8 +57,34 @@ pub struct RouterSystemInfo {
     pub free_memory: Option<i64>,      // bytes
     pub total_memory: Option<i64>,
     pub free_hdd_space: Option<i64>,
+    pub extra: Map<String, Value>,     // any other field the router sends
 }
 ```
+
+### `SecurityProfile`
+
+`create_security_profile()` 创建的安全配置。保持为 `None` 的字段采用 Box 的默认值：`dynamic-keys`、`wpa2-psk`、`aes-ccm` 和空密钥。
+
+| 字段 | 说明 |
+|---|---|
+| `name` | 配置名称 |
+| `mode` | RouterOS 模式（`"dynamic-keys"`、`"none"` 等） |
+| `authentication_types` | `"wpa2-psk"`、`"wpa-psk,wpa2-psk"` 等 |
+| `unicast_ciphers` | `"aes-ccm"`、`"tkip,aes-ccm"` 等 |
+| `wpa2_pre_shared_key`、`wpa_pre_shared_key` | 口令 |
+
+`SecurityProfile::wpa2(name, passphrase)` 构造一个 WPA2-PSK 配置，其余字段采用 Box 的默认值。
+
+### `AccessListEntry`
+
+`add_access_list_entry()` 添加的条目。
+
+| 字段 | 说明 |
+|---|---|
+| `mac_address` | 客户端 MAC 地址 |
+| `authentication` | `Some(false)` 会拒绝该客户端。Box 默认为 `true` |
+| `interface` | 把该条目限定在一个无线接口上 |
+| `signal_range` | RouterOS 信号范围，例如 `"-80..120"` |
 
 ## 方法参考
 
@@ -103,6 +129,16 @@ router.block_dns()?;
 router.block_port(8883, "tcp")?;
 router.add_bandwidth_limit("192.168.88.0/24", "1M/1M", None)?;
 ```
+
+### 带类型的配置方法
+
+| 签名 | 说明 |
+|---|---|
+| `configure_wireless(interface: &str, properties: Value) -> Result<Value>` | 设置无线属性，例如 `json!({"ssid": "T", "security_profile": "wpa2"})`。键中的下划线在路由器上变为连字符 |
+| `create_security_profile(profile: &SecurityProfile) -> Result<Value>` | 创建一个安全配置；返回创建的记录 |
+| `add_firewall_rule(chain: &str, action: &str, fields: Value) -> Result<Value>` | 添加一条防火墙规则；没有额外字段时传入 `json!({})` |
+| `add_access_list_entry(entry: &AccessListEntry) -> Result<Value>` | 添加一条访问列表条目；返回创建的记录 |
+| `rest_get(path: &str, query: Option<Value>) -> Result<Value>` | 只读的 `GET /rest<path>` 调用，例如 `"/ip/address"` |
 
 ## 示例
 

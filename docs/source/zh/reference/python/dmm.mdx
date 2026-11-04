@@ -1,0 +1,62 @@
+---
+title: DMM
+description: 在 Python 中读取台式数字万用表的读数
+---
+
+读取台式数字万用表（DMM）Net。调用经由 Box 的硬件服务完成，由它持有该万用表的 VISA 会话。脚本和 CLI 可以同时使用同一台万用表。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `measure(function, range=None, nplc=None, sensor=None)` | 配置并读取一次读数 |
+| `errors()` | 读取并清空万用表的错误队列 |
+| `identify()` | 返回 `*IDN?` 的应答 |
+
+### `Net.get(name, type=NetType.DMM)`
+
+```python
+dmm = Net.get('VBAT', type=NetType.DMM)
+```
+
+### `measure(function, range=None, nplc=None, sensor=None)`
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `function` | `str` | `dcv`、`acv`、`dci`、`aci`、`res`、`fres`、`cont`、`diode`、`freq`、`period`、`cap` 或 `temp` |
+| `range` | `float` 或 `str` | 以基本单位表示的满量程值（`20` 表示 20 V，`2e-6` 表示 2 uF），或用 `None`/`"auto"` 表示自动量程 |
+| `nplc` | `float` | 以电源周期数表示的积分时间；仅适用于 `dcv`、`dci`、`res`、`fres` |
+| `sensor` | `str` | `temp` 使用的温度探头：`rtd:pt100`、`rtd:pt1000`、`ther:k`、... |
+
+**返回：** 单位为 V、A、ohm、Hz、s、F 或 degC 的 `float`；万用表报告过载或输入开路时返回 `None`。
+
+**异常：**
+
+- `DMMUnsupportedError`（一种 `ValueError`）：万用表不支持该功能、量程、NPLC 值或探头。
+- `DeviceError`（来自 `lager.nets.device`）：万用表拒绝了命令或没有应答。错误信息中带有万用表报告的错误。
+
+各仪器的有效量程和 NPLC 值列在 [CLI 参考](/source/reference/cli/dmm#supported-hardware)中。
+
+## 示例
+
+```python
+from lager import Net, NetType
+
+dmm = Net.get('VBAT', type=NetType.DMM)
+
+v = dmm.measure('dcv', range=20, nplc=10)
+assert v is not None, 'VBAT over range'
+assert 3.2 < v < 3.4, f'VBAT out of tolerance: {v:.6f} V'
+
+r = dmm.measure('fres', range=200)
+print(f'Shunt: {r:.4f} ohm')
+
+if dmm.measure('cont') is None:
+    print('Open circuit')
+```

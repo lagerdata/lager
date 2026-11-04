@@ -107,8 +107,31 @@ pub enum TriggerMode { Auto, Normal, Single }
 | `triggered()` | 这次采集是否来自触发 |
 | `overflowed('A')` | 该通道是否超量程 |
 | `sample_rate_hz()`、`duration_s()` | 这次采集的采样率和时长 |
+| `streaming()` | 这次采集是否来自滚动串流，而不是一个数据块 |
+| `is_envelope()` | 采样点是否为（最小值，最大值）对，即滚动模式发送的格式 |
+| `channel_index('A')` | 某个通道在 `channels` 中的位置，或 `None` |
+| `ScopeCapture::decode(&[u8])` | 解码一个原始 LSCP/1 帧。帧有误时以 `Error::Decode` 失败。不需要任何 feature |
 
 对于不在这次采集中的通道，`volts()` 和 `counts()` 返回 `None`。
+
+### 控制设置与结果
+
+带类型的控制方法接受并返回以下类型。输入结构体 `DisplaySettings`、`FftOptions` 和 `CursorSettings` 实现了 `Default`：设置所需字段，其余用 `..Default::default()` 补齐。
+
+| 类型 | 内容 |
+|---|---|
+| `AcquisitionMode` | `Normal`、`Average`、`Peak` |
+| `Acquisition` | `mode`、`average_count` |
+| `RollMode` | `Auto`、`On`、`Off` |
+| `Roll` | `roll`（设置值）、`rolling`（示波器当前是否在滚动） |
+| `DisplaySettings` | `persistence`（`Persistence::Off`、`Seconds(f64)`、`Infinite`）、`xy`、`zoom`（`Zoom::Off`、`Around { factor, center }`）、`math`（`MathTrace::Off`、`Expr("a-b")`）、`fft`（`FftPane::Off`、`On { channel, window }`）。只有设置了的字段会改变 |
+| `FftOptions` | `channel`、`window`（`FftWindow::Hann`、`Hamming`、`Blackman`、`Flattop`、`Rectangular`）、`peaks` |
+| `Spectrum` | `channel`、`window`、`sample_rate_hz`、`resolution_hz`、`samples`、`peaks`（每项为 `SpectralPeak`：`frequency_hz`、`vrms`、`dbv`） |
+| `CursorSettings` | `time: Option<(f64, f64)>`、`volts: Option<(f64, f64)>`、`channel` |
+| `Cursors` | 放置在 Box 上的 `time`、`volts`、`channel` |
+| `CursorMeasurement` | `cursors`，以及 `readings`（`CursorReadings`：`delta_t`、`frequency`、`window_start`、`window_end`、`trace_delta_v`、`delta_v` 等） |
+| `ScopeCapabilities` | `family`、`model`、`serial`、`analog_channels`、`channel_labels`、`max_sample_rate_hz`、`max_memory_samples`、`bandwidth_hz`、`roll_mode`、`peak_detect`、`advanced_triggers`、`extra` |
+| `ScopeState` | `version`、`acquiring`、`rolling`、`capture_mode`、`trigger`、`timebase`、`acquisition`、`channels`、`display`、`live_view_problem` |
 
 ## 方法参考
 
@@ -183,6 +206,29 @@ for _ in 0..10 {
 }
 stream.close();
 ```
+
+### 带类型的控制方法
+
+`count` 是在 `AcquisitionMode::Average` 下参与平均的采集次数（设置之前为 16）。时间光标需要一次采集来读取其下方的波形；电压光标不需要。
+
+```rust
+use lager::nets::scope::{AcquisitionMode, CursorSettings};
+
+scope.set_acquisition(AcquisitionMode::Average, Some(32))?;
+scope.set_cursors(&CursorSettings { time: Some((0.0, 1e-3)), ..Default::default() })?;
+let readings = scope.measure_cursors()?.readings;
+```
+
+| 签名 |
+|---|
+| `capabilities() -> Result<ScopeCapabilities>` |
+| `state() -> Result<ScopeState>` |
+| `set_acquisition(mode: AcquisitionMode, count: Option<u32>) -> Result<Acquisition>` |
+| `set_roll(mode: RollMode) -> Result<Roll>` |
+| `set_display(settings: &DisplaySettings) -> Result<serde_json::Value>` |
+| `fft(opts: &FftOptions) -> Result<Spectrum>` |
+| `set_cursors(settings: &CursorSettings) -> Result<Cursors>` |
+| `measure_cursors() -> Result<CursorMeasurement>` |
 
 ### `command(action: &str, params: Value) -> Result<Value>`
 

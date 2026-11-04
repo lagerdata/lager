@@ -191,6 +191,7 @@
                   "source/reference/python/serial",
                   "source/reference/python/ble",
                   "source/reference/python/wifi",
+                  "source/reference/python/blufi",
                   "source/reference/python/router"
                 ]
               },
@@ -198,7 +199,8 @@
                 "group": "Utilities",
                 "pages": [
                   "source/reference/python/arm",
-                  "source/reference/python/webcam"
+                  "source/reference/python/webcam",
+                  "source/reference/python/hsm"
                 ]
               }
             ]
@@ -690,6 +692,7 @@
                   "source/zh/reference/python/scope",
                   "source/zh/reference/python/logic",
                   "source/zh/reference/python/adc",
+                  "source/zh/reference/python/dmm",
                   "source/zh/reference/python/tc"
                 ]
               },
@@ -705,6 +708,7 @@
                   "source/zh/reference/python/serial",
                   "source/zh/reference/python/ble",
                   "source/zh/reference/python/wifi",
+                  "source/zh/reference/python/blufi",
                   "source/zh/reference/python/router"
                 ]
               },
@@ -712,7 +716,8 @@
                 "group": "实用工具",
                 "pages": [
                   "source/zh/reference/python/arm",
-                  "source/zh/reference/python/webcam"
+                  "source/zh/reference/python/webcam",
+                  "source/zh/reference/python/hsm"
                 ]
               }
             ]

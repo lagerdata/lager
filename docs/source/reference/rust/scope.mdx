@@ -114,8 +114,33 @@ quantity. `Measurements::get(Measurement)` reads one of them.
 | `triggered()` | Whether this capture came from a trigger |
 | `overflowed('A')` | Whether the channel went over range |
 | `sample_rate_hz()`, `duration_s()` | The capture's rate and length |
+| `streaming()` | Whether the capture came from roll streaming rather than a block |
+| `is_envelope()` | Whether the samples are (minimum, maximum) pairs, as roll mode sends them |
+| `channel_index('A')` | The position of a channel in `channels`, or `None` |
+| `ScopeCapture::decode(&[u8])` | Decode one raw LSCP/1 frame. Fails with `Error::Decode` on a bad frame. Needs no feature |
 
 `volts()` and `counts()` return `None` for a channel that is not in the capture.
+
+### Control settings and results
+
+The typed control methods take and return these types. The input structs `DisplaySettings`,
+`FftOptions` and `CursorSettings` implement `Default`: set the fields you need and use
+`..Default::default()` for the rest.
+
+| Type | Contents |
+|---|---|
+| `AcquisitionMode` | `Normal`, `Average`, `Peak` |
+| `Acquisition` | `mode`, `average_count` |
+| `RollMode` | `Auto`, `On`, `Off` |
+| `Roll` | `roll` (the setting), `rolling` (whether the scope rolls now) |
+| `DisplaySettings` | `persistence` (`Persistence::Off`, `Seconds(f64)`, `Infinite`), `xy`, `zoom` (`Zoom::Off`, `Around { factor, center }`), `math` (`MathTrace::Off`, `Expr("a-b")`), `fft` (`FftPane::Off`, `On { channel, window }`). Only the fields that are set change |
+| `FftOptions` | `channel`, `window` (`FftWindow::Hann`, `Hamming`, `Blackman`, `Flattop`, `Rectangular`), `peaks` |
+| `Spectrum` | `channel`, `window`, `sample_rate_hz`, `resolution_hz`, `samples`, `peaks` (each `SpectralPeak`: `frequency_hz`, `vrms`, `dbv`) |
+| `CursorSettings` | `time: Option<(f64, f64)>`, `volts: Option<(f64, f64)>`, `channel` |
+| `Cursors` | `time`, `volts`, `channel` as placed on the box |
+| `CursorMeasurement` | `cursors`, and `readings` (`CursorReadings`: `delta_t`, `frequency`, `window_start`, `window_end`, `trace_delta_v`, `delta_v`, and more) |
+| `ScopeCapabilities` | `family`, `model`, `serial`, `analog_channels`, `channel_labels`, `max_sample_rate_hz`, `max_memory_samples`, `bandwidth_hz`, `roll_mode`, `peak_detect`, `advanced_triggers`, `extra` |
+| `ScopeState` | `version`, `acquiring`, `rolling`, `capture_mode`, `trigger`, `timebase`, `acquisition`, `channels`, `display`, `live_view_problem` |
 
 ## Method Reference
 
@@ -201,6 +226,30 @@ for _ in 0..10 {
 }
 stream.close();
 ```
+
+### Typed control methods
+
+`count` is the number of captures averaged in `AcquisitionMode::Average` (16 until set).
+Time cursors take a capture to read the trace under them; voltage cursors need none.
+
+```rust
+use lager::nets::scope::{AcquisitionMode, CursorSettings};
+
+scope.set_acquisition(AcquisitionMode::Average, Some(32))?;
+scope.set_cursors(&CursorSettings { time: Some((0.0, 1e-3)), ..Default::default() })?;
+let readings = scope.measure_cursors()?.readings;
+```
+
+| Signature |
+|---|
+| `capabilities() -> Result<ScopeCapabilities>` |
+| `state() -> Result<ScopeState>` |
+| `set_acquisition(mode: AcquisitionMode, count: Option<u32>) -> Result<Acquisition>` |
+| `set_roll(mode: RollMode) -> Result<Roll>` |
+| `set_display(settings: &DisplaySettings) -> Result<serde_json::Value>` |
+| `fft(opts: &FftOptions) -> Result<Spectrum>` |
+| `set_cursors(settings: &CursorSettings) -> Result<Cursors>` |
+| `measure_cursors() -> Result<CursorMeasurement>` |
 
 ### `command(action: &str, params: Value) -> Result<Value>`
 

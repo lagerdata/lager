@@ -30,10 +30,13 @@ from lager import Net, NetType
 | `is_ocp()` | 检查 OCP 故障是否已触发 |
 | `clear_ovp()` | 清除过压保护故障 |
 | `clear_ocp()` | 清除过流保护故障 |
-| `state()` | 打印完整的电源状态 |
-| `get_full_state()` | 打印扩展状态，含设定值和限值 |
-| `set_mode()` | 在具有多种模式的仪器上，把仪器切换到直流电源模式 |
-| `get_monitor_state(channel=None)` | 一次调用获取完整的监视状态；返回一个 dict |
+| `state()` | 把电源状态打印到 Box 的硬件服务日志；返回 `None` |
+| `get_full_state()` | 把扩展状态打印到同一个日志；返回 `None` |
+| `set_mode()` | 仅限 Keithley 2281S：把仪器切换到直流电源模式 |
+| `disable_ocp(channel)` | 在支持的仪器上关闭过流保护 |
+| `disable_ovp(channel)` | 在支持的仪器上关闭过压保护 |
+| `get_monitor_state(channel)` | 一次调用读取一个通道的完整状态；返回一个 dict |
+| `get_monitor_states(channels)` | 对多个通道执行 `get_monitor_state()`；返回以通道为键的 dict |
 
 ## 方法参考
 
@@ -131,7 +134,7 @@ psu.disable()
 
 ### `set_ovp(limit)`
 
-设置过压保护阈值。OVP 必须大于或等于已配置的电压。当实测电压超过该阈值时，输出会被自动关闭。
+设置过压保护阈值。当实测电压超过该阈值时，输出会被自动关闭。在 Keithley 2281S 上，低于电压设定值的 OVP 会引发错误。其他驱动会接受它。
 
 ```python
 psu.set_ovp(3.6)  # Trip at 3.6V
@@ -217,6 +220,8 @@ psu.clear_ocp()
 
 打印完整的电源状态，包括通道、是否已打开、模式（CV/CC）、实测电压/电流/功率，以及保护状态。
 
+该调用在 Box 的硬件服务中运行。文本写入 Box 上的 `/tmp/lager-hardware-service.log`，而不是您的脚本，并且调用返回 `None`。若要在脚本中读取状态，请使用 [`get_monitor_state()`](#get_monitor_state-channel)。请参阅 [#845](https://github.com/lagerdata/lager/issues/845)。
+
 ```python
 psu.state()
 ```
@@ -238,7 +243,7 @@ OVP Limit: 3.6000
 
 ### `get_full_state()`
 
-打印扩展状态，包括全部测量值、已配置的设定值、保护限值和硬件最大额定值。
+打印扩展状态，包括全部测量值、已配置的设定值、保护限值和硬件最大额定值。与 `state()` 一样，它打印到硬件服务日志并返回 `None`。
 
 ```python
 psu.get_full_state()
@@ -266,6 +271,41 @@ Current_Max: 3.0000
 相比 `state()` 多出的字段：
 - **Voltage_Set / Current_Set** - 已配置的设定值
 - **Voltage_Max / Current_Max** - 硬件通道的额定值
+
+### `get_monitor_state(channel)`
+
+一次调用读取一个通道的完整状态，并以 dict 返回。这是在脚本中读取状态的方法。
+
+```python
+state = psu.get_monitor_state(psu.channel)
+print(state['voltage'], state['current'], state['enabled'])
+```
+
+| 键 | 说明 |
+|-----|-------------|
+| `voltage`、`current`、`power` | 实测值；读取失败时为 `None` |
+| `enabled` | `True`、`False`；未知时为 `None` |
+| `mode` | `CV` 或 `CC` |
+| `voltage_set`、`current_set` | 已配置的设定值 |
+| `voltage_max`、`current_max` | 硬件通道的额定值 |
+| `ocp_limit`、`ocp_tripped`、`ovp_limit`、`ovp_tripped` | 保护限值与触发状态 |
+
+请传入该 Net 的通道。不传通道时，DP832 这样的多通道电源会读取其前面板上选中的输出（[#846](https://github.com/lagerdata/lager/issues/846)）。`get_monitor_states([1, 2])` 读取多个通道，并返回 `{'1': {...}, '2': {...}}`。
+
+### `disable_ocp(channel)` / `disable_ovp(channel)`
+
+关闭过流或过压保护。用 `set_ocp()` 或 `set_ovp()` 设置限值会重新打开保护。
+
+```python
+psu.disable_ovp(psu.channel)
+```
+
+| 仪器 | 结果 |
+|------------|--------|
+| Rigol DP700、Rigol DP800、Keysight E36200 | 保护被关闭 |
+| Keysight E36300、Keithley 2281S、Siglent SPD1000X、EA | 引发错误 |
+
+请传入该 Net 的通道。不传通道时，多通道电源会作用于其前面板上选中的输出（[#846](https://github.com/lagerdata/lager/issues/846)）。设置了 `max_voltage` 安全限值的 Net 会拒绝关闭 OVP，设置了 `max_current` 的 Net 会拒绝关闭 OCP。
 
 ## 示例
 
@@ -360,8 +400,8 @@ psu.set_ovp(3.6)
 psu.set_ocp(0.5)
 psu.enable()
 
-# Print comprehensive state
-psu.get_full_state()
+# Read the full state as a dict
+print(psu.get_monitor_state(psu.channel))
 
 psu.disable()
 ```
@@ -373,10 +413,16 @@ psu.disable()
 | Rigol | DP832 / DP832A | 3 | 通道 1-2：30V/3A，通道 3：5V/3A |
 | Rigol | DP821 | 2 | 通道 1：60V/1A，通道 2：8V/10A |
 | Rigol | DP811 / DP811A | 1 | 20V/10A 或 40V/5A |
+| Rigol | DP711 / DP712 | 1 | DP711：30V/5A，DP712：50V/3A |
+| Siglent | SPD1168X / SPD1305X | 1 | SPD1168X：16V/8A，SPD1305X：30V/5A。无 OVP 或 OCP |
 | Keithley | 2281S | 1 | 20V/6A/120W，支持电池模拟模式 |
 | Keysight | E36200 系列 | 2 | E36233A：每通道 30V/20A |
 | Keysight | E36300 系列 | 3 | E36311A/12A/13A |
-| EA | PSI/EL 系列 | 1 | 双象限运行 |
+| EA | PSB 10060-60 / 10080-60 | 1 | 双象限。请参阅下面的警告 |
+
+<Warning>
+目前 EA 电源无法通过 `Net.get()` 使用。`set_voltage()`、`set_current()`、`set_ovp()`、`set_ocp()`、`enable()` 和 `disable()` 会以 "Function not found" 失败。对 EA 电源请使用 [`lager supply`](/source/zh/reference/cli/supply)。请参阅 [#843](https://github.com/lagerdata/lager/issues/843)。
+</Warning>
 
 ## 说明
 
@@ -384,7 +430,7 @@ psu.disable()
 - 设置好电压/电流之后，请调用 `enable()` 打开输出
 - 结束时请务必调用 `disable()`
 - 保护故障会自动关闭输出；处理完故障之后，请用 `clear_ovp()` 或 `clear_ocp()` 清除
-- OVP 必须大于或等于电压设定值；设置更低的 OVP 会抛出错误
+- 在 Keithley 2281S 上，低于电压设定值的 OVP 会引发错误
 - 电压和电流的上限取决于硬件能力
 - 多通道电源：每个通道配置为一个单独的 Net
-- `state()` 和 `get_full_state()` 输出到 stdout；在代码中取值请用 `voltage()`、`current()`、`power()`
+- `state()` 和 `get_full_state()` 打印到 Box 的硬件服务日志并返回 `None`；在代码中取值请用 `voltage()`、`current()`、`power()` 或 `get_monitor_state()`

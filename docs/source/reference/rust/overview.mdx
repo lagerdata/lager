@@ -82,7 +82,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace; `AsyncUart` when `async` is on too |
 | `rtt` | no | RTT log streaming over the box's Socket.IO namespace, for reading `defmt` output from a running target; `AsyncRttSession` when `async` is on too |
 | `scope-trace` | no | Scope waveform samples: `Scope::capture()` and `Scope::stream()` |
-| `admin` | no | Box setup through `admin()`: saved nets, metadata, drivers, binaries, file download, custom devices and diagnostics |
+| `admin` | no | Box setup through `admin()`: saved nets, metadata, instruments, the bench manifest, drivers, binaries, file download, custom devices and diagnostics. `AsyncAdmin` when `async` is on too |
 
 Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
@@ -106,6 +106,9 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 | `AuthRequired` | The box's gateway wants a bearer token and none is available |
 | `NotSupportedByBox` | Kept for compatibility; no net type returns it |
 | `UartInUse` | Another session holds the UART net or its serial device |
+| `Decode` | The box's response did not parse into the expected shape |
+| `Config` | A client-side configuration problem, such as a bad host string or a missing environment variable |
+| `Stream` | A streaming session reported an error, for example the device disappeared |
 
 ## Requirements
 

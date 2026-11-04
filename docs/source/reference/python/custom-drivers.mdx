@@ -57,7 +57,7 @@ it.
 
 | Key | Description |
 |-----|-------------|
-| `type` | 2 to 32 lower case letters, digits, `-` or `_`. It becomes the net role and the `lager <type>` command. It cannot be a built-in role or command name |
+| `type` | 2 to 32 lower case letters, digits, `-` or `_`, starting with a letter. It becomes the net role and the `lager <type>` command. It cannot be a built-in role or command name |
 | `version` | Your version string, shown by `lager drivers list` |
 | `lager_api` | The driver interface version. Use `1` |
 | `description` | One line, shown in help |
@@ -70,8 +70,10 @@ Each param and arg has a `type`: `str`, `int`, `float`, `bool` or `choice`. A pa
 can also be `net`, which names another saved net of the given `role`; the driver
 then uses that net to reach the hardware. Fields can also have `required`,
 `default`, `min` and `max` (numbers only), `choices` (for `choice`) and `help`.
-Names are lower case letters, digits and `_`; the CLI shows `hold_time` as
-`--hold-time`.
+Action, param and arg names are 1 to 32 lower case letters, digits and `_`, starting with
+a letter. No `-` is allowed; the CLI shows `hold_time` as `--hold-time`. These arg names
+are reserved, because the CLI uses them already: `box`, `json`, `as_json`, `help`,
+`netname`, `action`, `role`, `quiet`, `http_timeout`, `ctx`, `box_addr`, `params`.
 
 ## The driver
 
@@ -207,6 +209,13 @@ with open_driver("RIG_1") as rig:
     rig.home()
     rig.jog(seconds=3)
 ```
+
+`open_driver()` loads the driver in the script's own process. It runs `setup()` on entry and
+`teardown()` on exit. It raises `ManifestError` when the net is not a custom net. It also
+raises it when a `net` param names a missing net or a net of the wrong role. It raises
+`DriverFailed` when the driver does not import or has no such action. `lager.drivers` also
+exports `DriverBusy`, `DriverTimeout` and `DriverUnavailable`. The box's HTTP API uses them
+for a busy net, a timeout and a driver that is not installed.
 
 ## Install and use it
 

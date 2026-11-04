@@ -59,8 +59,36 @@ pub struct RouterSystemInfo {
     pub free_memory: Option<i64>,      // bytes
     pub total_memory: Option<i64>,
     pub free_hdd_space: Option<i64>,
+    pub extra: Map<String, Value>,     // any other field the router sends
 }
 ```
+
+### `SecurityProfile`
+
+The profile that `create_security_profile()` creates. A field left `None` takes the box's
+default: `dynamic-keys`, `wpa2-psk`, `aes-ccm` and empty keys.
+
+| Field | Description |
+|---|---|
+| `name` | Profile name |
+| `mode` | RouterOS mode (`"dynamic-keys"`, `"none"`, ...) |
+| `authentication_types` | `"wpa2-psk"`, `"wpa-psk,wpa2-psk"`, ... |
+| `unicast_ciphers` | `"aes-ccm"`, `"tkip,aes-ccm"`, ... |
+| `wpa2_pre_shared_key`, `wpa_pre_shared_key` | Passphrases |
+
+`SecurityProfile::wpa2(name, passphrase)` builds a WPA2-PSK profile with the box's defaults
+for the rest.
+
+### `AccessListEntry`
+
+The entry that `add_access_list_entry()` adds.
+
+| Field | Description |
+|---|---|
+| `mac_address` | Client MAC address |
+| `authentication` | `Some(false)` rejects the client. The box defaults to `true` |
+| `interface` | Limit the entry to one wireless interface |
+| `signal_range` | RouterOS signal range, for example `"-80..120"` |
 
 ## Method Reference
 
@@ -112,6 +140,16 @@ router.block_dns()?;
 router.block_port(8883, "tcp")?;
 router.add_bandwidth_limit("192.168.88.0/24", "1M/1M", None)?;
 ```
+
+### Typed configuration methods
+
+| Signature | Description |
+|---|---|
+| `configure_wireless(interface: &str, properties: Value) -> Result<Value>` | Set wireless properties, such as `json!({"ssid": "T", "security_profile": "wpa2"})`. Underscores in keys become hyphens on the router |
+| `create_security_profile(profile: &SecurityProfile) -> Result<Value>` | Create a security profile; returns the created record |
+| `add_firewall_rule(chain: &str, action: &str, fields: Value) -> Result<Value>` | Add a firewall rule; pass `json!({})` for no extra fields |
+| `add_access_list_entry(entry: &AccessListEntry) -> Result<Value>` | Add an access-list entry; returns the created record |
+| `rest_get(path: &str, query: Option<Value>) -> Result<Value>` | A read-only `GET /rest<path>` call, such as `"/ip/address"` |
 
 ## Examples
 

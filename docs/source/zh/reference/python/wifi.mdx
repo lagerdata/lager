@@ -9,7 +9,9 @@ description: WiFi 网络管理
 ## 导入
 
 ```python
-from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi
+from lager.protocols.wifi import (
+    scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi, delete_wifi_connection,
+)
 ```
 
 ## 函数参考
@@ -20,6 +22,7 @@ from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status, di
 | `connect_to_wifi(ssid, password, interface)` | 连接到一个 WiFi 网络 |
 | `get_wifi_status()` | 获取当前的 WiFi 连接状态 |
 | `disconnect_wifi(interface)` | 断开 WiFi 网络连接 |
+| `delete_wifi_connection(connection_name)` | 删除一个已保存的 WiFi 连接 |
 
 ### `scan_wifi(interface='wlan0')`
 
@@ -45,6 +48,8 @@ for network in networks:
 - `ssid` - 网络名称
 - `strength` - 信号强度百分比（0-100）
 - `security` - 安全类型（'Open' 或 'Secured'）
+
+扫描失败时，该 dict 带有 `error` 键，而没有 `access_points` 键。请使用 `result.get('access_points', [])`，并检查 `result.get('error')`。
 
 ### `connect_to_wifi(ssid, password, interface='wlan0')`
 
@@ -117,6 +122,20 @@ else:
 - `success` - 布尔值，表示断开是否成功
 - `message` - 成功信息（`success` 为 True 时）
 - `error` - 错误信息（`success` 为 False 时）
+
+### `delete_wifi_connection(connection_name)`
+
+按名称删除一个已保存的 WiFi 连接，名称通常就是 SSID。
+
+```python
+from lager.protocols.wifi import delete_wifi_connection
+
+result = delete_wifi_connection('OfficeNet')
+if not result['deleted']:
+    print(result.get('error'))  # For example "Connection not found"
+```
+
+**返回：** 包含 `connection`（名称）、`deleted`（bool）的 `dict`；失败时还包含 `error`
 
 ## 路由器互联网访问控制
 

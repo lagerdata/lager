@@ -85,8 +85,14 @@ response = ser.readline()
 | `parity` | `str` | Parity: `'none'`, `'even'`, `'odd'`, `'mark'`, or `'space'`, or pyserial's `'N'`, `'E'`, `'O'`, `'M'`, or `'S'` |
 | `stopbits` | `float` | Stop bits (1, 1.5, or 2) |
 | `timeout` | `float` | Read timeout in seconds (default 0.1). `None` waits until data arrives. |
+| `xonxoff` | `bool` | Software flow control (default `False`) |
+| `rtscts` | `bool` | RTS/CTS hardware flow control (default `False`) |
+| `dsrdtr` | `bool` | DSR/DTR hardware flow control (default `False`) |
 
 **Returns:** `serial.Serial` - Connected pyserial object
+
+**Raises:** `FileNotFoundError` if the UART device is not connected. A key that is not a
+parameter is ignored without an error, so check the spelling of each key.
 
 <Note>
 `connect()` raises `ValueError` for a `parity` value that is not in the table

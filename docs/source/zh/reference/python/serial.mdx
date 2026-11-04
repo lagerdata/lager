@@ -256,6 +256,6 @@ device.close()
 - Lager 原生支持用 `pyserial` 进行串行通信
 - 串口在 Lager 配置阶段指定
 - 同时支持原始 UART 和 USB CDC 连接
-- 默认波特率为 115200
+- `serial.Serial` 默认使用 9600 波特；请传入设备使用的速率，例如 115200。UART Net 的默认值为 115200
 - 请妥善处理 `SerialException` 错误
 - 用 `decode('utf-8')` 转换为字符串

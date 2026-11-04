@@ -49,7 +49,7 @@ admin.save_net(&NetRecord::new("supply1", "power-supply", "Rigol_DP832").pin(1))
 | `net_metadata()`, `set_net_metadata()` | 读取和修改 Net 的用途、备注、标签、被测设备连接和测试提示 | `lager nets describe` |
 | `box_metadata()`, `set_box_metadata()` | 读取和替换 Box 的描述 | |
 | `instruments()` | 列出 Box 看到的仪器 | `lager instruments` |
-| `bench_manifest()` | 读取实验台清单 | `lager box bench export` |
+| `bench_manifest()` | 读取实验台清单 | `lager bench export` |
 | `drivers()`, `driver()` | 列出自定义驱动 | `lager drivers list`, `show` |
 | `install_driver()` | 从 zip 包安装驱动 | `lager drivers install` |
 | `reinstall_driver_deps()` | 重新安装驱动的 Python 包 | `lager drivers reinstall-deps` |
@@ -115,6 +115,16 @@ Box 以名称**和**角色作为记录的键。名称相同、角色不同的记
 ### `set_net_metadata(name: &str, update: &NetMetadataUpdate) -> Result<NetMetadata>`
 
 在所有同名记录上修改 Net 的元数据。更新中没有设置的字段保持原值。`clear()` 会移除一个字段。
+
+| 构造器方法 | 作用 |
+|---|---|
+| `purpose(text)` | 设置 `purpose` |
+| `notes(text)` | 设置 `notes` |
+| `dut_connection(text)` | 设置 `dut_connection` |
+| `tags(list)` | 替换 `tags` |
+| `test_hints(list)` | 替换 `test_hints` |
+| `clear(field)` | 移除 `purpose`、`notes`、`tags`、`dut_connection` 或 `test_hints` |
+| `timestamp(field, iso8601)` | 记录某个字段的修改时间 |
 
 ```rust
 use lager::NetMetadataUpdate;

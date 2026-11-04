@@ -1,0 +1,127 @@
+---
+title: HSM
+description: 在 Lager Python 脚本中使用 YubiHSM 2
+---
+
+使用 Lager Box 上的 Yubico YubiHSM 2 生成密钥、导入密钥并对数据签名。私钥始终保存在 HSM 内。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 需要登录 | 说明 |
+|--------|-------|-------------|
+| `info()` | 否 | 读取固件、序列号、日志用量以及支持的算法 |
+| `echo(data)` | 否 | 发送字节并读回 |
+| `blink(seconds=5)` | 是 | 让 HSM 的 LED 闪烁 |
+| `list_objects(type=None, label=None)` | 是 | 列出已存储的对象 |
+| `get_object_info(object_id, object_type='asymmetric-key')` | 是 | 读取一个对象的详细信息 |
+| `delete_object(object_id, object_type='asymmetric-key')` | 是 | 删除一个对象 |
+| `generate_key(object_id, algorithm, label='', domains=(1,), capabilities=None)` | 是 | 在 HSM 内生成一个非对称密钥 |
+| `import_key(object_id, private_key_pem, label='', domains=(1,), capabilities=None)` | 是 | 导入一个私钥 |
+| `get_public_key(object_id)` | 是 | 以 PEM 读取密钥的公钥部分 |
+| `sign(object_id, data, mechanism)` | 是 | 用已存储的密钥对数据签名 |
+| `reset()` | 是 | 将 HSM 恢复出厂设置 |
+| `session()` | 是 | 产出已登录的 `yubihsm` 会话的上下文管理器 |
+
+标记为**是**的每个方法都接受两个只能以关键字传入的参数：`auth_key_id=1` 和 `password`。密码是必需的。驱动不会保存它，也不会把它写入异常信息。
+
+## 方法参考
+
+### `Net.get(name, type=NetType.Hsm)`
+
+按名称获取一个 HSM Net。
+
+```python
+from lager import Net, NetType
+
+hsm = Net.get('HSM1', type=NetType.Hsm)
+```
+
+**返回：** `YubiHsm2`
+
+每次调用都会打开设备、执行一个操作，然后再次关闭设备。驱动在两次调用之间不会占用该 USB 设备。
+
+### `info()`
+
+```python
+print(hsm.info())
+```
+
+**返回：** 包含 `firmware`、`serial`、`log_used`、`log_size`、`part_number` 和 `algorithms` 的 `dict`
+
+### `generate_key(object_id, algorithm, label='', domains=(1,), capabilities=None, *, auth_key_id=1, password)`
+
+在 HSM 内生成一个非对称密钥。
+
+```python
+import os
+
+password = os.environ['HSM_PASSWORD']
+key = hsm.generate_key(0x0101, 'ec-p256', label='device-key', password=password)
+print(key['id'], key['public_key_pem'])
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `object_id` | `int` | 0 到 65535。`0` 表示由 HSM 选择 ID |
+| `algorithm` | `str` | `ec-p256`、`ec-p384`、`ec-p521`、`ec-k256`、`ed25519`、`rsa2048`、`rsa3072` 或 `rsa4096` |
+| `label` | `str` | 对象标签 |
+| `domains` | `sequence[int]` | 密钥所属的域 |
+| `capabilities` | `sequence[str]` | 密钥的能力。默认值是该算法对应的签名能力 |
+
+**返回：** 包含 `id` 和 `public_key_pem` 的 `dict`
+
+生成 RSA 密钥可能需要几分钟。对 RSA 密钥，调用最多等待 300 秒。
+
+### `sign(object_id, data, mechanism, *, auth_key_id=1, password)`
+
+用已存储的密钥对 `data` 签名。
+
+```python
+signature = hsm.sign(0x0101, b'firmware digest', 'ecdsa-sha256', password=password)
+```
+
+`mechanism` 取值为 `ecdsa-sha256`、`ecdsa-sha384`、`ecdsa-sha512`、`eddsa`、`rsa-pkcs1-sha256`、`rsa-pkcs1-sha384`、`rsa-pkcs1-sha512`、`rsa-pss-sha256`、`rsa-pss-sha384` 或 `rsa-pss-sha512`。
+
+**返回：** `bytes` - 签名
+
+### `import_key(object_id, private_key_pem, label='', domains=(1,), capabilities=None, *, auth_key_id=1, password)`
+
+导入一个未加密的 PEM 私钥。**返回：** `int` - 对象 ID
+
+### `list_objects(type=None, label=None, *, auth_key_id=1, password)`
+
+**返回：** `list[dict]`，每项包含 `id`、`type`、`label`、`algorithm`、`domains`、`capabilities`、`size` 和 `sequence`。`get_object_info()` 返回一个这样的 dict。
+
+`type` 和 `object_type` 取值为 `asymmetric-key`、`authentication-key`、`opaque`、`wrap-key`、`hmac-key`、`template` 或 `otp-aead-key`。
+
+### `reset(*, auth_key_id=1, password)`
+
+将 HSM 恢复出厂设置，并最多等待 10 秒让它恢复。**这会删除 HSM 上的所有密钥。**
+
+### `session(*, auth_key_id=1, password)`
+
+一个上下文管理器，产出 `yubihsm` 包的已登录会话，用于本驱动未封装的操作。
+
+```python
+with hsm.session(password=password) as session:
+    print(session.get_pseudo_random(16).hex())
+```
+
+## 错误
+
+| 异常 | 时机 |
+|-----------|------|
+| `ValueError` | 未知的算法、对象类型或签名机制，或者 ID、闪烁时间超出范围 |
+| `HsmBackendError` | HSM 拒绝了登录或操作，或者没有应答 |
+
+## 说明
+
+- 请从环境变量或文件读取密码，不要写在脚本源码中
+- 对应的 CLI 命令是 [`lager hsm`](/source/zh/reference/cli/hsm)
+- 对应的 Rust 接口见 [Rust HSM 参考](/source/zh/reference/rust/hsm)

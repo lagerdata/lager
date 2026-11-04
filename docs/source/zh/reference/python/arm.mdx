@@ -73,7 +73,7 @@ print(f"Position: X={x}, Y={y}, Z={z}")
 
 **返回：** `tuple[float, float, float]` - (x, y, z) 坐标，单位毫米
 
-### `move_to(x, y, z, timeout=15.0)`
+### `move_to(x, y, z, *, timeout=15.0)`
 
 把机械臂移到绝对坐标，并阻塞等待。
 
@@ -82,7 +82,7 @@ print(f"Position: X={x}, Y={y}, Z={z}")
 arm.move_to(100, 200, 50)
 
 # Move with longer timeout
-arm.move_to(100, 200, 50, timeout=10.0)
+arm.move_to(100, 200, 50, timeout=30.0)
 ```
 
 **参数：**
@@ -100,7 +100,7 @@ arm.move_to(100, 200, 50, timeout=10.0)
 - 机械臂上电后尚未归位时抛出 `NotHomedError`
 - 在超时时间内未到达目标位置时抛出 `MovementTimeoutError`
 
-### `move_relative(dx=0, dy=0, dz=0, timeout=15.0)`
+### `move_relative(dx=0, dy=0, dz=0, *, timeout=15.0)`
 
 相对当前位置移动。
 
@@ -127,6 +127,9 @@ new_x, new_y, new_z = arm.move_relative(dx=10, dy=10, dz=-5)
 - 机械臂固件低于 V2.1.4，或机械臂未报告版本时，抛出 `UnsupportedFirmwareError`。此时不会向机械臂发送任何内容。
 - 当前位置加上偏移量超出工作空间范围时抛出 `OutOfBoundsError`。机械臂不会移动。
 - 机械臂上电后尚未归位时抛出 `NotHomedError`
+- 未在超时时间内到达位置时抛出 `MovementTimeoutError`
+
+在 `move_to()` 和 `move_relative()` 中，`timeout` 只能以关键字传入。
 
 ### `go_home(timeout=20.0)`
 
@@ -276,6 +279,22 @@ module = arm.get_module_type()
 print(f"Module: {module}")  # 'PEN', 'LASER', 'PUMP', or '3D'
 ```
 
+### 其他方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `read_and_save_position()` | 读取位置，然后用 `M889` 以该位置重新校准。返回先读取的 `(x, y, z)`。这会替换已保存的校准；请参阅 `save_position()` |
+| `set_workorigin()` | 把当前位置定义为工作原点 X0 Y0 Z0（`G92`） |
+| `check_bounds(x, y, z)` | 该点超出工作空间时引发 `OutOfBoundsError` |
+| `get_bounds_string()` | 以文本返回工作空间范围 |
+| `BOUNDS_X_MIN` ... `BOUNDS_Z_MAX` | 工作空间范围，单位 mm：X -300 到 300，Y 170 到 360，Z -140 到 100 |
+| `move_to_blocking(x=None, y=None, z=None, e=None, feedrate=2000, mode="G1", wait=True, *, timeout=15.0)` | 移动并等待机械臂到达。保持为 `None` 的轴不变 |
+| `move_to_gcode(x=None, y=None, z=None, e=None, feedrate=2000, mode="G1", wait=True)` | 发送原始 G-code 移动。`wait` 为 `True` 时返回应答行 |
+| `fast_move_to(x=None, y=None, z=None, feedrate=2000, wait=True)` | 一次 `G0` 移动 |
+| `close()` | 释放串口 |
+
+`move_to_blocking()`、`move_to_gcode()` 和 `fast_move_to()` 不检查工作空间范围或固件版本。`move_to()` 和 `move_relative()` 会检查。
+
 ## 示例
 
 ### 基本移动
@@ -381,6 +400,7 @@ arm.go_home()
 from lager import Net, NetType
 from lager import InvalidNetError
 from lager.automation.arm import (
+    ArmBackendError,
     MovementTimeoutError,
     NotHomedError,
     OutOfBoundsError,
@@ -400,6 +420,8 @@ except OutOfBoundsError as e:
     print(f"Target is outside the workspace: {e}")
 except MovementTimeoutError as e:
     print(f"Arm did not reach the target: {e}")
+except ArmBackendError as e:
+    print(f"Arm error: {e}")  # Every other arm error, such as SettingNotAppliedError
 except RuntimeError as e:
     print(f"Arm error: {e}")
 ```
@@ -419,7 +441,8 @@ except RuntimeError as e:
 | `NotHomedError` | `lager.automation.arm.arm_net` | 机械臂上电后尚未归位。 |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | 机械臂未能及时到达目标位置 |
 | `SettingNotAppliedError` | `lager.automation.arm.arm_net` | 机械臂报告的设置与写入的值不同（`set_acceleration`）。 |
-| `RuntimeError` | 内置 | 找不到机械臂设备，或无法打开它 |
+| `ArmBackendError` | `lager.automation.arm` | 上述所有机械臂异常的基类。捕获它即可处理任何机械臂错误。 |
+| `RuntimeError` | 内置 | 找不到机械臂设备，或无法打开它。此时不会引发 `DeviceNotFoundError`（[#851](https://github.com/lagerdata/lager/issues/851)） |
 
 ## 说明
 

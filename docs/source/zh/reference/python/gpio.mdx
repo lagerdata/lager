@@ -122,6 +122,9 @@ except TimeoutError:
 | LabJack T7 | 硬件流式采样（`ljm.eStreamStart`） | 20,000 Hz |
 | LabJack U3 | 软件轮询 | 100 Hz（10 ms 间隔） |
 | USB-202 | 软件轮询 | 100 Hz（10 ms 间隔） |
+| FTDI FT232H / FT2232H / FT4232H | 软件轮询 | 100 Hz（10 ms 间隔） |
+| Aardvark | 软件轮询 | 100 Hz（10 ms 间隔） |
+| YKUSH3 | 软件轮询 | 100 Hz（10 ms 间隔） |
 
 ## 示例
 
@@ -216,6 +219,8 @@ for i in range(10):
 | MCC USB-202 | DIO0-DIO7 | 5V TTL |
 | FTDI FT232H / FT2232H | ADBUS0-7、ACBUS0-7（每通道 16 位） | 3.3V |
 | FTDI FT4232H | 每通道 8 个引脚 | 3.3V |
+| Total Phase Aardvark | `SCL`、`SDA`、`MISO`、`SCK`、`MOSI`、`SS`（位 0-5） | 3.3V |
+| YKUSH3 集线器 | `1`、`2`、`3` | 未验证 |
 
 ### 引脚命名
 

@@ -3,258 +3,221 @@ title: 太阳能仿真
 description: 控制太阳能板仿真 Net
 ---
 
-<Note>
-**即将推出：** 面向 EA PSI/EL 系列双象限电源的太阳能模拟器 Python API 仍在开发中。基于 Net 的 API（`Net.get('solar1', type=NetType.PowerSupply2Q)`）及相关方法在此先行列出以供预览，但完整的测试和验证要等硬件到位之后才能进行。生产可用的功能请关注后续版本。
-</Note>
+模拟太阳能板的特性，用于测试由太阳能供电的设备。太阳能 Net 驱动一台 EA PSB 双向电源，使其工作在光伏仿真模式。
 
-模拟太阳能板的特性，用于测试由太阳能供电的设备。
+<Warning>
+太阳能 Net 没有 `Net.get()` 路径。CLI 以角色 `solar` 保存太阳能 Net，而 `NetType` 没有 `solar` 角色，因此 `Net.get('SOLAR', type=NetType.PowerSupply2Q)` 会引发 `InvalidNetError`。请改用本页的模块函数。它们接受 Net 名称作为参数。请参阅 [#844](https://github.com/lagerdata/lager/issues/844)。
+</Warning>
 
 ## 导入
 
 ```python
-from lager import Net, NetType
+from lager.power.solar import (
+    set_to_solar_mode,
+    stop_solar_mode,
+    irradiance,
+    mpp_current,
+    mpp_voltage,
+    resistance,
+    temperature,
+    voc,
+)
 ```
 
-## 方法
+`lager.power` 中也有这些函数，其中 `resistance`、`temperature` 和 `voc` 分别名为 `solar_resistance`、`solar_temperature` 和 `solar_voc`。
 
-| 方法 | 说明 |
-|--------|-------------|
-| `enable()` | 连接并启动太阳能仿真模式 |
-| `disable()` | 断开连接并停止太阳能仿真 |
-| `irradiance(value)` | 设置或读取辐照度（W/m²） |
-| `mpp_current()` | 读取最大功率点电流 |
-| `mpp_voltage()` | 读取最大功率点电压 |
-| `voc()` | 读取开路电压 |
-| `temperature()` | 读取模拟的电池温度 |
-| `resistance(value)` | 设置或读取电池板内阻 |
+## 函数
+
+| 函数 | 说明 |
+|----------|-------------|
+| `set_to_solar_mode(netname)` | 连接并启动光伏仿真模式 |
+| `stop_solar_mode(netname)` | 停止仿真并断开连接 |
+| `irradiance(netname, value=None)` | 设置辐照度（W/m²），或打印当前值 |
+| `mpp_current(netname)` | 打印最大功率点电流 |
+| `mpp_voltage(netname)` | 打印最大功率点电压 |
+| `voc(netname)` | 打印开路电压 |
+| `temperature(netname)` | 打印模拟的电池温度 |
+| `resistance(netname, value=None)` | 设置电池板内阻，或打印当前值 |
 
 <Note>
-太阳能相关方法从仪器返回的是字符串。如需参与计算，请先转换为浮点数。
+每个函数都把结果打印到脚本的输出，并返回 `None`。脚本无法从返回值读取数值。当仪器拒绝某个值或没有应答时，函数会引发 `SolarBackendError`。
 </Note>
 
-## 方法参考
+## 函数参考
 
-### `Net.get(name, type=NetType.PowerSupply2Q)`
+### `set_to_solar_mode(netname)`
 
-按名称获取一个太阳能仿真 Net。
-
-```python
-from lager import Net, NetType
-
-solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
-```
-
-**参数：**
-
-| 参数 | 类型 | 说明 |
-|-----------|------|-------------|
-| `name` | `str` | 太阳能 Net 的名称 |
-| `type` | `NetType` | 必须为 `NetType.PowerSupply2Q` |
-
-**返回：** 太阳能仿真 Net 实例
-
-### `enable()`
-
-连接仪器并启动太阳能仿真模式。
+连接仪器并启动光伏仿真模式。由于 EA 电源在停止后需要时间稳定，该函数会尝试三次。
 
 ```python
-from lager import Net, NetType
+from lager.power.solar import set_to_solar_mode
 
-solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
-solar.enable()
-```
-
-### `disable()`
-
-断开与仪器的连接并停止太阳能仿真。
-
-```python
-solar.disable()
-```
-
-### `irradiance(value=None)`
-
-设置或读取辐照度。
-
-```python
-# Set irradiance
-solar.irradiance(1000)  # Standard test condition (1000 W/m²)
-
-# Read current irradiance
-irr = solar.irradiance()
-print(f"Irradiance: {irr}")  # Returns string
+set_to_solar_mode('SOLAR')
 ```
 
 | 参数 | 类型 | 说明 |
 |-----------|------|-------------|
-| `value` | `float` 或 `None` | 辐照度，单位 W/m²（0-1500）。为 None 时读取当前值。 |
+| `netname` | `str` | 太阳能 Net 的名称 |
 
-**返回：** `str` - 当前的辐照度值
+### `stop_solar_mode(netname)`
 
-### `voc()`
-
-读取开路电压。
+停止仿真并断开与仪器的连接。
 
 ```python
-voc_str = solar.voc()
-print(f"Voc: {voc_str}")
-voc = float(voc_str)  # Convert to float for calculations
+from lager.power.solar import stop_solar_mode
+
+stop_solar_mode('SOLAR')
 ```
 
-**返回：** `str` - 电压值
+### `irradiance(netname, value=None)`
 
-### `mpp_voltage()`
-
-读取最大功率点电压。
+设置辐照度；当 `value` 为 `None` 时打印当前值。
 
 ```python
-v_mpp = solar.mpp_voltage()
-print(f"MPP voltage: {v_mpp}")
-```
+from lager.power.solar import irradiance
 
-**返回：** `str` - 电压值
-
-### `mpp_current()`
-
-读取最大功率点电流。
-
-```python
-i_mpp = solar.mpp_current()
-print(f"MPP current: {i_mpp}")
-```
-
-**返回：** `str` - 电流值
-
-### `resistance(value=None)`
-
-设置或读取电池板的动态内阻。
-
-```python
-# Set resistance
-solar.resistance(5.0)
-
-# Read resistance
-r = solar.resistance()
-print(f"Resistance: {r}")
+irradiance('SOLAR', 1000)  # Standard test condition (1000 W/m²)
+irradiance('SOLAR')        # Prints the irradiance
 ```
 
 | 参数 | 类型 | 说明 |
 |-----------|------|-------------|
-| `value` | `float` 或 `None` | 内阻，单位欧姆。为 None 时读取当前值。 |
+| `netname` | `str` | 太阳能 Net 的名称 |
+| `value` | `float` 或 `None` | 辐照度，单位 W/m²（0-1500）。为 None 时打印当前值。 |
 
-**返回：** `str` - 内阻值
+小于 0 或大于 1500 的值会引发 `SolarBackendError`。
 
-### `temperature()`
+### `voc(netname)`
 
-读取模拟的电池温度。
+打印开路电压。
 
 ```python
-temp = solar.temperature()
-print(f"Cell temp: {temp}")
+from lager.power.solar import voc
+
+voc('SOLAR')
 ```
 
-**返回：** `str` - 温度值
+### `mpp_voltage(netname)`
+
+打印最大功率点电压。
+
+```python
+from lager.power.solar import mpp_voltage
+
+mpp_voltage('SOLAR')
+```
+
+### `mpp_current(netname)`
+
+打印最大功率点电流。
+
+```python
+from lager.power.solar import mpp_current
+
+mpp_current('SOLAR')
+```
+
+### `resistance(netname, value=None)`
+
+设置电池板的动态内阻；当 `value` 为 `None` 时打印当前值。
+
+```python
+from lager.power.solar import resistance
+
+resistance('SOLAR', 5.0)  # Set
+resistance('SOLAR')       # Prints the resistance
+```
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `netname` | `str` | 太阳能 Net 的名称 |
+| `value` | `float` 或 `None` | 内阻，单位为欧姆，必须为正数。为 None 时打印当前值。 |
+
+### `temperature(netname)`
+
+打印模拟的电池温度。
+
+```python
+from lager.power.solar import temperature
+
+temperature('SOLAR')
+```
 
 ## 示例
 
 ### 基本的太阳能仿真
 
 ```python
-from lager import Net, NetType
+from lager.power.solar import (
+    set_to_solar_mode, stop_solar_mode, irradiance, voc, mpp_voltage, mpp_current,
+)
 import time
 
-solar = Net.get('SOLAR_INPUT', type=NetType.PowerSupply2Q)
+set_to_solar_mode('SOLAR_INPUT')
+try:
+    irradiance('SOLAR_INPUT', 1000)
+    time.sleep(1)
 
-# Start simulation
-solar.enable()
-
-# Set standard test conditions (1000 W/m²)
-solar.irradiance(1000)
-time.sleep(1)
-
-# Read panel characteristics (returns strings)
-voc = solar.voc()
-v_mpp = solar.mpp_voltage()
-i_mpp = solar.mpp_current()
-
-print(f"Voc: {voc}")
-print(f"MPP: {v_mpp}V @ {i_mpp}A")
-
-# Calculate max power (convert to float first)
-v = float(v_mpp)
-i = float(i_mpp)
-print(f"Max Power: {v * i:.2f}W")
-
-# Clean up
-solar.disable()
+    # Each call prints its reading
+    voc('SOLAR_INPUT')
+    mpp_voltage('SOLAR_INPUT')
+    mpp_current('SOLAR_INPUT')
+finally:
+    stop_solar_mode('SOLAR_INPUT')
 ```
 
 ### 测试多个辐照度等级
 
 ```python
-from lager import Net, NetType
+from lager.power.solar import set_to_solar_mode, stop_solar_mode, irradiance, voc, mpp_current
 import time
 
-solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
-solar.enable()
-
-conditions = [200, 500, 800, 1000, 1200]
-
-for irr in conditions:
-    solar.irradiance(irr)
-    time.sleep(1)
-
-    # Read and convert values
-    voc = float(solar.voc())
-    v_mpp = float(solar.mpp_voltage())
-    i_mpp = float(solar.mpp_current())
-
-    print(f"Irradiance: {irr} W/m²")
-    print(f"  Voc: {voc:.2f}V")
-    print(f"  MPP: {v_mpp:.2f}V @ {i_mpp:.3f}A")
-    print(f"  Power: {v_mpp * i_mpp:.2f}W")
-    print()
-
-solar.disable()
+set_to_solar_mode('SOLAR')
+try:
+    for irr in [200, 500, 800, 1000, 1200]:
+        irradiance('SOLAR', irr)
+        time.sleep(1)
+        print(f"Irradiance: {irr} W/m²")
+        voc('SOLAR')
+        mpp_current('SOLAR')
+finally:
+    stop_solar_mode('SOLAR')
 ```
 
-### MPPT 跟踪测试
+### 在固定辐照度下测量 DUT
 
 ```python
 from lager import Net, NetType
+from lager.power.solar import set_to_solar_mode, stop_solar_mode, irradiance
 import time
 
-solar = Net.get('SOLAR', type=NetType.PowerSupply2Q)
 dut_current = Net.get('DUT_CURRENT', type=NetType.ADC)
 
-solar.enable()
-solar.irradiance(1000)
-
-# Monitor MPPT tracking
-for i in range(30):
-    i_mpp = float(solar.mpp_current())
-    actual = dut_current.input()
-
-    efficiency = (actual / i_mpp) * 100 if i_mpp > 0 else 0
-    print(f"Target: {i_mpp:.3f}A, Actual: {actual:.3f}A, Eff: {efficiency:.1f}%")
-    time.sleep(1)
-
-solar.disable()
+set_to_solar_mode('SOLAR')
+try:
+    irradiance('SOLAR', 1000)
+    for i in range(30):
+        print(f"DUT input: {dut_current.input():.3f} V")
+        time.sleep(1)
+finally:
+    stop_solar_mode('SOLAR')
 ```
 
 ## 受支持的硬件
 
-| 厂商 | 型号 | 特性 |
+| 制造商 | 型号 | 特性 |
 |--------------|-------|----------|
-| EA | PSI/EL 系列 | 双象限、PV 仿真 |
-| EA | PSB 10060-60 | 双向 |
-| EA | PSB 10080-60 | 双向 |
+| EA | PSB 10060-60 | 双向，光伏仿真 |
+| EA | PSB 10080-60 | 双向，光伏仿真 |
+
+只接受 EA PSB 型号。太阳能 Net 上的其他仪器会引发 `SolarBackendError`。
 
 ## 说明
 
 - 太阳能仿真需要双向（双象限）电源
 - 标准测试条件（STC）：1000 W/m²、25°C、AM1.5
 - I-V 曲线会根据辐照度自动生成
-- 使用太阳能专有方法之前请先调用 `enable()`
-- 结束时请务必调用 `disable()`
-- **返回值是字符串** —— 参与计算前请转换为浮点数
+- 请先调用 `set_to_solar_mode()`，再使用其他函数
+- 结束时务必调用 `stop_solar_mode()`，例如放在 `finally` 块中
+- **这些函数只打印并返回 `None`**。打印的文本包含终端颜色代码
+- 对应的 CLI 命令是 [`lager solar`](/source/zh/reference/cli/solar)

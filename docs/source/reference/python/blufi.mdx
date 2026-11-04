@@ -1,0 +1,78 @@
+---
+title: BluFi
+description: Provision WiFi on an ESP32 over BLE from a Lager Python script
+---
+
+`BlufiClient` talks to an ESP32 that runs Espressif's BluFi service. Use it to read the
+device's firmware version and WiFi state, list the networks it sees, and send it WiFi
+credentials. It uses the Lager Box's own Bluetooth adapter. A BluFi device is not a net.
+
+## Import
+
+```python
+from lager.blufi import BlufiClient
+from lager.blufi import OP_MODE_STA, STA_CONN_SUCCESS
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `scan(timeout=10.0, name_prefix=None)` | Scan for BLE devices without connecting. Returns a list of `{'name', 'address', 'rssi'}`, strongest first |
+| `connectByName(name, timeout=None)` | Connect to a device by its advertised name. Returns `True` on success, `False` if it is not found or the connection times out |
+| `negotiateSecurity()` | Negotiate encryption with the device. Raises `SecurityError` if the device does not answer in 5 s |
+| `requestVersion()` / `getVersion()` | Ask for the firmware version, then read it (for example `'1.3'`) |
+| `requestDeviceStatus()` / `getWifiState()` | Ask for the WiFi state, then read it as `{'opMode', 'staConn', 'softAPConn'}` |
+| `requestDeviceScan(timeout=10)` / `getSSIDList()` | Ask the device to scan for WiFi, then read the list of `{'ssid', 'rssi'}` |
+| `postDeviceMode(opMode)` | Set the WiFi mode, for example `OP_MODE_STA` |
+| `postStaWifiInfo({'ssid': ..., 'pass': ...})` | Send station credentials and tell the device to connect |
+| `postCustomData(data)` | Send application-defined bytes |
+
+The `request*()` methods send a request and return at once. The device answers through a
+notification, so wait a short time before you call the matching `get*()` method.
+`requestDeviceScan()` waits for the list itself, up to `timeout` seconds.
+
+## Example: Provision a Device
+
+```python
+import os
+import time
+from lager.blufi import BlufiClient, OP_MODE_STA, STA_CONN_SUCCESS
+
+client = BlufiClient()
+if not client.connectByName('BLUFI_DEVICE', timeout=20.0):
+    raise RuntimeError('device not found')
+client.negotiateSecurity()
+
+client.requestVersion()
+time.sleep(0.5)
+print('firmware', client.getVersion())
+
+client.postDeviceMode(OP_MODE_STA)
+time.sleep(0.5)
+client.postStaWifiInfo({'ssid': 'TestNet', 'pass': os.environ['WIFI_PASSWORD']})
+
+time.sleep(5)   # Give the device time to join the network
+client.requestDeviceStatus()
+time.sleep(1)
+state = client.getWifiState()
+assert state['staConn'] == STA_CONN_SUCCESS, state
+```
+
+## Constants
+
+| Group | Names |
+|-------|-------|
+| WiFi mode (`opMode`) | `OP_MODE_NULL`, `OP_MODE_STA`, `OP_MODE_SOFTAP`, `OP_MODE_STASOFTAP` |
+| Station state (`staConn`) | `STA_CONN_SUCCESS`, `STA_CONN_FAIL`, `STA_CONN_CONNECTING`, `STA_CONN_NO_IP` |
+| SoftAP security | `SOFTAP_SECURITY_OPEN`, `SOFTAP_SECURITY_WEP`, `SOFTAP_SECURITY_WPA`, `SOFTAP_SECURITY_WPA2`, `SOFTAP_SECURITY_WPA_WPA2` |
+
+`lager.blufi` also exports the exceptions `BluetoothError`, `ConnectionError`, `RoleError`
+and `SecurityError`.
+
+## Notes
+
+- A BluFi device is found by its BLE name, not by a saved net
+- The client starts its own event-loop thread, which ends with the script
+- The CLI equivalent is [`lager blufi`](/source/reference/cli/blufi), which runs the same
+  sequences on the box and prints the results

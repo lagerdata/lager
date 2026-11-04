@@ -59,7 +59,7 @@ if result.returncode != 0:
 | `text` | `bool` | `True` | Return stdout/stderr as strings instead of bytes |
 | `check` | `bool` | `False` | Raise `CalledProcessError` if return code is non-zero |
 | `cwd` | `str` | `None` | Working directory for the process |
-| `env` | `dict` | `None` | Environment variables (inherits from parent if None) |
+| `env` | `dict` | `None` | Variables added to the inherited environment, or overriding it |
 | `input` | `str` or `bytes` | `None` | Input to send to stdin |
 
 **Returns:** `subprocess.CompletedProcess` with attributes:
@@ -264,4 +264,4 @@ The directory is mounted into the container, so binaries are immediately availab
 - Binaries must be executable (set automatically during upload)
 - Default timeout is 30 seconds; use `timeout=None` for no limit
 - Use `capture_output=False` for interactive or streaming output
-- Environment variables are inherited from parent process unless `env` is specified
+- The process always inherits the parent environment; `env` adds variables to it or overrides them

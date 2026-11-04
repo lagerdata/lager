@@ -53,7 +53,16 @@ with [`lager nets add-batch`](/source/reference/cli/nets#add-batch),
 `"instrument": "Siglent_SPD1168X"` and a `TCPIP::<ip>::INSTR` address. It has no
 OVP/OCP, so `lager supply` `--ovp`/`--ocp` and `clear-ovp`/`clear-ocp` return an
 error. Its measured values update about every 0.35 s, so wait that long after a
-setpoint change before reading them.
+setpoint change before reading them. The SPD1305X has the same USB ID, so it is listed as
+`Siglent_SPD1168X`. The driver reads the real model from the instrument.
+
+The drivers also support the Rigol DP712 and the Keysight E36311A. Neither is in the
+auto-detected list.
+
+**Turning protection off.** On a Rigol DP700, a Rigol DP800 and a Keysight E36200, Lager
+can turn OVP and OCP off. On a Keysight E36300, a Keithley 2281S, a Siglent SPD1000X and an
+EA, a request to turn protection off returns an error. A net with a `max_voltage` safety
+limit keeps OVP on, and a net with `max_current` keeps OCP on.
 
 **Enables:**
 - Automated voltage/current control
@@ -217,6 +226,7 @@ If a U3 is connected, a call to LJM with the device type `"ANY"` fails with `LJM
 **Interfaces:**
 - I2C (1 bus)
 - SPI (1 bus)
+- 6 GPIO pins (`SCL`, `SDA`, `MISO`, `SCK`, `MOSI`, `SS`)
 
 ### FTDI FT232H
 
@@ -227,6 +237,27 @@ If a U3 is connected, a call to LJM with the device type `"ANY"` fails with `LJM
 - I2C (1 bus)
 - SPI (1 bus)
 - 12 GPIO pins
+
+### FTDI FT2232H
+
+**Control Commands:** `lager i2c`, `lager spi`, `lager gpi`,
+`lager gpo`, `lager uart`, `lager debug`
+
+**Interfaces:**
+- I2C and SPI
+- 12 GPIO pins (`4`-`15`)
+- UART
+- Two channels (A and B). Pick the channel of a net with `lager nets add --interface`
+
+### FTDI FT4232H
+
+**Control Commands:** `lager i2c`, `lager spi`, `lager gpi`,
+`lager gpo`, `lager uart`, `lager debug`
+
+**Interfaces:**
+- I2C and SPI on channels A and B only
+- 8 GPIO pins (`0`-`7`) on each of the four channels
+- UART on each channel
 
 ### Measurement Computing USB-202
 
@@ -259,10 +290,11 @@ scripts and CI pipelines.
 | SEGGER | J-Link Base Compact | `lager debug` |
 | SEGGER | J-Link Flasher Pro | `lager debug` |
 | SEGGER | Flasher ARM | `lager debug` |
+| SEGGER | J-Link OB (on-board probe on a dev kit, one or two VCOMs) | `lager debug` |
 | STMicroelectronics | ST-Link/V2, V2-1, V3 (including V3 Mini and V3 2VCP) | `lager debug` |
 | Raspberry Pi | Debug Probe (RP2040 / Picoprobe, CMSIS-DAP) | `lager debug` |
 | FTDI | FT232H (e.g. C232HM cable, Adafruit FT232H breakout) | `lager debug` |
-| FTDI | FT2232H (e.g. Olimex ARM-USB-OCD-H) | `lager debug` |
+| FTDI | FT2232H (generic FTDI JTAG cables) | `lager debug` |
 | FTDI | FT4232H (requires custom `openocd_config`) | `lager debug` |
 | Any vendor | CMSIS-DAP compatible (Atmel EDBG, NXP DAPLink, etc.) | `lager debug` |
 
@@ -291,8 +323,11 @@ scripts and CI pipelines.
   [nets reference](../reference/cli/nets) for the channel-suffix
   syntax.
 - Lager selects the target chip configuration from the device name for
-  the STM32, nRF5x, RP2040/RP2350, ATSAM, LPC, i.MX RT, and ESP32
-  families. A custom OpenOCD target config drives anything else.
+  the STM32, nRF5x, RP2040/RP2350, ATSAM, LPC, i.MX RT500, and ESP32
+  families. A custom OpenOCD target config drives anything else, including
+  the i.MX RT10xx and RT11xx ([#850](https://github.com/lagerdata/lager/issues/850)).
+- A SEGGER probe with a USB product ID not in the table is still detected,
+  as `J-Link`.
 
 ---
 
@@ -421,9 +456,10 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 
 | Manufacturer | Model | Control Command |
 |---|---|---|
-| Prolific | PL2303 | `lager uart` |
+| Prolific | PL2303 (USB ID `067b:23a3`) | `lager uart` |
 | Silicon Labs | CP210x | `lager uart` |
 | FTDI | FT232R | `lager uart` |
+| FTDI | FT232H, FT2232H, FT4232H | `lager uart` |
 | Espressif | ESP32 JTAG Serial | `lager uart` |
 
 **Enables:**
@@ -435,7 +471,9 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 
 | Protocol | Control Command | Capabilities |
 |---|---|---|
-| Bluetooth Low Energy (BLE) | `lager ble` | Scan, connect, disconnect, service discovery |
+| Bluetooth Low Energy (BLE) | `lager ble` | Scan, connect, disconnect, service discovery. GATT read, write and notify from the Python API |
+| BluFi (ESP32 WiFi provisioning over BLE) | `lager blufi` | Scan, connect, provision WiFi credentials, status, WiFi scan |
+| WiFi (the box's own interface) | Python API (`lager.protocols.wifi`) | Scan, connect, disconnect, status, delete a saved connection |
 
 **Enables:**
 - Wireless device testing
@@ -489,6 +527,7 @@ rather than as cameras.
 | Logitech | C270 | `lager webcam` |
 | Logitech | StreamCam | `lager webcam` |
 | IPEVO | V4K PRO (document camera) | `lager webcam` |
+| ELP | Global Shutter AR0234 | `lager webcam` |
 
 **Enables:**
 - Visual DUT inspection

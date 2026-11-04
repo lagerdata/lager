@@ -26,7 +26,7 @@ from lager import Net, NetType
 | `read_memory(address, length)` | 从设备读取内存 |
 | `status()` | 获取连接状态 |
 | `rtt(channel, search_addr, search_size, chunk_size)` | 创建用于双向通信的 RTT 会话（原始字节） |
-| `rtt_defmt(elf, channel)`                            | 经 `defmt-print` 解码的 RTT 会话（产出日志行）    |
+| `rtt_defmt(elf, channel, search_addr, search_size, chunk_size)` | 经 `defmt-print` 解码的 RTT 会话（产出日志行）    |
 | `session(...)` | 带作用域的会话：进入时连接，退出时保证拆除 |
 
 ## 方法参考
@@ -107,7 +107,7 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 dbg.disconnect()
 ```
 
-**返回：** `dict` - 状态字典
+**返回：** 在 J-Link 探针上返回 `dict` - 状态字典。在 OpenOCD 探针上返回 `None`（[#850](https://github.com/lagerdata/lager/issues/850)）。
 
 ### `reset(halt=False)`
 
@@ -261,7 +261,9 @@ print(f"GDB server running: {status.get('running', False)}")
 
 它报告的是该探针上是否有 gdbserver 进程在运行。这并不是在陈述目标的状态：服务器可能比它所挂接的器件活得更久。CLI 的 `lager debug <net> status` 会分别报告这两种状态。
 
-### `session(speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
+### `session(*, speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
+
+所有参数都只能以关键字传入。位置参数会引发 `TypeError`。
 
 带作用域的调试会话。它在进入时连接，并保证退出时拆除。这样，"烧录 → 挂接 RTT → 复位"这一安全顺序只需编码一次，而不必在每个脚本里重新摸索。`with` 的目标就是该 Net 本身，因此在块内可以使用完整的接口（`flash`、`rtt_defmt`、`reset`、`read_memory` 等）。
 
@@ -528,6 +530,9 @@ with dbg.rtt_defmt(elf='build/app.elf') as logs:
 | --------- | ---- | ------- | ----------- |
 | `elf` | `str` | 必填 | 烧录在被测设备上的固件 ELF 的路径（相对路径相对于该脚本在 Box 上的工作目录解析） |
 | `channel` | `int` | `0` | RTT 通道号 |
+| `search_addr` | `int` 或 `None` | `None` | 搜索 RTT 控制块的 RAM 起始地址 |
+| `search_size` | `int` 或 `None` | `None` | 要搜索的 RAM 区域大小（字节） |
+| `chunk_size` | `int` 或 `None` | `None` | 每次读取块的大小（字节） |
 | `defmt_print_bin` | `str` 或 `None` | `None` | 覆盖 `defmt-print` 可执行文件（路径，或 PATH 上的名称） |
 | `read_timeout` | `float` | `0.5` | 内部 RTT 读取循环的轮询间隔（秒） |
 

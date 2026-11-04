@@ -25,30 +25,32 @@ from lager import Net, NetType  # Convenience import for Net and NetType
 
 | NetType | 说明 | 硬件 |
 |---------|-------------|----------|
-| `NetType.PowerSupply` | 可编程电源 | Rigol DP800、Keithley、Keysight |
-| `NetType.PowerSupply2Q` | 双象限电源（太阳能仿真） | EA PSI/EL 系列 |
+| `NetType.PowerSupply` | 可编程电源 | Rigol DP700/DP800、Keysight E36200/E36300、Keithley 2281S、Siglent SPD1000X、EA PSB |
+| `NetType.PowerSupply2Q` | 双象限电源。太阳能 Net 不使用它；请参阅[太阳能](./solar) | -- |
 | `NetType.Battery` | 电池模拟器 | Keithley 2281S |
 | `NetType.ELoad` | 电子负载 | Rigol DL3000 |
-| `NetType.Analog` | 示波器模拟输入 | Rigol MSO5000 |
+| `NetType.Analog` | 示波器（`scope` 和 `scope-channel` Net） | Rigol MSO5000、Rigol DS1000Z、PicoScope |
 | `NetType.Logic` | 逻辑分析仪输入 | Rigol MSO5000 |
-| `NetType.Waveform` | 波形发生器 | Rigol MSO5000 |
-| `NetType.GPIO` | 数字 I/O | LabJack T7、LabJack U3、MCC USB-202 |
-| `NetType.ADC` | 模数转换器 | LabJack T7、LabJack U3、MCC USB-202 |
-| `NetType.DAC` | 数模转换器 | LabJack T7、LabJack U3、MCC USB-202 |
+| `NetType.Waveform` | 尚未实现 | -- |
+| `NetType.GPIO` | 数字 I/O | LabJack T7/U3/U6、MCC USB-202、FT232H/FT2232H/FT4232H、Aardvark、YKUSH3 |
+| `NetType.ADC` | 模数转换器 | LabJack T7/U3/U6、MCC USB-202 |
+| `NetType.DAC` | 数模转换器 | LabJack T7/U3/U6、MCC USB-202 |
 | `NetType.Thermocouple` | 温度传感器 | Phidget |
 | `NetType.DMM` | 台式万用表 | Siglent SDM3065X |
-| `NetType.Rotation` | 旋转编码器 | Phidget |
-| `NetType.WattMeter` | 功率计 | Yocto-Watt、Joulescope JS220 |
+| `NetType.Rotation` | 旋转编码器（旧版，见下文） | Phidget 编码器 |
+| `NetType.WattMeter` | 功率计 | Yocto-Watt、Joulescope JS220、Nordic PPK2 |
 | `NetType.UART` | 串行通信 | USB 串口 |
 | `NetType.Debug` | 调试探针 | J-Link、OpenOCD 支持的探针 |
 | `NetType.Arm` | 机械臂 | Rotrics Dexarm |
-| `NetType.Usb` | USB 端口控制 | Acroname、YKUSH、Plugable |
+| `NetType.Usb` | USB 端口控制 | Acroname、YKUSH、YKUSH3、Plugable |
 | `NetType.Wifi` | WiFi 模块 | Lager Box WiFi |
-| `NetType.Actuate` | 执行器控制 | Dexarm 执行器 |
-| `NetType.SPI` | SPI 总线通信 | Aardvark、FT232H、LabJack T7、LabJack U3 |
-| `NetType.I2C` | I2C 总线通信 | Aardvark、FT232H、LabJack T7、LabJack U3 |
-| `NetType.EnergyAnalyzer` | 能量积分测量 | Joulescope JS220 |
-| `NetType.Webcam` | 视频串流 | USB 摄像头 |
+| `NetType.Actuate` | 把机械臂移动到保存的位置（旧版，见下文） | Rotrics Dexarm |
+| `NetType.SPI` | SPI 总线通信 | Aardvark、FT232H/FT2232H/FT4232H、LabJack T7、LabJack U3 |
+| `NetType.I2C` | I2C 总线通信 | Aardvark、FT232H/FT2232H/FT4232H、LabJack T7、LabJack U3 |
+| `NetType.EnergyAnalyzer` | 能量积分测量 | Joulescope JS220、Nordic PPK2 |
+| `NetType.Webcam` | 视频串流 | UVC 摄像头 |
+| `NetType.Hsm` | 硬件安全模块 | YubiHSM 2 |
+| `NetType.Router` | 网络路由器控制 | MikroTik RouterOS |
 
 ## 快速上手
 
@@ -187,6 +189,8 @@ print("Test complete")
 | [Net](/source/zh/reference/python/net) | 硬件 Net 管理和核心操作 |
 | [Debug](/source/zh/reference/python/debug) | 设备烧录、复位和调试控制（含 RTT） |
 | [USB](/source/zh/reference/python/usb) | USB 设备电源控制 |
+| [自定义驱动](/source/zh/reference/python/custom-drivers) | 打开安装在 Box 上的自定义驱动 |
+| [断点](/source/zh/reference/python/breakpoints) | 暂停脚本并检查其状态 |
 
 ### 电源与仿真
 
@@ -203,10 +207,11 @@ print("Test complete")
 | 页面 | 说明 |
 |------|-------------|
 | [示波器](/source/zh/reference/python/scope) | 示波器波形采集与测量 |
-| [逻辑分析仪](/source/zh/reference/python/logic) | 数字信号采集与协议解码 |
+| [逻辑分析仪](/source/zh/reference/python/logic) | 数字信号采集与触发 |
+| [能量分析仪](/source/zh/reference/python/energy) | 能量与电荷积分 |
 | [ADC](./adc) | 模数转换 |
 | [热电偶](./tc) | 温度测量 |
-| [DMM](/source/reference/python/dmm) | 台式万用表读数 |
+| [DMM](/source/zh/reference/python/dmm) | 台式万用表读数 |
 
 ### I/O 与通信
 
@@ -220,6 +225,8 @@ print("Test complete")
 | [Serial](./serial) | 原生 pyserial 支持 |
 | [BLE](/source/zh/reference/python/ble) | 低功耗蓝牙通信 |
 | [WiFi](/source/zh/reference/python/wifi) | WiFi 配置 |
+| [BluFi](/source/zh/reference/python/blufi) | 通过 BLE 为 ESP32 配置 WiFi |
+| [路由器](/source/zh/reference/python/router) | MikroTik 路由器控制 |
 
 ### 实用工具
 
@@ -227,6 +234,36 @@ print("Test complete")
 |------|-------------|
 | [机械臂](/source/zh/reference/python/arm) | 机械臂控制 |
 | [摄像头](/source/zh/reference/python/webcam) | 摄像头串流与视频采集 |
+| [HSM](/source/zh/reference/python/hsm) | YubiHSM 2 密钥存储与签名 |
+
+## 运行记录
+
+有两个函数把脚本与它的运行记录关联起来。两者都是顶层导出。
+
+```python
+import os
+from lager import record_value, output_dir
+
+record_value('dut.firmware', '1.4.2')   # A fact only the script knows
+with open(os.path.join(output_dir(), 'results.csv'), 'w') as f:
+    f.write('step,result\n')
+```
+
+| 函数 | 说明 |
+|----------|-------------|
+| `record_value(key, value)` | 把 `key = value` 写入运行记录的 `scriptAsserted` 部分。写入时返回 `True`，不在记录的运行中时返回 `False` |
+| `output_dir()` | 返回本次运行的输出文件夹，必要时创建它。在 `lager python` 之外，它是当前目录下的 `lager-output` |
+
+键由 1-128 个字母、数字和 `. _ : / -` 组成，并以字母或数字开头。值可以是不超过 4096 个字符的字符串、数字、布尔值或 `None`。一次运行最多记录 256 个键，同一个键以最后写入的值为准。记录无法容纳的值会引发 `ValueError`。`lager python --download` 会取回 `output_dir()` 中的文件和运行记录。请参阅 [`lager python`](/source/zh/reference/cli/python)。
+
+## 旧版 Net 类型
+
+`NetType.Rotation` 和 `NetType.Actuate` 没有对应的 `lager nets add` 角色。它们只适用于由手写的保存记录或 `LAGER_MUXES` 定义的 Net。
+
+| 类 | 方法 | 说明 |
+|-------|--------|-------------|
+| `Rotation` | `read()` | 读取 Phidget 编码器。返回 `{'position': value}`。位置写作 `phidget:<serial>:<port>` |
+| `Actuate` | `actuate()` | 把 Dexarm 移动到保存的位置。位置是一个包含 `serial_number` 和 `position`（x、y、z）的字典 |
 
 ## 错误处理
 

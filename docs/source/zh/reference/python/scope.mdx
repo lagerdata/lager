@@ -261,9 +261,9 @@ vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
 
 两种示波器都支持串流。MSO5000 从通过 `lager nets set-capture` 与它配对的实时视图串流。配对之前，`stream_start()`、`stream_frames()` 和 `stream_capture()` 会抛出 `UnsupportedScopeFeature`。DS1000Z 串流它的屏幕记录，不需要配对。`capture()` 读取示波器自己的记录，不需要实时视图。
 
-### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling)`
+### `stream_start(channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling, channels)`
 
-启动串流采集。
+启动串流采集。所有参数都是可选的。只应用您给出的设置，因此之后用新的触发电平再次调用时，会保留之前设置的耦合方式。
 
 **参数：**
 - `channel`（str）：要启用的通道 —— `"A"`、`"B"`、`"1"`、`"2"`
@@ -273,6 +273,7 @@ vpp = scope.measurement.voltage_peak_to_peak(measurement_cursor=True)
 - `trigger_slope`（str）：`"rising"`、`"falling"`、`"either"`
 - `capture_mode`（str）：`"auto"`、`"normal"`、`"single"`
 - `coupling`（str）：`"dc"`、`"ac"`
+- `channels`（list）：用于多通道采集的多个通道。同时给出 `channel` 时，两者都会启用。两者都不给时，使用该 Net 自身的通道
 
 <Note>
 API 接受 `"gnd"`，但 2000 系列设备会拒绝它，因为它们没有接地开关：`ps2000_set_channel` 只用一个标志表示耦合方式。要隔离直流分量，请使用 `"ac"`；要查看零电平的位置，请拔下探头。
@@ -298,7 +299,7 @@ scope.stream_start(
 scope.stream_stop()
 ```
 
-### `stream_capture(output, duration, samples)`
+### `stream_capture(output=None, duration=1.0, samples=None, timeout=None)`
 
 采集 `duration` 秒，并写入 CSV 文件。
 
@@ -306,6 +307,7 @@ scope.stream_stop()
 - `output`（str）：输出文件路径。省略它时只统计采样点数，不写文件
 - `duration`（float）：采集时长，单位秒
 - `samples`（int）：每个通道的行数上限（可选）。它是上限而不是目标：采集仍然在 `duration` 结束时停止
+- `timeout`（float）：放弃之前等待采集的秒数（可选）。默认等于 `duration`
 
 返回的是摘要而不是采样数据本身 —— `captures`、`samples_per_channel`、`rows` 和 `output`。CSV 的列为 `capture`、`channel`、`sample_index`、`time_ns` 和 `voltage`，与 `lager scope stream capture` 写出的格式相同。
 
@@ -418,7 +420,7 @@ time_offset = scope.trace_settings.get_time_offset()
 <Note>
 每格时间是一次采集的十分之一，与十格的屏幕相同，因此 `set_time_per_div(0.001)` 请求的是 10 ms 的窗口。
 
-`get_time_per_div()` 返回实际使用的刻度，它很少恰好等于请求的值。示波器按一组固定的采样间隔采样，每一级是上一级的两倍。Box 把请求舍入到最接近的一级：2204A 上的 1 ms/div 实际是 1.024 ms/div。如果需要精确的窗口，请读回该值。更好的做法是使用 `get_sample_rate()` 和帧自身的时间轴，而不是根据设置的值进行计算。
+`get_time_per_div()` 返回实际使用的刻度，它很少恰好等于请求的值。示波器按一组固定的采样间隔采样，每一级是上一级的两倍。Box 把请求舍入到最接近的一级：2204A 上的 1 ms/div 实际是 1.024 ms/div。如果需要精确的窗口，请读回该值。更好的做法是使用 `get_sample_rate()`（仅 PicoScope）和帧自身的时间轴，而不是根据设置的值进行计算。
 
 设备能达到的最快屏幕取决于数据块深度和最大采样率，因为两者相乘就得到窗口。2204A 以 100 MS/s 采集 8000 个采样点时，最快为 8 us/div，请求更快的刻度也只会得到这个值。启用第二个通道会让缓冲区减半，这会让最快屏幕变得更快，而不是更慢。
 </Note>
@@ -479,6 +481,8 @@ readings["trace_delta_v"]   # the trace's voltage change between them
 ```
 
 这对光标保存在 Box 上。从脚本、终端 CLI 或 Web UI 控制台放置的光标是同样的两个标记，Web UI 会把它们画出来。
+
+在 Python 中，`set_cursors()`、`measure_cursors()`、`get_sample_rate()` 和 `capabilities()` 仅适用于 PicoScope。在 Rigol Net 上，它们会以 "Function not found" 失败。在 Rigol 上，请使用 `lager scope <net> cursor time` 读取基于采集样本的光标。请参阅 [#849](https://github.com/lagerdata/lager/issues/849)。
 </Note>
 
 ```python

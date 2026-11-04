@@ -1,0 +1,72 @@
+---
+title: BluFi
+description: 在 Lager Python 脚本中通过 BLE 为 ESP32 配置 WiFi
+---
+
+`BlufiClient` 与运行 Espressif BluFi 服务的 ESP32 通信。用它可以读取设备的固件版本和 WiFi 状态、列出它能看到的网络，并向它发送 WiFi 凭据。它使用 Lager Box 自身的蓝牙适配器。BluFi 设备不是 Net。
+
+## 导入
+
+```python
+from lager.blufi import BlufiClient
+from lager.blufi import OP_MODE_STA, STA_CONN_SUCCESS
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `scan(timeout=10.0, name_prefix=None)` | 扫描 BLE 设备但不连接。返回 `{'name', 'address', 'rssi'}` 列表，信号最强的在前 |
+| `connectByName(name, timeout=None)` | 按广播名称连接设备。成功时返回 `True`；找不到设备或连接超时时返回 `False` |
+| `negotiateSecurity()` | 与设备协商加密。设备在 5 秒内没有应答时引发 `SecurityError` |
+| `requestVersion()` / `getVersion()` | 请求固件版本，然后读取它（例如 `'1.3'`） |
+| `requestDeviceStatus()` / `getWifiState()` | 请求 WiFi 状态，然后以 `{'opMode', 'staConn', 'softAPConn'}` 读取 |
+| `requestDeviceScan(timeout=10)` / `getSSIDList()` | 让设备扫描 WiFi，然后读取 `{'ssid', 'rssi'}` 列表 |
+| `postDeviceMode(opMode)` | 设置 WiFi 模式，例如 `OP_MODE_STA` |
+| `postStaWifiInfo({'ssid': ..., 'pass': ...})` | 发送 station 凭据，并让设备连接 |
+| `postCustomData(data)` | 发送应用自定义的字节 |
+
+`request*()` 方法发送请求后立即返回。设备通过通知应答，因此请稍等片刻再调用对应的 `get*()` 方法。`requestDeviceScan()` 会自行等待列表，最长 `timeout` 秒。
+
+## 示例：为设备配置网络
+
+```python
+import os
+import time
+from lager.blufi import BlufiClient, OP_MODE_STA, STA_CONN_SUCCESS
+
+client = BlufiClient()
+if not client.connectByName('BLUFI_DEVICE', timeout=20.0):
+    raise RuntimeError('device not found')
+client.negotiateSecurity()
+
+client.requestVersion()
+time.sleep(0.5)
+print('firmware', client.getVersion())
+
+client.postDeviceMode(OP_MODE_STA)
+time.sleep(0.5)
+client.postStaWifiInfo({'ssid': 'TestNet', 'pass': os.environ['WIFI_PASSWORD']})
+
+time.sleep(5)   # Give the device time to join the network
+client.requestDeviceStatus()
+time.sleep(1)
+state = client.getWifiState()
+assert state['staConn'] == STA_CONN_SUCCESS, state
+```
+
+## 常量
+
+| 分组 | 名称 |
+|-------|-------|
+| WiFi 模式（`opMode`） | `OP_MODE_NULL`、`OP_MODE_STA`、`OP_MODE_SOFTAP`、`OP_MODE_STASOFTAP` |
+| Station 状态（`staConn`） | `STA_CONN_SUCCESS`、`STA_CONN_FAIL`、`STA_CONN_CONNECTING`、`STA_CONN_NO_IP` |
+| SoftAP 安全类型 | `SOFTAP_SECURITY_OPEN`、`SOFTAP_SECURITY_WEP`、`SOFTAP_SECURITY_WPA`、`SOFTAP_SECURITY_WPA2`、`SOFTAP_SECURITY_WPA_WPA2` |
+
+`lager.blufi` 还导出异常 `BluetoothError`、`ConnectionError`、`RoleError` 和 `SecurityError`。
+
+## 说明
+
+- BluFi 设备按其 BLE 名称查找，而不是按保存的 Net
+- 客户端会启动自己的事件循环线程，该线程随脚本结束
+- 对应的 CLI 命令是 [`lager blufi`](/source/zh/reference/cli/blufi)，它在 Box 上运行相同的流程并打印结果

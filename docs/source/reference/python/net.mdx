@@ -27,7 +27,7 @@ from lager import InvalidNetError, SetupFunctionRequiredError
 | `Net.delete_local_net()` | Delete a net configuration |
 | `Net.delete_all_local_nets()` | Delete all net configurations |
 | `Net.rename_local_net()` | Rename a net configuration |
-| `Net.filter_nets()` | Filter nets by name and/or role |
+| `Net.filter_nets()` | Return a list without the nets that match a name and role |
 
 ## Instance Methods
 
@@ -62,7 +62,10 @@ scope = Net.get('PROBE', type=NetType.Analog)
 | `setup_function` | `callable` | Optional function called when net is enabled |
 | `teardown_function` | `callable` | Optional function called when net is disabled |
 
-**Returns:** Net instance appropriate for the specified type
+**Returns:** An object for the net's role. For most roles this is a role-specific class,
+for example `LabJackGPIO`, `DebugNet`, `UARTNet`, `YubiHsm2` or a supply function mapper.
+Those classes have the methods on the role's page, and they do not always have `enable()`
+and `disable()`.
 
 ### `Net.list_saved()`
 
@@ -77,8 +80,9 @@ for net in nets:
 **Returns:** `list[dict]` - List of net configurations with keys:
 - `name` (str) - Net name
 - `role` (str) - Net type/role
-- `channel` (int) - Hardware channel number
+- `pin` (str) - Hardware channel, as `lager nets add` saved it
 - `instrument` (str) - Associated instrument type
+- `address` (str) - Instrument address
 
 ### `Net.list_all_from_env()`
 
@@ -100,8 +104,8 @@ Save a net configuration to the Lager Box.
 Net.save_local_net({
     'name': 'VDD',
     'role': 'power-supply',
-    'channel': 1,
-    'instrument': 'rigol_dp800',
+    'pin': '1',
+    'instrument': 'Rigol_DP832',
     'address': '192.168.1.100'
 })
 ```
@@ -168,8 +172,8 @@ Save multiple net configurations at once.
 
 ```python
 Net.save_local_nets([
-    {'name': 'VDD', 'role': 'power-supply', 'channel': 1, 'instrument': 'rigol_dp800', 'address': '192.168.1.100'},
-    {'name': 'GND', 'role': 'power-supply', 'channel': 2, 'instrument': 'rigol_dp800', 'address': '192.168.1.100'}
+    {'name': 'VDD', 'role': 'power-supply', 'pin': '1', 'instrument': 'Rigol_DP832', 'address': '192.168.1.100'},
+    {'name': 'GND', 'role': 'power-supply', 'pin': '2', 'instrument': 'Rigol_DP832', 'address': '192.168.1.100'}
 ])
 ```
 
@@ -191,16 +195,18 @@ Net.delete_all_local_nets()
 
 ### `Net.filter_nets(all_nets, name, role=None)`
 
-Filter a list of nets by name and optionally by role.
+Return the list without the nets that match a name, and optionally a role. This is the
+helper `delete_local_net()` uses. To find a net, filter the list yourself:
+`[n for n in all_nets if n['name'] == 'VDD']`.
 
 ```python
 all_nets = Net.get_local_nets()
 
-# Find all nets named 'VDD'
-vdd_nets = Net.filter_nets(all_nets, 'VDD')
+# Every net except the ones named 'VDD'
+without_vdd = Net.filter_nets(all_nets, 'VDD')
 
-# Find 'VDD' with specific role
-psu_nets = Net.filter_nets(all_nets, 'VDD', role='power-supply')
+# Every net except 'VDD' with this role
+without_vdd_psu = Net.filter_nets(all_nets, 'VDD', role='power-supply')
 ```
 
 **Parameters:**
@@ -208,10 +214,10 @@ psu_nets = Net.filter_nets(all_nets, 'VDD', role='power-supply')
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `all_nets` | `list[dict]` | List of nets to search |
-| `name` | `str` | Net name to match |
+| `name` | `str` | Net name to remove |
 | `role` | `str` | Optional role to match |
 
-**Returns:** `list[dict]` - Matching nets
+**Returns:** `list[dict]` - The nets that do not match
 
 ### `enable()`
 
@@ -250,9 +256,9 @@ Available net types:
 
 | NetType | Role String | Description |
 |---------|-------------|-------------|
-| `NetType.Analog` | `analog`, `scope` | Oscilloscope analog input |
+| `NetType.Analog` | `analog`, `scope`, `scope-channel` | Oscilloscope. A `scope` net is the instrument; a `scope-channel` net is one of its channels |
 | `NetType.Logic` | `logic` | Logic analyzer input |
-| `NetType.Waveform` | `waveform` | Waveform generator |
+| `NetType.Waveform` | `waveform` | Not implemented. No driver backs this type, so `Net.get()` raises an error. See [#844](https://github.com/lagerdata/lager/issues/844) |
 | `NetType.Battery` | `battery` | Battery simulator |
 | `NetType.PowerSupply` | `power-supply` | Power supply |
 | `NetType.ELoad` | `eload` | Electronic load |
@@ -275,7 +281,7 @@ Available net types:
 | `NetType.Rotation` | `rotation` | Rotary encoder |
 | `NetType.Wifi` | `wifi` | WiFi module |
 | `NetType.Actuate` | `actuate` | Actuator control |
-| `NetType.PowerSupply2Q` | `power-supply-2q` | Two-quadrant power supply (solar simulation) |
+| `NetType.PowerSupply2Q` | `power-supply-2q` | Two-quadrant power supply. Solar nets are saved with the role `solar` and do not use it; see [Solar Simulation](/source/reference/python/solar) |
 
 ## Properties
 
@@ -364,8 +370,8 @@ from lager import Net
 Net.save_local_net({
     'name': 'NEW_PSU',
     'role': 'power-supply',
-    'channel': 2,
-    'instrument': 'rigol_dp800',
+    'pin': '2',
+    'instrument': 'Rigol_DP832',
     'address': '192.168.1.100'
 })
 

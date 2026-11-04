@@ -30,10 +30,13 @@ from lager import Net, NetType
 | `is_ocp()` | Check if OCP fault is active |
 | `clear_ovp()` | Clear over-voltage protection fault |
 | `clear_ocp()` | Clear over-current protection fault |
-| `state()` | Print comprehensive power state |
-| `get_full_state()` | Print extended state with setpoints and limits |
-| `set_mode()` | Put the instrument into DC power-supply mode, on instruments that have modes |
-| `get_monitor_state(channel=None)` | Gather the full monitor state in a single call; returns a dict |
+| `state()` | Print the power state to the box's hardware-service log; returns `None` |
+| `get_full_state()` | Print the extended state to the same log; returns `None` |
+| `set_mode()` | Keithley 2281S only: put the instrument into DC power-supply mode |
+| `disable_ocp(channel)` | Turn over-current protection off, on instruments that can |
+| `disable_ovp(channel)` | Turn over-voltage protection off, on instruments that can |
+| `get_monitor_state(channel)` | Read the full state of one channel in a single call; returns a dict |
+| `get_monitor_states(channels)` | `get_monitor_state()` for several channels; returns a dict keyed by channel |
 
 ## Method Reference
 
@@ -131,7 +134,7 @@ psu.disable()
 
 ### `set_ovp(limit)`
 
-Set over-voltage protection threshold. OVP must be greater than or equal to the configured voltage. When the measured voltage exceeds this threshold, the output is automatically disabled.
+Set over-voltage protection threshold. When the measured voltage exceeds this threshold, the output is automatically disabled. On a Keithley 2281S, an OVP below the voltage setpoint raises an error. The other drivers accept it.
 
 ```python
 psu.set_ovp(3.6)  # Trip at 3.6V
@@ -217,6 +220,8 @@ psu.clear_ocp()
 
 Print comprehensive power supply state including channel, enabled status, mode (CV/CC), measured voltage/current/power, and protection status.
 
+The call runs in the box's hardware service. The text goes to `/tmp/lager-hardware-service.log` on the box, not to your script, and the call returns `None`. To read the state in a script, use [`get_monitor_state()`](#get_monitor_state-channel). See [#845](https://github.com/lagerdata/lager/issues/845).
+
 ```python
 psu.state()
 ```
@@ -238,7 +243,7 @@ OVP Limit: 3.6000
 
 ### `get_full_state()`
 
-Print extended state including all measurements, configured setpoints, protection limits, and hardware maximum ratings.
+Print extended state including all measurements, configured setpoints, protection limits, and hardware maximum ratings. Like `state()`, it prints to the hardware-service log and returns `None`.
 
 ```python
 psu.get_full_state()
@@ -266,6 +271,47 @@ Current_Max: 3.0000
 Additional fields beyond `state()`:
 - **Voltage_Set / Current_Set** - Configured setpoints
 - **Voltage_Max / Current_Max** - Hardware channel ratings
+
+### `get_monitor_state(channel)`
+
+Read the full state of one channel in a single call, and return it as a dict. This is the
+way to read the state in a script.
+
+```python
+state = psu.get_monitor_state(psu.channel)
+print(state['voltage'], state['current'], state['enabled'])
+```
+
+| Key | Description |
+|-----|-------------|
+| `voltage`, `current`, `power` | Measured values, or `None` when a read fails |
+| `enabled` | `True`, `False`, or `None` when unknown |
+| `mode` | `CV` or `CC` |
+| `voltage_set`, `current_set` | Configured setpoints |
+| `voltage_max`, `current_max` | Hardware channel ratings |
+| `ocp_limit`, `ocp_tripped`, `ovp_limit`, `ovp_tripped` | Protection limits and trip state |
+
+Pass the net's channel. With no channel, a multi-channel supply such as a DP832 reads the
+output that is selected on its front panel ([#846](https://github.com/lagerdata/lager/issues/846)). `get_monitor_states([1, 2])` reads several
+channels and returns `{'1': {...}, '2': {...}}`.
+
+### `disable_ocp(channel)` / `disable_ovp(channel)`
+
+Turn over-current or over-voltage protection off. Setting a limit with `set_ocp()` or
+`set_ovp()` turns it back on.
+
+```python
+psu.disable_ovp(psu.channel)
+```
+
+| Instrument | Result |
+|------------|--------|
+| Rigol DP700, Rigol DP800, Keysight E36200 | Protection turns off |
+| Keysight E36300, Keithley 2281S, Siglent SPD1000X, EA | Raises an error |
+
+Pass the net's channel. With no channel, a multi-channel supply acts on the output that is
+selected on its front panel ([#846](https://github.com/lagerdata/lager/issues/846)). A net with a `max_voltage` safety limit refuses to turn OVP
+off, and a net with `max_current` refuses to turn OCP off.
 
 ## Examples
 
@@ -360,8 +406,8 @@ psu.set_ovp(3.6)
 psu.set_ocp(0.5)
 psu.enable()
 
-# Print comprehensive state
-psu.get_full_state()
+# Read the full state as a dict
+print(psu.get_monitor_state(psu.channel))
 
 psu.disable()
 ```
@@ -373,10 +419,18 @@ psu.disable()
 | Rigol | DP832 / DP832A | 3 | Ch1-2: 30V/3A, Ch3: 5V/3A |
 | Rigol | DP821 | 2 | Ch1: 60V/1A, Ch2: 8V/10A |
 | Rigol | DP811 / DP811A | 1 | 20V/10A or 40V/5A |
+| Rigol | DP711 / DP712 | 1 | DP711: 30V/5A, DP712: 50V/3A |
+| Siglent | SPD1168X / SPD1305X | 1 | SPD1168X: 16V/8A, SPD1305X: 30V/5A. No OVP or OCP |
 | Keithley | 2281S | 1 | 20V/6A/120W, battery simulator mode |
 | Keysight | E36200 series | 2 | E36233A: 30V/20A per channel |
 | Keysight | E36300 series | 3 | E36311A/12A/13A |
-| EA | PSI/EL series | 1 | Two-quadrant operation |
+| EA | PSB 10060-60 / 10080-60 | 1 | Two-quadrant. See the warning below |
+
+<Warning>
+An EA supply does not work through `Net.get()` today. `set_voltage()`, `set_current()`,
+`set_ovp()`, `set_ocp()`, `enable()` and `disable()` fail with "Function not found". Use
+[`lager supply`](/source/reference/cli/supply) for an EA supply. See [#843](https://github.com/lagerdata/lager/issues/843).
+</Warning>
 
 ## Notes
 
@@ -384,7 +438,7 @@ psu.disable()
 - Call `enable()` to turn on the output after setting voltage/current
 - Always call `disable()` when finished
 - Protection faults automatically disable output; use `clear_ovp()` or `clear_ocp()` after addressing the fault
-- OVP must be >= the voltage setpoint; setting a lower OVP will raise an error
+- On a Keithley 2281S, an OVP below the voltage setpoint raises an error
 - Voltage and current limits depend on hardware capabilities
 - Multi-channel supplies: each channel is configured as a separate net
-- `state()` and `get_full_state()` print to stdout; use `voltage()`, `current()`, `power()` to get values in code
+- `state()` and `get_full_state()` print to the box's hardware-service log and return `None`; use `voltage()`, `current()`, `power()` or `get_monitor_state()` to get values in code
