@@ -455,11 +455,28 @@ def _needs_pkill():
 
 
 def test_the_poller_runs_under_the_marker(tmp_path):
+    """The poller takes the marker name only once its exec chain completes.
+
+    `$!` names the background subshell as soon as it forks, and on Linux it
+    still has to exec `setsid` and then `exec -a` bash before it carries the
+    marker. One `ps` read straight after the fork can see the parent's own
+    `bash -c ...` args, which failed this test once on a hosted runner. So
+    poll for up to 2 s: a poller that never takes the marker still fails, with
+    the last args it showed.
+    """
     _needs_pkill()
     marker = f"lager-ssh-sync-test-{uuid.uuid4().hex[:12]}"
     proc = _run_pid_block(
         tmp_path / "pid", marker=marker,
-        after=['ps -o args= -p "$_SSH_SYNC_PID" | sed "s/^/ARGS:/"'],
+        after=[
+            '_args=""',
+            'for _i in $(seq 40); do',
+            '  _args=$(ps -o args= -p "$_SSH_SYNC_PID" || true)',
+            '  case "$_args" in "$LAGER_SSH_SYNC_MARKER "*) break ;; esac',
+            '  sleep 0.05',
+            'done',
+            'echo "ARGS:$_args"',
+        ],
     )
     assert proc.returncode == 0, proc.stderr
     args = [line for line in proc.stdout.splitlines() if line.startswith("ARGS:")]
