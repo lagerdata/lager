@@ -22,7 +22,7 @@ lager uart [NETNAME] [OPTIONS]
 | 选项 | 说明 |
 |--------|-------------|
 | `--box BOX` | Lager Box 名称或 IP 地址 |
-| `--baudrate RATE` | 波特率（例如 9600、115200） |
+| `--baudrate RATE` | 波特率（例如 9600、115200），范围为 300 到 3,000,000 |
 | `--bytesize SIZE` | 数据位（5、6、7、8） |
 | `--parity MODE` | 校验位：none、even、odd、mark、space |
 | `--stopbits BITS` | 停止位（1、1.5、2） |
@@ -169,7 +169,7 @@ lager uart SERIAL1 --force --box my-lager-box
 | 硬件 | `--rtscts` | RTS/CTS 引脚 |
 | 硬件 | `--dsrdtr` | DSR/DTR 引脚 |
 
-各种流控类型不能组合使用。
+软件流控与硬件流控不能组合使用：`--xonxoff` 不能与 `--rtscts` 或 `--dsrdtr` 同时使用。两种硬件流控 `--rtscts` 和 `--dsrdtr` 可以一起使用。
 
 ---
 

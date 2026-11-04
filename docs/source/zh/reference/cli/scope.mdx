@@ -76,7 +76,7 @@ lager scope picoscope1 timebase 0.001 --box my-lager-box  # the scope net
 | `measure` | 测量波形特性 | 两者（见说明） |
 | `trigger` | 显示触发设置，或用子命令设置触发 | 两者（见说明） |
 | `acquire` | 设置多次采集的组合方式（normal、average、peak） | 两者 |
-| `roll` | 为慢速时基设置滚动模式 | 仅 PicoScope |
+| `roll` | 为慢速时基设置滚动模式 | 仅 PicoScope 2202、2203、2204(A) 和 2205(A) |
 | `fft` | 报告某个通道最强的频率分量 | 两者 |
 | `display` | 设置 Web UI 绘制波形的方式 | 两者 |
 | `cursor` | 在采集数据上放置光标并读取差值 | `time`/`volts`/`off` 两者都可用；`set-a`/`set-b`/`move-a`/`move-b`/`hide` 仅限 Rigol |
@@ -132,7 +132,7 @@ DS1000Z 没有视频输出，因此守护进程通过全速 USB 读取它的屏�
 | 光标控制 | 基于采集采样点的时间/电压光标，以及仪器屏幕上的 XY 光标 | 基于采集采样点的时间/电压光标 |
 | 自动量程 | 支持 | 不支持 |
 | 平均、峰值检测、FFT | `acquire`（由仪器完成）、`fft` | `acquire`、`fft` |
-| 滚动模式 | 不支持 | `roll` |
+| 滚动模式 | 不支持 | `roll`，仅 2202、2203、2204(A) 和 2205(A) |
 | Web 可视化 | 支持（需要采集卡） | 支持（HTML5） |
 | 数据导出 | 通过测量 | CSV 串流 |
 | 控制方式 | 经 USB 的 SCPI，经由 Box 守护进程 | 厂商 SDK，经由 Box 守护进程 |
@@ -1200,14 +1200,14 @@ scope [NET_NAME] [--box BOX]
   └── trigger                                 (no subcommand: show it)
       ├── edge [--mode] [--coupling] [--source] [--slope] [--level]
       ├── holdoff [SECONDS]
-      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (Rigol)
-      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (Rigol)
+      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (refused)
+      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (refused)
       ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...   (Rigol)
-      └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (Rigol)
+      └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (refused)
 
   Acquisition and Display
   ├── acquire [normal|average|peak] [--count N]
-  ├── roll [auto|on|off]                      (PicoScope)
+  ├── roll [auto|on|off]                      (PicoScope 2000)
   ├── fft [--channel] [--window] [--peaks]
   └── display
       ├── persistence VALUE
@@ -1246,7 +1246,7 @@ scope [NET_NAME] [--box BOX]
 - 串流适用于 PicoScope，以及与 HDMI 采集卡配对的 Rigol（`lager nets set-capture`）
 - 测量在两种仪器上都可用。`--display` 和 `--cursor` 仅限 Rigol，因为它们在仪器的屏幕上绘制
 - `cursor time`、`cursor volts` 和 `cursor off` 在两种仪器上都可用。显示光标命令仅限 Rigol
-- `roll` 仅限 PicoScope
+- `roll` 仅适用于 PicoScope 2202、2203、2204(A) 或 2205(A)
 - 边沿触发是 PicoScope 和 Rigol 都支持的唯一触发类型
 - 在 Rigol MSO5000 上，只有边沿触发和 SPI 触发可以工作（见 [issue #418](https://github.com/lagerdata/lager/issues/418)）
 - Web UI 需要能访问 Lager Box 上的端口 9000

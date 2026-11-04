@@ -151,7 +151,6 @@ lager solar SOLAR_PANEL stop
 
 | 厂商 | 型号系列 | 特性 |
 |--------------|--------------|----------|
-| EA | PSI/EL 系列 | 双象限运行、I-V 曲线仿真 |
 | EA | PSB 10060-60 | 双向电源 |
 | EA | PSB 10080-60 | 双向电源 |
 
@@ -178,6 +177,6 @@ lager solar SOLAR_PANEL stop
 ## 说明
 
 - 太阳能仿真需要兼容的双向电源
-- EA PSI/EL 系列支持双象限运行，仿真更接近真实
+- 只支持 EA PSB 系列；Box 会拒绝 solar Net 上的其他任何仪器
 - 用 `lager nets` 查看您 Box 上可用的太阳能 Net
 - 辐照度超过 1500 W/m² 会超出有效范围

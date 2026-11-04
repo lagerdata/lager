@@ -48,7 +48,10 @@ lager thermocouple
 
 ```bash
 $ lager thermocouple TEMP_SENSOR --box my-lager-box
-23.5
+Temperature: 23.5˚C
+
+$ lager thermocouple TEMP_SENSOR --box my-lager-box --json
+{"netname": "TEMP_SENSOR", "temperature_c": 23.5}
 ```
 
 ---
@@ -73,7 +76,7 @@ lager thermocouple TC2 --box my-lager-box
 lager thermocouple TC3 --box my-lager-box
 
 # 在 shell 脚本中使用
-TEMP=$(lager thermocouple OVEN_TC --box my-lager-box)
+TEMP=$(lager thermocouple OVEN_TC --box my-lager-box --json | jq .temperature_c)
 if (( $(echo "$TEMP > 100" | bc -l) )); then
     echo "Temperature exceeded 100°C!"
 fi

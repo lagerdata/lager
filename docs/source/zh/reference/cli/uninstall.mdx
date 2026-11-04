@@ -16,8 +16,8 @@ lager uninstall [OPTIONS]
 | 选项 | 类型 | 默认值 | 说明 |
 |--------|------|---------|-------------|
 | `--box TEXT` | 字符串 | | Box 名称（使用 `.lager` 配置中保存的 IP 和用户名） |
-| `--ip TEXT` | 字符串 | | 目标 Box 的 IP 地址 |
-| `--user TEXT` | 字符串 | `lagerdata` | SSH 用户名 |
+| `--ip TEXT` | 字符串 | | 目标 Box 的 IP 地址或 DNS 主机名 |
+| `--user TEXT` | 字符串 | `lagerdata`；使用 `--box` 时为保存的用户 | SSH 用户名 |
 | `--purge-config` | 标志 | | 同时删除 `/etc/lager` 的内容（已保存的 Net、Box 配置）。删除前先备份。参见[配置](#配置) |
 | `--include-control-plane` | 标志 | | 与 `--purge-config` 一起使用时，同时删除控制平面的文件。在重新关联之前，Box 会脱离其控制平面 |
 | `--keep-config` | 标志 | | 不起作用。默认就会保留 `/etc/lager`；接受此标志是为了让现有脚本继续运行 |
@@ -27,7 +27,7 @@ lager uninstall [OPTIONS]
 | `--dry-run` | 标志 | | 列出该命令会移除哪些内容，不做任何更改。 |
 | `--help` | | | 显示帮助信息并退出 |
 
-`--box` 和 `--ip` 必须提供其中之一。
+`--box` 和 `--ip` 必须且只能提供其中之一。`--keep-config` 与 `--purge-config` 同时使用是错误，不带 `--purge-config` 使用 `--include-control-plane` 也是错误。
 
 ## 会移除哪些内容
 

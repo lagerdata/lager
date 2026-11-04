@@ -33,7 +33,7 @@ lager gpo [NETNAME] LEVEL [OPTIONS]
 | 选项 | 说明 |
 |--------|-------------|
 | `--box BOX` | Lager Box 名称或 IP 地址 |
-| `--hold` | 保持输出状态（进程持续运行，直到按下 Ctrl+C） |
+| `--hold` | 为兼容旧脚本而保留，没有效果；请参阅[保持模式](#保持模式) |
 | `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
 
 ---
@@ -60,16 +60,12 @@ lager gpo --box my-lager-box
 
 ### 保持模式
 
-`--hold` 标志在设置好输出电平之后让进程继续运行。引脚会保持该状态，直到您按下 Ctrl+C。当您要为手动测试保持某个信号，或者引脚状态会在两次 CLI 调用之间复位时，请使用它。
+`--hold` 没有效果（[#840](https://github.com/lagerdata/lager/issues/840)）。Box 会保持设备会话打开，因此无论是否加 `--hold`，命令退出后引脚都会保持其电平。命令会打印一条说明并退出。若要释放引脚，请把它设为另一个电平。
 
 ```bash
-# Hold reset line low until manually released
-lager gpo RESET_N low --hold --box my-lager-box
-# Press Ctrl+C to release
-
-# Hold enable pin high during manual testing
-lager gpo EN high --hold
-# Press Ctrl+C when done
+# The level stays until the next command changes it
+lager gpo RESET_N low --box my-lager-box
+lager gpo RESET_N high --box my-lager-box
 ```
 
 ---
@@ -80,13 +76,13 @@ lager gpo EN high --hold
 |--------|------|---------|
 | LabJack T7 | FIO0-FIO7、EIO0-EIO7、CIO0-CIO3、MIO0-MIO2 | 3.3V 逻辑 |
 | LabJack U3 | FIO4-FIO7、EIO0-EIO7、CIO0-CIO3 | |
-| MCC USB-202 | DIO0-DIO7（0-7） | 3.3V/5V TTL |
-| Aardvark | 0-5（SCL、SDA、MISO、SCK、MOSI、SS） | 3.3V |
-| FT232H | 0-15（AD0-AD7、AC0-AC7） | 3.3V |
+| MCC USB-202 | DIO0-DIO7 | 3.3V/5V TTL |
+| Aardvark | SCL、SDA、MISO、SCK、MOSI、SS | 3.3V |
+| FT232H、FT2232H | 4-15（AD4-AD7、AC0-AC7） | 3.3V |
+| FT4232H | 0-7 | 3.3V |
+| YKUSH3 | 1-3 | |
 
-<Note>
-Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新启用它。当前可用的 GPIO 后端是 LabJack T7、LabJack U3 和 MCC USB-202。
-</Note>
+引脚一列列出 `lager nets add` 接受的确切通道写法。在多通道 FTDI 器件上，由 Net 的 interface 选择通道 A、B、C 或 D。
 
 ### LabJack U3 引脚
 
@@ -97,7 +93,7 @@ Aardvark 和 FT232H 的 GPIO 支持目前已停用。将来的版本可能重新
 
 ### Aardvark 引脚映射
 
-Aardvark I2C/SPI 适配器在它的 10 针排针上提供 6 个 GPIO 引脚。引脚可以用编号指定，也可以用信号名指定：
+Aardvark I2C/SPI 适配器在它的 10 针排针上提供 6 个 GPIO 引脚。请用信号名作为通道：
 
 | 引脚 | 名称 | 排针针脚 |
 |-----|------|------------|
@@ -110,11 +106,11 @@ Aardvark I2C/SPI 适配器在它的 10 针排针上提供 6 个 GPIO 引脚。�
 
 ### FT232H 引脚映射
 
-FT232H 在两个端口上提供 16 个 GPIO 引脚：
+FT232H 和 FT2232H 提供 12 个 GPIO 通道。`AD0`-`AD3` 不作为 `gpio` 通道提供：
 
 | 引脚 | 名称 | 说明 |
 |------|-------|-------------|
-| 0-7 | AD0-AD7 | 端口 A 数据引脚 |
+| 4-7 | AD4-AD7 | 端口 A 数据引脚 |
 | 8-15 | AC0-AC7 | 端口 A 控制引脚 |
 
 ---
@@ -138,12 +134,10 @@ for i in {1..5}; do
     sleep 0.5
 done
 
-# Hold a signal during manual testing
-lager gpo BOOT0 high --hold --box my-lager-box
-# Ctrl+C to release, then flash firmware
-
-# Assert chip select for manual SPI debugging
-lager gpo CS_N low --hold --box my-lager-box
+# Assert a boot strap, flash, then release it
+lager gpo BOOT0 high --box my-lager-box
+lager debug flash --hex fw.hex --box my-lager-box
+lager gpo BOOT0 low --box my-lager-box
 ```
 
 ---
@@ -161,6 +155,6 @@ lager gpo CS_N low --hold --box my-lager-box
 - 默认 Net 可以用 `lager defaults add --gpio-net` 设置
 - 引脚必须在 Net 配置中被设为输出
 - toggle 会先读取当前状态再取反
-- USB-202 的通道可以写作 `0`-`7`，也可以写作 `DIO0`-`DIO7`
-- `--hold` 会让进程持续运行；按 Ctrl+C 释放引脚并退出
-- 不加 `--hold` 时，命令设置好输出电平后立即退出；引脚会保持该状态，直到下一条命令
+- USB-202 的通道是 `DIO0`-`DIO7`
+- `--hold` 没有效果；它会打印一条说明并退出
+- 命令设置好输出电平后立即退出；引脚会保持该状态，直到下一条命令

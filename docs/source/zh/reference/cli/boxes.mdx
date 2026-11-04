@@ -40,7 +40,7 @@ lager boxes add --name NAME --ip IP --user USER [OPTIONS]
 
 **选项：**
 - `--name`（必填）- 要分配给该 Box 的名称
-- `--ip`（必填）- 该 Box 的 IP 地址
+- `--ip`（必填）- 该 Box 的 IP 地址或主机名
 - `--user`（必填）- 该 Box 的 SSH 用户名（您登录时使用的账户）
 - `--version` - Lager Box 的版本/分支（例如 staging、main）
 - `--yes` - 不提示直接确认
@@ -78,7 +78,7 @@ lager boxes add-all [--yes]
 1. 运行 `tailscale status` 发现设备
 2. 筛选名称长度为 5-8 个字符的设备
 3. 把名称转为大写
-4. 跳过 IP 相同、已经存在的 Box
+4. 跳过名称和 IP 都相同、已经存在的 Box。IP 已经改变的 Box 会被直接更新，不提示
 5. 把新的 Box 添加到您的配置中
 
 **示例：**
@@ -235,7 +235,7 @@ lager boxes delete-all [--yes]
 
 ### `export`
 
-把 Box 配置导出为 JSON 文件。
+把 Box 配置导出为 JSON 文件。导出的是整个 `.lager` 文件，因此其中还包括您的默认值和缓存的 Net，而不只是 Box。
 
 ```bash
 lager boxes export [--output FILE]
@@ -350,8 +350,8 @@ Box 配置位于 `BOXES` 键之下：
 
 boxes 系列命令会执行以下校验：
 
-- **重复检测**：阻止添加名称或 IP 相同的 Box
-- **IP 校验**：校验 IP 地址格式
+- **重复检测**：`add` 遇到名称或 IP 相同的 Box 会发出警告，并在继续之前询问。确认后会覆盖该条目，并删除 IP 相同的另一台 Box
+- **地址校验**：校验 IP 地址或主机名的格式
 - **确认**：编辑操作会显示修改前后的状态
 
 ---
@@ -379,7 +379,7 @@ lager boxes delete-all --yes
 ## 说明
 
 - Box 名称必须唯一
-- IP 地址必须唯一（不允许重复 IP）
+- `add` 会保持 IP 地址唯一：确认后的添加会替换 IP 相同的那台 Box
 - `lager boxes add` 必须提供 `--user`。`add-all` 保存的条目不带用户，之后的命令会使用 `lagerdata`
 - 导入时请用 `--merge` 保留已有的 Box
 - `lager boxes list` 需要每台 Box 在端口 9000 上响应，才能显示它的版本和锁状态

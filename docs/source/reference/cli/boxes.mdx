@@ -40,7 +40,7 @@ lager boxes add --name NAME --ip IP --user USER [OPTIONS]
 
 **Options:**
 - `--name` (required) - Name to assign to the box
-- `--ip` (required) - IP address of the box
+- `--ip` (required) - IP address or hostname of the box
 - `--user` (required) - SSH username for the box (the account you log in as)
 - `--version` - Lager Box version/branch (e.g., staging, main)
 - `--yes` - Confirm without prompting
@@ -78,7 +78,7 @@ This command scans your Tailscale network for devices with names 5-8 characters 
 1. Runs `tailscale status` to discover devices
 2. Filters for devices with names 5-8 characters long
 3. Converts names to uppercase
-4. Skips boxes that already exist with the same IP
+4. Skips a box that already exists with the same name and IP. A box whose IP changed is updated without a prompt
 5. Adds new boxes to your configuration
 
 **Example:**
@@ -248,7 +248,8 @@ lager boxes delete-all [--yes]
 
 ### `export`
 
-Export box configuration to JSON file.
+Export box configuration to JSON file. The export is the whole `.lager` file, so it also
+carries your defaults and cached nets, not only the boxes.
 
 ```bash
 lager boxes export [--output FILE]
@@ -364,8 +365,8 @@ wins.
 
 The boxes commands perform validation:
 
-- **Duplicate detection**: Prevents adding boxes with same name or IP
-- **IP validation**: Validates IP address format
+- **Duplicate detection**: `add` warns about a box with the same name or IP and asks before it continues. If you confirm, the entry is overwritten, and another box with the same IP is deleted
+- **Address validation**: Validates the IP address or hostname format
 - **Confirmation**: Shows before/after state for edit operations
 
 ---
@@ -393,7 +394,7 @@ lager boxes delete-all --yes
 ## Notes
 
 - Box names must be unique
-- IP addresses must be unique (no duplicate IPs)
+- `add` keeps IP addresses unique: a confirmed add replaces the box that had the same IP
 - `--user` is required for `lager boxes add`. `add-all` stores entries without a user, and commands then use `lagerdata`
 - Use `--merge` when importing to preserve existing boxes
 - `lager boxes list` needs each box to answer on port 9000 to show its version and lock state

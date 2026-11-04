@@ -116,7 +116,7 @@ arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
 - Ctrl-C 只关闭隧道，GDB 服务器继续在 Box 上运行。要停止它，请使用 `lager debug <NET> disconnect`。
 - 如果本地端口已被占用，命令会报错并停止。请用 `--local-port` 选择其他本地端口。
 - 使用 `--rtt`、`--rtt-reset` 或 `--interactive` 时，隧道在 RTT 串流期间保持打开。RTT 本身不经过隧道，而是作为普通 HTTP 通过网关。
-- 使用 `--json` 时，输出中带有一个 `tunnel` 对象，包含 `local_host` 和 `local_port`，之后命令保持在前台运行。
+- 使用 `--json` 时，输出中带有一个 `tunnel` 对象，包含 `local_host`、`local_port` 和 `box_port`，之后命令保持在前台运行。当这台计算机上的调试器都无法连到该服务器时，输出改为带有 `"gdb_port_reachable": false`。
 - 如果脚本需要在 GDB 服务器启动后继续执行，可以使用 `--no-tunnel`。这时命令直接返回，不建立隧道。
 - 如果管理员撤销了您对该 Box 的访问权限，网关会在大约一分钟内关闭隧道，命令会提示您。之后的下一个连接会收到访问错误。
 
@@ -156,10 +156,10 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--box TEXT` - Lager Box 名称或 IP
 - `--hex FILE` - Intel HEX 文件的路径
 - `--elf FILE` - ELF 可执行文件的路径
-- `--bin FILE,ADDRESS` - 二进制文件及其加载地址，作为一个参数（例如 `build/app.bin,0x08000000`）
+- `--bin FILE,ADDRESS` - 二进制文件及其加载地址，作为一个参数（例如 `build/app.bin,0x08000000`）。`--hex`、`--elf` 和 `--bin` 只能给出其中一个
 - `--verbose` - 显示详细的 J-Link 输出
 - `--force-reconnect` - 烧录前强制干净重连
-- `--no-erase` - 跳过擦除步骤（默认情况下 `flash` 会先擦除再编程，以获得干净状态）
+- `--no-erase` - 跳过擦除步骤（默认情况下 `flash` 会先擦除再编程，以获得干净状态）。它不能与 `--erase-start` 或 `--erase-size` 一起使用
 - `--erase-start ADDR` - 编程前擦除的起始地址，十六进制（`0x16000000`）或十进制。必须与 `--erase-size` 一起给出。
 - `--erase-size BYTES` - 从 `--erase-start` 起擦除的字节数：十进制、`0x` 十六进制，或带 `K`/`M` 后缀（例如 `2M`）。
 - `--halt / --no-halt` - 烧录之后让设备停住（默认 no-halt）
@@ -306,12 +306,13 @@ lager debug [NET_NAME] memrd START_ADDR LENGTH [OPTIONS]
 
 **参数：**
 - `START_ADDR` - 起始内存地址（例如 0x20000000）
-- `LENGTH` - 要读取的字节数
+- `LENGTH` - 要读取的字节数，十进制或 `0x` 十六进制
 
 **选项：**
 - `--box TEXT` - Lager Box 名称或 IP
 - `--json` - 以 JSON 格式输出结果
-- `--halt / --no-halt` - 读取期间让设备停住（默认 no-halt）。`--no-halt` 会覆盖 DA1469x QSPI XIP 的自动停住
+- `--halt` - 读取期间让设备停住
+- `--no-halt` - 让目标继续运行。它会覆盖 DA1469x QSPI XIP 的自动停住。`--halt` 和 `--no-halt` 是两个独立的标志，默认都关闭
 - `--no-reset` - **仅 DA1469x。** 跳过 Box 在读取之前执行的复位+停住。运行中的 DA1469x 会禁用 SWD，因此不做复位读取就会失败 —— 只有在芯片空白/已唤醒、且您不想重启它时才使用它
 
 **示例：**
@@ -419,10 +420,12 @@ lager debug health --box my-lager-box --verbose
 Debug Service Health:
   Status: healthy
   Version: 1.2.0
-  Uptime: 2.5 days (216000s)
+  Features: erase_range, halt, connect_transport
+  Uptime: 2.50 days (216000s)
   J-Link Running: True
   J-Link PID: 12345
   GDB Controllers Cached: 1
+  GDB Max Use Count: 0
   Active Connections: 1
 ```
 
@@ -735,6 +738,7 @@ Lager 支持 70 多个 ARM Cortex-M 设备系列，并能自动识别架构。�
 - 用 `--halt` 暂停 CPU 时，内存读取更可靠
 - 用 `lager debug health --verbose` 诊断连接问题
 - JLinkScript 文件以 base64 编码保存，并在 Box 上自动解码
+- Box 对每个探针一次只运行一个 J-Link 操作，因此同一探针上的烧录和复位不会交错。第二条命令会等待第一条完成。如果等待超过 300 秒，Box 会以 503 和探针忙错误应答
 
 ## 参见
 

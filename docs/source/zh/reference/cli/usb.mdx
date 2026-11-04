@@ -228,3 +228,5 @@ Plugable 扩展坞上哪些端口可以切换供电、哪些不可以，请参�
 - USB 集线器必须连接到 Box 并配置为仪器
 - 默认 Net 可以用 `lager defaults add --usb-net` 设置
 - 用 `lager nets add <name> usb <channel> <address>` 创建 USB Net
+- 在 YKUSH 或 YKUSH3 上，`enable` 和 `disable` 会回读端口状态。端口没有切换时，命令会以 `YKUSH port N did not switch on`（或 `off`）失败。在 YKUSH3 上，启用了它的 GPIO 端口控制时会出现这种情况
+- 以 `restarting:` 开头的错误表示 Box 服务没有打开 USB 总线上的某个集线器。该服务会重启以找到该集线器。请在几秒后重试该命令

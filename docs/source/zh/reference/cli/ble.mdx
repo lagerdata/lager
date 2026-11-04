@@ -32,7 +32,7 @@ lager ble scan [OPTIONS]
 
 **选项：**
 - `--box BOX` - Lager Box 名称或 IP 地址
-- `--timeout FLOAT` - 扫描时长，单位秒（默认 5.0）
+- `--timeout FLOAT` - 扫描时长，单位秒，范围为 0.1 到 300（默认 5.0）
 - `--name-contains STRING` - 按名称过滤设备（部分匹配）
 - `--name-exact STRING` - 按名称精确匹配过滤设备
 - `--verbose` - 在输出中包含 UUID
@@ -117,11 +117,11 @@ lager ble disconnect AA:BB:CC:DD:EE:FF
 
 ### 扫描结果
 
-scan 命令返回一个表格，包含：
-- 设备地址（MAC 地址格式）
+scan 命令先打印一个表格，然后在 `JSON Output:` 一行之后以 JSON 列表形式打印同样的设备。表格包含：
 - 设备名称（如果设备广播了名称）
+- 设备地址（MAC 地址格式）
 - RSSI（信号强度，单位 dBm）
-- 厂商数据（如果有）
+- 服务 UUID，仅在使用 `--verbose` 时显示
 
 ### 设备信息
 

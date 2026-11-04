@@ -1,0 +1,100 @@
+---
+title: DMM
+description: 读取台式数字万用表的测量值
+---
+
+从台式数字万用表（DMM）Net 读取一个读数。每次调用都会先设置功能、量程和积分时间，然后再读数。读数从不依赖前面板或前一个调用者。
+
+## 语法
+
+```bash
+lager dmm [NETNAME] [FUNCTION] [OPTIONS]
+```
+
+## 参数
+
+| 参数 | 说明 |
+|----------|-------------|
+| `NETNAME` | DMM Net 名称（用 `lager defaults add --dmm-net` 设置了默认值时可省略） |
+| `FUNCTION` | 测量功能（默认 `dcv`）；见下表 |
+
+设置了默认 Net 时，只给一个功能参数就会读取默认 Net：`lager dmm res` 会在默认 Net 上测量电阻。如果某个 DMM Net 与某个功能同名，则以 Net 为准。
+
+| 功能 | 测量内容 | 单位 |
+|----------|----------|------|
+| `dcv` / `acv` | 直流 / 交流电压 | V |
+| `dci` / `aci` | 直流 / 交流电流 | A |
+| `res` / `fres` | 二线 / 四线电阻 | ohm |
+| `cont` | 通断 | ohm |
+| `diode` | 二极管正向电压 | V |
+| `freq` / `period` | 频率 / 周期 | Hz / s |
+| `cap` | 电容 | F |
+| `temp` | 温度 | degC |
+
+## 选项
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--range FULL_SCALE` | 以基本单位表示的固定量程（`20` = 20 V，`2e-6` = 2 uF），或 `auto`（默认） |
+| `--nplc N` | 以电源周期数表示的积分时间；仅适用于 `dcv`、`dci`、`res` 和 `fres` |
+| `--sensor PROBE` | `temp` 使用的温度探头：`rtd:pt100`、`rtd:pt1000`、`ther:b`/`e`/`j`/`k`/`n`/`r`/`s`/`t` |
+| `--errors` | 读取并清空万用表的错误队列，而不进行测量 |
+| `--idn` | 打印万用表对 `*IDN?` 的应答，而不进行测量。它不能与 `--errors` 一起使用 |
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+| `--json` | 输出 JSON 对象，而不是格式化文本 |
+
+Box 会拒绝万用表不支持的量程、NPLC 值或探头，并列出有效值。它从不舍入到最接近的设置。
+
+## 输出
+
+```bash
+$ lager dmm VBAT --box my-lager-box
+3.300124 V
+
+$ lager dmm VBAT dcv --range 20 --nplc 10 --json --box my-lager-box
+{"netname": "VBAT", "function": "dcv", "value": 3.300124, "unit": "V", "overload": false}
+```
+
+超量程的读数打印为 `OVERLOAD`，通断或二极管输入开路时打印 `OPEN`。使用 `--json` 时，两者都给出 `"value": null, "overload": true`。
+
+## 受支持的硬件
+
+| 设备 | 量程 | NPLC |
+|--------|--------|------|
+| Siglent SDM3065X | DCV 200 mV-1000 V，ACV 200 mV-750 V，DCI/ACI 200 uA-10 A，电阻 200 ohm-100 Mohm，电容 2 nF-100 mF | 0.005、0.05、0.5、1、10、100 |
+
+通断量程为 2 kohm，二极管量程为 2 V。频率、周期和温度不使用量程。
+
+## 添加 DMM Net
+
+通过 USB 连接的万用表会出现在 `lager instruments` 中，可以像其他任何 Net 一样添加：
+
+```bash
+lager nets add VBAT dmm 1 USB0::0xF4EC::0x1203::<serial>::INSTR --box my-lager-box
+```
+
+通过局域网连接的万用表不会被 USB 扫描发现。请用 [`lager nets add-batch`](/source/zh/reference/cli/nets#add-batch) 添加它：
+
+```json
+[{"name": "VBAT", "role": "dmm", "channel": "1",
+  "instrument": "Siglent_SDM3065X", "address": "TCPIP::192.168.1.60::INSTR"}]
+```
+
+## 示例
+
+```bash
+# 4-wire resistance on the 2 kOhm range, slowest integration
+lager dmm RSENSE fres --range 2000 --nplc 100 --box my-lager-box
+
+# Quiescent current
+lager dmm IQ dci --range 2e-3 --box my-lager-box
+
+# PT100 temperature
+lager dmm TPROBE temp --sensor rtd:pt100 --box my-lager-box
+
+# Resistance on the default DMM net
+lager dmm res --box my-lager-box
+
+# List DMM nets
+lager dmm --box my-lager-box
+```

@@ -52,7 +52,9 @@ lager devenv create
 |--------|---------|-------------|
 | `--image TEXT` | `lagerdata/devenv-cortexm` | 要使用的 Docker 镜像 |
 | `--mount-dir TEXT` | `/app` | 源代码在容器中的挂载位置 |
-| `--shell TEXT` | `/bin/bash` | 镜像中的 shell 可执行文件 |
+| `--shell TEXT` | 对 `lagerdata/*` 镜像为 `/bin/bash` | 镜像中的 shell 可执行文件 |
+
+不带选项时，`create` 会提示输入镜像和挂载目录，并以上表的默认值作为建议。给出 `--image` 和 `--mount-dir` 即可不经提示创建该段。
 
 镜像名称会按标准 Docker 命名规则校验（`name`、`name:tag`、`registry/name`、
 `registry/name:tag`）。对 `lagerdata/*` 镜像，shell 默认为 `/bin/bash`；对其他镜像，系统会提示您输入。如果 `DEVENV` 段已经存在，覆盖之前会先询问您。
@@ -155,7 +157,7 @@ lager devenv delete build      # remove one
 | 子命令 | 选项 | 说明 |
 | --- | --- | --- |
 | `add` | `--warn` / `--no-warn` | 覆盖已有命令时给出警告（默认 `--warn`） |
-| `delete` | `--devenv NAME` | 从指定名称的 devenv 中删除该命令，而不是当前的 devenv |
+| `delete` | `--devenv NAME` | 可以接受，但没有效果。`delete` 总是编辑当前项目的 devenv（[#840](https://github.com/lagerdata/lager/issues/840)） |
 
 ---
 

@@ -95,7 +95,7 @@ The decision tree, in order (first match wins):
 | `INSTRUMENT WEDGED` | VISA `timeout` — enumerates and opens, but won't answer `*IDN?` |
 | `NOT ENUMERATED` | the device does not show up on USB (check power/cable) |
 | `REACHABLE` | `*IDN?` returned (IDN string shown) |
-| `REACHABLE (shared session)` | the open was skipped because hw_service holds an active session |
+| `REACHABLE (hw_service has an active shared session ...)` | the open was skipped because hw_service holds an active session |
 | `TRANSIENT: enumerated as USB-TMC but fresh open failed` | USB-TMC class but the fresh pyvisa open failed |
 | `NOT USB-TMC` | a vendor-SDK instrument (LabJack/LJM, Picoscope, Acroname, …), not pyvisa |
 | `UNCLEAR` | fallback — review the per-section output |
@@ -223,6 +223,28 @@ Classification: TARGET LOCKED: debug access is blocked by readout/IDCODE/AP
 protection. A mass-erase/unlock is required (e.g. `nrfjprog --recover` for nRF,
 or the vendor unlock flow).
 ```
+
+---
+
+## USB hub nets
+
+A `usb` net is not a USB-TMC instrument, so `lager diagnose` sends it to the box's
+`/diagnose/usbhub` check instead of the VISA probe. The check reports what the kernel sees,
+whether the vendor SDK finds the hub's serial number, and whether the driver opens the hub.
+The verdicts, in order (first match wins):
+
+| Classification | Trigger |
+|----------------|---------|
+| `UNCLEAR — this box does not serve /diagnose/usbhub` | the box is too old for the hub check. Update the box |
+| `Could not reach the USB hub diagnose endpoint` | the request timed out or failed. This says nothing about the box version |
+| `NOT ENUMERATED` | the kernel does not see the hub. Check its upstream cable and port power |
+| `NOT SUPPORTED` | the SDK scan and the driver open are skipped for this hub vendor. This is not a fault |
+| `BUSY` | something else is driving the hub. Run the check again when it is idle |
+| `HUB WEDGED (electrical)` | the kernel sees the hub, but its vendor SDK does not. A restart of the box services does not help |
+| `HUB CLAIMED` | the SDK sees the hub, but the open failed and another process holds it |
+| `HUB WILL NOT OPEN` | the SDK sees the hub, and the open failed with no holder |
+| `REACHABLE` | the hub opened and closed cleanly. This tests the path to the hub, not the DUT on a port |
+| `UNCLEAR` | fallback. Review the section and run the check again |
 
 ---
 

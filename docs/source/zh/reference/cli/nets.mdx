@@ -207,8 +207,10 @@ FIO0-FIO3 on a LabJack U3 are fixed high-voltage analog inputs and are never dig
 | `Aardvark` | `SPI0`、`I2C0`、GPIO 引脚 | 混合模式的多通道 |
 | `MCC_USB-202` | `CH0`–`CH7`、`DIO0`–`DIO7`、`DAC0`–`DAC1` | 每个通道一个 Net |
 | `Phidget` | `0`–`3` | 每个通道一个 `thermocouple` Net |
+| `Rigol_DS1000Z` | `scope` 不带通道；`scope-channel` 位于 `1`–`4` | 整台仪器一个 `scope` Net，每个模拟通道一个 `scope-channel` Net |
 | `YubiHSM_2` | `0` | 每台设备一个 `hsm` Net |
-| `Acroname_8Port` / `4Port`、`YKUSH_Hub` | 端口序号 | 每个端口一个 `usb` Net |
+| `Acroname_8Port` / `4Port`、`YKUSH_Hub`、`Plugable_USB_Hub` | 端口序号 | 每个端口一个 `usb` Net |
+| `YKUSH3_Hub` | `usb` 位于 `1`–`3`；`gpio` 位于 `1`–`3` | 每个端口一个 `usb` Net，每个 GPIO 引脚一个 `gpio` Net |
 
 `scope` Net 没有通道：它代表整台仪器，它的各路输入是单独的 `scope-channel` Net。为 `scope` Net 指定的通道会被 `lager nets add` 丢弃。哪些设置属于哪一种 Net，请参阅[示波器参考](/source/zh/reference/cli/scope)。
 
@@ -652,6 +654,8 @@ lager nets set-capture NAME [OPTIONS]
 - `--clear` - 取消配对。除实时视图外，所有功能继续可用
 - `--box TEXT` - Lager Box 名称或 IP
 
+`--port`、`--device`、`--screen` 和 `--clear` 最多只能给出其中一个。
+
 **示例：**
 
 ```bash
@@ -989,24 +993,25 @@ lager nets show battery1 --box my-lager-box
 
 | Net 类型 | 说明 | 典型仪器 |
 |----------|-------------|---------------------|
-| `power-supply`（别名 `supply`） | 电源输出 | Rigol DP800、Rigol DP711（通过 [`assign`](#assign)）、Keithley 2200/2280、Keysight E36200 |
+| `power-supply`（别名 `supply`） | 电源输出 | Rigol DP800、Rigol DP711（通过 [`assign`](#assign)）、Keithley 2281S、Keysight E36200/E36300、Siglent SPD1168X、EA PSB |
 | `battery`（别名 `batt`） | 电池模拟器 | Keithley 2281S |
-| `solar` | 太阳能模拟器 | EA PSI/EL 系列 |
+| `solar` | 太阳能模拟器 | EA PSB 10060-60、PSB 10080-60 |
 | `eload` | 电子负载 | Rigol DL3021 |
-| `debug` | 调试探针 | J-Link、CMSIS-DAP、ST-Link |
+| `debug` | 调试探针 | J-Link、CMSIS-DAP、ST-Link、FTDI FT232H / FT2232H / FT4232H |
 | `adc` | 模拟输入 | LabJack T7、LabJack U3 |
 | `dac` | 模拟输出 | LabJack T7、LabJack U3 |
-| `gpio` | 数字 I/O | LabJack T7、LabJack U3（`FIO4` 及以上）、MCC USB-202 |
+| `gpio` | 数字 I/O | LabJack T7、LabJack U3（`FIO4` 及以上）、MCC USB-202、Aardvark、FTDI FT232H / FT2232H / FT4232H、YKUSH3 |
 | `i2c` | I2C 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H / FT2232H / FT4232H |
 | `spi` | SPI 总线 | LabJack T7、LabJack U3、Aardvark、FTDI FT232H / FT2232H / FT4232H |
-| `scope` | 示波器（作为整台仪器） | Rigol MSO5000、PicoScope |
-| `scope-channel` | 示波器的一路输入 | Rigol MSO5000、PicoScope |
+| `scope` | 示波器（作为整台仪器） | Rigol MSO5204、Rigol DS1000Z、PicoScope |
+| `scope-channel` | 示波器的一路输入 | Rigol MSO5204、Rigol DS1000Z、PicoScope |
 | `logic` | 逻辑分析仪通道 | Rigol MSO5204 |
-| `uart` | 串口 | Prolific USB、SiLabs CP210x |
-| `usb` | USB 端口控制 | Acroname 集线器、YKUSH、Plugable 扩展坞 |
-| `webcam` | 视频采集 | 任何 USB UVC 摄像头 |
+| `uart` | 串口 | FTDI、Prolific USB、SiLabs CP210x、ESP32 JTAG 串口 |
+| `usb` | USB 端口控制 | Acroname 集线器、YKUSH、YKUSH3、Plugable 集线器 |
+| `webcam` | 视频采集 | 任何 USB UVC 摄像头。具有唯一序列号的摄像头以序列号寻址；没有序列号或与其他摄像头共用序列号的摄像头以其 USB 端口寻址，写作 `usb-port:1-1.4`，其 Net 跟随该端口 |
 | `arm` | 机械臂 | Rotrics Dexarm |
-| `watt-meter` | 功率测量 | Yocto Watt |
+| `watt-meter` | 功率测量 | Yocto Watt、Joulescope JS220、Nordic PPK2 |
+| `energy-analyzer` | 能量与电荷积分 | Joulescope JS220、Nordic PPK2 |
 | `thermocouple` | 温度传感器 | Phidget 热电偶 |
 | `dmm` | 台式万用表 | Siglent SDM3065X |
 | `hsm` | 硬件安全模块 | YubiHSM 2 |

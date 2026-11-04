@@ -53,22 +53,21 @@ lager watt NET_NAME all [--box BOX]              # current + voltage + power
 
 ## 输出
 
-Lager 用 SI 前缀格式化读数，这样很小的量级也依然可读。
-52.34 µW 的负载显示为 `52.340 µW`，而不是 `0.000 W`：
+Lager 以基本单位（W、A 或 V）打印每个读数，最多保留六位有效数字。很小的读数会以科学计数法显示，因此 52.34 µW 的负载打印为 `5.234e-05 W`（[#837](https://github.com/lagerdata/lager/issues/837)）：
 
 ```
-Power 'POWER_METER': 52.340 µW
-Current 'POWER_METER': 12.000 mA
-Voltage 'POWER_METER': 3.300 V
+Power 'POWER_METER': 5.234e-05 W
+Current 'POWER_METER': 0.012 A
+Voltage 'POWER_METER': 3.3 V
 ```
 
 `all` 打印全部三个量：
 
 ```
 Measurements 'POWER_METER' (0.1s):
-  Current: 12.000 mA
-  Voltage: 3.300 V
-  Power:   39.600 mW
+  Current: 0.012 A
+  Voltage: 3.3 V
+  Power:   0.0396 W
 ```
 
 使用 `--json` 时，输出是单个 JSON 对象（单位为 SI 基本单位 —— 安培、伏特、瓦特）：
@@ -84,7 +83,7 @@ lager watt POWER_METER all --json --box my-lager-box
 
 有两个手段可以改善功率/电流读数：
 
-- **显示** —— 输出会自动按 SI 缩放，因此亚毫瓦和亚毫安级的读数会以 µ/n 单位显示，而不是被四舍五入为零。对于连纳单位都无法表示的极小值，读数会以科学计数法显示（例如 `3.000e-13 W`）。非零读数永远不会因为舍入而丢失。
+- **显示** —— 输出以基本单位保留六位有效数字。亚毫瓦或亚毫安级的读数会以科学计数法显示（例如 `5.234e-05 W`），而不是显示为零。非零读数永远不会因为舍入而丢失。
 - **平均窗口** —— 传入 `--duration` 可以在更长的采集时间上取平均。窗口越长，均值的噪声越小，得到的数值更稳定、有效分辨率更高：
 
 ```bash
@@ -137,16 +136,16 @@ lager watt POWER_METER current --duration 60 --box my-lager-box
 
 ## 默认 Net
 
-为避免每次都输入 Net 名称：
+`lager defaults add --watt-meter-net` 保存的键是 `net_watt_meter`，而 `lager watt` 读取的是 `net_watt`。因此用这种方式设置的默认值目前不会被使用（[#836](https://github.com/lagerdata/lager/issues/836)）。请在每条命令中给出 Net 名称：
 
 ```bash
 lager defaults add --watt-meter-net POWER_METER
 ```
 
-之后：
+之后仍需写出 Net 名称：
 
 ```bash
-lager watt
+lager watt POWER_METER
 ```
 
 ## 示例
@@ -218,8 +217,7 @@ done
 
 ## 说明
 
-- 读数按 SI 缩放（W/mW/µW/nW，A/mA/µA/nA，V/mV），保留 3 位有效小数。连纳单位都无法表示的极小值会退回科学计数法，而不是显示 `0.000`。
-  `--json` 输出 SI 基本单位（W、A、V）。
+- 读数以基本单位（W、A、V）打印，最多保留六位有效数字；很小的值会以科学计数法显示，而不是 `0`。`--json` 输出同样的基本单位。
 - `--duration` 设置平均窗口；Joulescope JS220 和 Nordic PPK2 会遵循它，而 Yocto-Watt 返回瞬时值并忽略它。在 JS220 上，超过约 10 秒的窗口由片上电荷累加器无间隙测量（恒定内存，任意长度）。
 - Nordic PPK2 工作在源模式（提供 0.8–5V 的可配置电压并测量电流）；它的 `voltage` 读数就是所配置的源电压。
 - `current`、`voltage` 和 `all` 子命令必须写在 Net 名称之后：`lager watt NET_NAME current`。

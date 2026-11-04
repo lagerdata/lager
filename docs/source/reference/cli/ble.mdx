@@ -32,7 +32,7 @@ lager ble scan [OPTIONS]
 
 **Options:**
 - `--box BOX` - Lager Box name or IP address
-- `--timeout FLOAT` - Scan duration in seconds (default: 5.0)
+- `--timeout FLOAT` - Scan duration in seconds, from 0.1 to 300 (default: 5.0)
 - `--name-contains STRING` - Filter devices by name (partial match)
 - `--name-exact STRING` - Filter devices by exact name match
 - `--verbose` - Include UUIDs in output
@@ -117,11 +117,11 @@ lager ble disconnect AA:BB:CC:DD:EE:FF
 
 ### Scan Results
 
-The scan command returns a table with:
-- Device address (MAC address format)
+The scan command prints a table, then the same devices as a JSON list after a `JSON Output:` line. The table has:
 - Device name (if advertised)
+- Device address (MAC address format)
 - RSSI (signal strength in dBm)
-- Manufacturer data (if available)
+- Service UUIDs, only with `--verbose`
 
 ### Device Info
 
