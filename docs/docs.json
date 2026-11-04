@@ -53,6 +53,7 @@
                   "source/reference/cli/hello",
                   "source/reference/cli/boxes",
                   "source/reference/cli/locking",
+                  "source/reference/cli/lease",
                   "source/reference/cli/login",
                   "source/reference/cli/install",
                   "source/reference/cli/install-wheel",

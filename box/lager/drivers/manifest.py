@@ -80,7 +80,7 @@ RESERVED_TYPES = frozenset({
     # Top-level CLI commands
     'authorize', 'bench', 'binaries', 'ble', 'blufi', 'box', 'box-config',
     'boxes', 'custom', 'defaults', 'devenv', 'diagnose', 'drivers', 'dut',
-    'energy', 'exec', 'hello', 'install', 'install-wheel', 'instruments',
+    'energy', 'exec', 'hello', 'install', 'install-wheel', 'instruments', 'lease',
     'login', 'logout', 'logs', 'nets', 'python', 'ssh', 'ssh-setup', 'supply',
     'terminal', 'uninstall', 'update', 'watt', 'whoami',
     # Words a user could reasonably type that must stay unambiguous

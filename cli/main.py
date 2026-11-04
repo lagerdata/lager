@@ -84,7 +84,7 @@ from .commands.box.drivers import drivers
 from .commands.custom import custom
 
 # Utility commands (from commands.utility package)
-from .commands.utility import defaults, binaries, update, exec_, logs, webcam, install, uninstall, install_wheel, login, logout, whoami
+from .commands.utility import defaults, binaries, update, exec_, logs, webcam, install, uninstall, install_wheel, login, logout, whoami, lease
 
 def _check_venv_shadowing():
     """Warn if a system-installed lager is shadowing the venv version."""
@@ -135,7 +135,8 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
     """
 
     COMMAND_SECTIONS = [
-        ("Debug & development", ["debug", "python", "arm", "devenv", "exec"]),
+        ("Debug & development", ["debug", "python", "arm", "devenv", "exec",
+                                 "lease"]),
         ("Power", ["supply", "battery", "solar", "eload"]),
         ("Measurement & I/O", ["scope", "logic", "energy", "adc", "dac",
                                 "gpi", "gpo", "thermocouple", "dmm", "watt"]),
@@ -293,6 +294,7 @@ cli.add_command(install_wheel)
 cli.add_command(login)
 cli.add_command(logout)
 cli.add_command(whoami)
+cli.add_command(lease)
 cli.add_command(terminal_cmd)
 
 def _schedule_update_check(ctx):
