@@ -16,8 +16,8 @@ lager uninstall [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--box TEXT` | string | | Box name (uses stored IP and username from `.lager` config) |
-| `--ip TEXT` | string | | Target box IP address |
-| `--user TEXT` | string | `lagerdata` | SSH username |
+| `--ip TEXT` | string | | Target box IP address or DNS hostname |
+| `--user TEXT` | string | `lagerdata`, or the stored user with `--box` | SSH username |
 | `--purge-config` | flag | | Also delete the contents of `/etc/lager` (saved nets, box config). Backs it up first. See [Configuration](#configuration) |
 | `--include-control-plane` | flag | | With `--purge-config`, also delete a control plane's files. The box drops off its control plane until it is re-linked |
 | `--keep-config` | flag | | No effect. Keeping `/etc/lager` is the default; the flag is accepted so existing scripts still run |
@@ -27,7 +27,8 @@ lager uninstall [OPTIONS]
 | `--dry-run` | flag | | List what the command removes. Make no changes. |
 | `--help` | | | Show help message and exit |
 
-Either `--box` or `--ip` is required.
+Give exactly one of `--box` and `--ip`. `--keep-config` with `--purge-config` is an error,
+and so is `--include-control-plane` without `--purge-config`.
 
 ## What Gets Removed
 

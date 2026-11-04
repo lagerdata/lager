@@ -88,8 +88,8 @@ lager spi NETNAME transfer NUM_WORDS [OPTIONS]
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box 名称或 IP 地址 | |
-| `--data DATA` | 要发送的十六进制数据（例如 `0x9f01`） | |
-| `--data-file PATH` | 含有要发送数据的文件 | |
+| `--data DATA` | 要发送的十六进制数据（例如 `"9f 01"`） | |
+| `--data-file PATH` | 含有要发送数据的文件。如果同时给出 `--data`，会发送 `--data` 并忽略该文件（[#840](https://github.com/lagerdata/lager/issues/840)） | |
 | `--fill VALUE` | 补齐用的填充值 | `0xFF` |
 | `--mode 0\|1\|2\|3` | 覆盖 SPI 模式 | |
 | `--frequency FREQ` | 覆盖时钟频率 | |
@@ -352,8 +352,8 @@ Aardvark 适配器：
 | 格式 | 说明 |
 |--------|-------------|
 | `hex` | 以空格分隔的十六进制值（例如 `9f 01 02`） |
-| `bytes` | 原始字节值 |
-| `json` | 含数据数组和元信息的 JSON 对象 |
+| `bytes` | 以空格分隔的十进制值（例如 `159 1 2`） |
+| `json` | 只含数据数组的 JSON 对象（例如 `{"data": [159, 1, 2]}`） |
 
 ---
 

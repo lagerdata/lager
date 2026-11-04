@@ -74,15 +74,15 @@ lager arm [NETNAME] move [OPTIONS]
 ```
 
 **Options:**
-- `--x FLOAT` - Target X position (mm)
-- `--y FLOAT` - Target Y position (mm)
-- `--z FLOAT` - Target Z position (mm)
+- `--x FLOAT` - Target X position (mm). Required
+- `--y FLOAT` - Target Y position (mm). Required
+- `--z FLOAT` - Target Z position (mm). Required
 - `--box TEXT` - Lager Box name or IP
 - `--timeout FLOAT` - Move timeout in seconds (default: 15.0, minimum: 0.1, maximum: 25.0)
 - `--yes` - Confirm the action without prompting
 
-Each axis is a named option, not a positional argument, so you can move along one
-axis without restating the others.
+`move` needs all three axes. To move along one axis, use [`move-by`](#move-by) with an
+offset on that axis only.
 
 The box refuses a target outside the workspace of the arm. See [Workspace Bounds](#workspace-bounds).
 
@@ -294,7 +294,10 @@ The box refuses a `move` or `move-by` target outside these approximate bounds fo
 | Y | 170 | 360 |
 | Z | -140 | 100 |
 
-The error starts with `Coordinates out of bounds` and names each axis that is out of range.
+For `move`, the CLI checks these bounds before it sends the command. It prints `These
+coordinates are out of bounds:` and one line for each axis that is out of range. For
+`move-by`, the box checks the target. Its error starts with `Coordinates out of bounds`
+and names each axis that is out of range.
 
 ---
 

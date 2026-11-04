@@ -55,6 +55,12 @@ my-lager-box is online and responding!
 Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
 ```
 
+用 `lager update --fork` 或 `lager install --fork` 部署的 Box 会写出该分叉仓库，并且总会被标记，即使它的标签看起来像发布版本：
+
+```text
+Version: 0.62.0 (octocat/lager:my-branch@5d84c68612384eed2854638c1e0941a4ff8b7893 -- fork build, not a release)
+```
+
 早于 ref 记录功能的 Box 只显示版本号。如果 Box 不报告版本，该行显示
 `Version: Unknown`。如果 Box 对 `/hello` 返回错误，最后一行显示
 `my-lager-box responded with HTTP <code>`。

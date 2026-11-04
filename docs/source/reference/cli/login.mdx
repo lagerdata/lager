@@ -51,6 +51,9 @@ lager login https://your-control-plane.example.com --no-browser
 Browser sign-in needs an auth server that supports it. If the server does not,
 Lager says so, and you sign in with a password.
 
+`--no-browser` implies `--web`. Do not give `--email` or `--password` with either flag: the
+command stops with a usage error.
+
 ### Non-interactive sign-in
 
 Both credentials can be supplied as options instead of being prompted for,

@@ -205,8 +205,10 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 | `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
 | `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
 | `Phidget` | `0`–`3` | One `thermocouple` net per channel |
+| `Rigol_DS1000Z` | `scope` with no channel; `scope-channel` on `1`–`4` | One `scope` net for the instrument and one `scope-channel` net per analog channel |
 | `YubiHSM_2` | `0` | One `hsm` net per device |
-| `Acroname_8Port` / `4Port`, `YKUSH_Hub` | Port indices | One `usb` net per port |
+| `Acroname_8Port` / `4Port`, `YKUSH_Hub`, `Plugable_USB_Hub` | Port indices | One `usb` net per port |
+| `YKUSH3_Hub` | `usb` on `1`–`3`; `gpio` on `1`–`3` | One `usb` net per port and one `gpio` net per GPIO pin |
 
 A `scope` net has no channel: it stands for the whole instrument, and its
 inputs are separate `scope-channel` nets. `lager nets add` drops a channel
@@ -670,6 +672,8 @@ lager nets set-capture NAME [OPTIONS]
 - `--clear` - Remove the pairing. All functions except the live view continue to work
 - `--box TEXT` - Lager Box name or IP
 
+Give at most one of `--port`, `--device`, `--screen` and `--clear`.
+
 **Example:**
 
 ```bash
@@ -1010,24 +1014,25 @@ lager nets show battery1 --box my-lager-box
 
 | Net Type | Description | Typical Instruments |
 |----------|-------------|---------------------|
-| `power-supply` (alias `supply`) | Power supply output | Rigol DP800, Rigol DP711 (via [`assign`](#assign)), Keithley 2200/2280, Keysight E36200 |
+| `power-supply` (alias `supply`) | Power supply output | Rigol DP800, Rigol DP711 (via [`assign`](#assign)), Keithley 2281S, Keysight E36200/E36300, Siglent SPD1168X, EA PSB |
 | `battery` (alias `batt`) | Battery simulator | Keithley 2281S |
-| `solar` | Solar simulator | EA PSI/EL series |
+| `solar` | Solar simulator | EA PSB 10060-60, PSB 10080-60 |
 | `eload` | Electronic load | Rigol DL3021 |
-| `debug` | Debug probe | J-Link, CMSIS-DAP, ST-Link |
+| `debug` | Debug probe | J-Link, CMSIS-DAP, ST-Link, FTDI FT232H / FT2232H / FT4232H |
 | `adc` | Analog input | LabJack T7, LabJack U3 |
 | `dac` | Analog output | LabJack T7, LabJack U3 |
-| `gpio` | Digital I/O | LabJack T7, LabJack U3 (`FIO4` and up), MCC USB-202 |
+| `gpio` | Digital I/O | LabJack T7, LabJack U3 (`FIO4` and up), MCC USB-202, Aardvark, FTDI FT232H / FT2232H / FT4232H, YKUSH3 |
 | `i2c` | I2C bus | LabJack T7, LabJack U3, Aardvark, FTDI FT232H / FT2232H / FT4232H |
 | `spi` | SPI bus | LabJack T7, LabJack U3, Aardvark, FTDI FT232H / FT2232H / FT4232H |
-| `scope` | Oscilloscope, as one instrument | Rigol MSO5000, PicoScope |
-| `scope-channel` | One input of an oscilloscope | Rigol MSO5000, PicoScope |
+| `scope` | Oscilloscope, as one instrument | Rigol MSO5204, Rigol DS1000Z, PicoScope |
+| `scope-channel` | One input of an oscilloscope | Rigol MSO5204, Rigol DS1000Z, PicoScope |
 | `logic` | Logic analyzer channel | Rigol MSO5204 |
-| `uart` | Serial port | Prolific USB, SiLabs CP210x |
-| `usb` | USB port control | Acroname hub, YKUSH, Plugable dock |
-| `webcam` | Video capture | Any USB UVC camera |
+| `uart` | Serial port | FTDI, Prolific USB, SiLabs CP210x, ESP32 JTAG serial |
+| `usb` | USB port control | Acroname hub, YKUSH, YKUSH3, Plugable hub |
+| `webcam` | Video capture | Any USB UVC camera. A camera with a unique serial is addressed by it; one with no serial, or a serial it shares, is addressed by its USB port as `usb-port:1-1.4`, and its net follows the port |
 | `arm` | Robot arm | Rotrics Dexarm |
-| `watt-meter` | Power measurement | Yocto Watt |
+| `watt-meter` | Power measurement | Yocto Watt, Joulescope JS220, Nordic PPK2 |
+| `energy-analyzer` | Energy and charge integration | Joulescope JS220, Nordic PPK2 |
 | `thermocouple` | Temperature sensor | Phidget thermocouples |
 | `dmm` | Bench multimeter | Siglent SDM3065X |
 | `hsm` | Hardware security module | YubiHSM 2 |

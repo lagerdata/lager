@@ -13,15 +13,18 @@ Lager 提供两种锁机制：
 
 每次调用 `lager python <runnable>` 都会在开始时自动获取 Box 锁，并在结束时释放它。失败、`Ctrl+C`、崩溃和被信号终止的运行都包括在内。锁的释放通过 `finally` 块、信号处理器、`atexit` 回调，以及（最坏情况下）服务端的 TTL 回收来保证。
 
+普通的 `kill`（SIGTERM）或关闭终端（SIGHUP）同样会释放锁。CLI 会把这两种信号转换为正常退出，因此释放逻辑会运行，命令以 `128 + signal` 退出，与默认行为报告的退出码相同。
+
 ### 哪些命令会自动加锁
 
 | 类别 | 命令 | 加锁窗口 | 原因 |
 |----------|----------|-------------|-----|
 | 测试运行器 | `lager python` | 整个测试运行（获取 → 心跳 → 释放） | 标准的测试运行器。 |
-| 测量 | `gpi`、`gpo`、`adc`、`dac`、`thermocouple`、`watt`、`energy`、`scope`、`logic` | 单次命令调用 | 硬件 I/O —— 交错访问会破坏读数或引脚状态。 |
+| 测量 | `gpi`、`gpo`、`adc`、`dac`、`thermocouple`、`watt`、`energy`、`dmm`、`scope`、`logic` | 单次命令调用 | 硬件 I/O —— 交错访问会破坏读数或引脚状态。 |
 | 通信 | `spi`、`i2c`、`uart`、`wifi`、`ble`、`blufi`、`usb`、`router` | 单次命令调用 | 总线/协议事务不能在不同用户之间交错。 |
 | 电源 | `supply`、`battery`、`eload`、`solar` | 单次命令调用（仅子命令，不含列表操作） | 并发修改电压/电流是危险的。 |
-| 开发 | `debug`（flash/connect/erase/reset 等）、`arm`、`webcam` | 单次命令调用 | 烧录或调试会话不能相互冲突。 |
+| 开发 | `debug`（flash/connect/erase/reset 等）、`arm`、`webcam`、`hsm` | 单次命令调用 | 烧录或调试会话不能相互冲突。 |
+| 自定义驱动 | `lager custom` 以及自定义驱动的命令 | 单次命令调用 | 自定义驱动像任何内置命令一样驱动硬件。 |
 | 管理 | `install`、`uninstall`、`update`、`install-wheel` | 仅破坏性的部分 | 测试进行中重启或改动容器会终止测试。 |
 
 只读命令**不会**获取自动锁。例如 `lager hello`、`lager boxes list`、`lager boxes lock` / `unlock`、状态和预演路径，以及诸如 `lager supply --box X` 或 `lager scope --box X` 之类的网络列表。[在锁下运行的只读命令](#在锁下运行的只读命令)中列出的只读命令在别人持有 Box 时也会运行。

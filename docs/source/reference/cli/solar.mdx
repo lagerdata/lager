@@ -151,7 +151,6 @@ lager solar SOLAR_PANEL stop
 
 | Manufacturer | Model Series | Features |
 |--------------|--------------|----------|
-| EA | PSI/EL series | Two-quadrant operation, I-V curve simulation |
 | EA | PSB 10060-60 | Bidirectional power supply |
 | EA | PSB 10080-60 | Bidirectional power supply |
 
@@ -178,6 +177,6 @@ Industry standard for solar panel testing:
 ## Notes
 
 - Solar simulation requires compatible bidirectional power supplies
-- The EA PSI/EL series supports two-quadrant operation for realistic simulation
+- Only the EA PSB series is supported; the box refuses any other instrument on a solar net
 - Use `lager nets` to see available solar nets on your box
 - Irradiance values above 1500 W/m² are outside the valid range

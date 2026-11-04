@@ -86,8 +86,8 @@ lager spi NETNAME transfer NUM_WORDS [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box name or IP address | |
-| `--data DATA` | Hex data to transmit (e.g., `0x9f01`) | |
-| `--data-file PATH` | File containing data to transmit | |
+| `--data DATA` | Hex data to transmit (e.g., `"9f 01"`) | |
+| `--data-file PATH` | File containing data to transmit. If `--data` is also given, `--data` is sent and the file is ignored ([#840](https://github.com/lagerdata/lager/issues/840)) | |
 | `--fill VALUE` | Fill value for padding | `0xFF` |
 | `--mode 0\|1\|2\|3` | SPI mode override | |
 | `--frequency FREQ` | Clock frequency override | |
@@ -350,8 +350,8 @@ For Aardvark adapters:
 | Format | Description |
 |--------|-------------|
 | `hex` | Space-separated hex values (e.g., `9f 01 02`) |
-| `bytes` | Raw byte values |
-| `json` | JSON object with data array and metadata |
+| `bytes` | Decimal values separated by spaces (e.g., `159 1 2`) |
+| `json` | JSON object with the data array only (e.g., `{"data": [159, 1, 2]}`) |
 
 ---
 

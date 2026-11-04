@@ -243,7 +243,7 @@ Launch an interactive terminal UI for real-time power supply monitoring and cont
 lager supply NET_NAME tui [--box TEXT]
 ```
 
-Requires the `textual` Python package (`pip install textual`).
+The TUI uses the `textual` Python package, which installs with `lager-cli`.
 
 **TUI display:**
 - Live voltage, current, and power measurements (updated every second)
@@ -316,10 +316,13 @@ lager supply PSU current 1.0 --ocp 1.2 --yes
 | Rigol | DP832 / DP832A | 3 | Ch1-2: 30V/3A, Ch3: 5V/3A | Most common |
 | Rigol | DP821 | 2 | Ch1: 60V/1A, Ch2: 8V/10A | |
 | Rigol | DP811 / DP811A | 1 | 20V/10A or 40V/5A (range) | |
+| Rigol | DP831 / DP831A | 3 | Ch1: 8V/5A, Ch2-3: 30V/2A | |
+| Rigol | DP711 / DP712 | 1 | DP711: 30V/5A | RS-232 through a USB-serial cable |
+| Siglent | SPD1168X / SPD1305X | 1 | 16V/8A; 30V/5A | No OVP/OCP. Readback lags a setpoint change by about 0.34 s |
 | Keithley | 2281S | 1 | 20V/6A/120W | Battery simulator mode |
 | Keysight | E36200 series | 2 | E36233A: 30V/20A per ch | Dual output |
 | Keysight | E36300 series | 3 | E36311A/12A/13A | Triple output |
-| EA | PSI/EL series | 1 | PSB 10080-60, PSB 10060-60 | Two-quadrant |
+| EA | PSB series | 1 | PSB 10080-60, PSB 10060-60 | Two-quadrant |
 
 Multi-channel supplies use the channel number configured in the net record. Each channel is typically configured as a separate net.
 

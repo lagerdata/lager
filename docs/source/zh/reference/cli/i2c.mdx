@@ -136,9 +136,9 @@ lager i2c NETNAME write DATA [OPTIONS]
 | `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
 | `--data-file PATH` | 含有要写入二进制数据的文件 | |
 | `--frequency FREQ` | 覆盖时钟频率 | |
-| `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
+| `--format FORMAT` | 可以接受，但 `write` 不打印数据，因此没有效果（[#840](https://github.com/lagerdata/lager/issues/840)） | `hex` |
 
-数据可以作为 `DATA` 参数提供，也可以通过 `--data-file` 提供，但不能同时使用两者。
+数据可以作为 `DATA` 参数提供，也可以通过 `--data-file` 提供。如果两者都给出，会写入 `DATA` 并忽略该文件（[#840](https://github.com/lagerdata/lager/issues/840)）。
 
 **示例：**
 
@@ -209,13 +209,15 @@ lager i2c MY_I2C transfer 4 --address 0x48 --data 0x0A --format json
 
 ## 地址格式
 
-I2C 地址是 7 位值（`0x00`-`0x7F`）。您可以用十六进制或十进制指定地址：
+I2C 地址是 7 位值（`0x00`-`0x7F`）。您可以用十六进制指定地址，也可以用三位数的十进制指定：
 
 | 格式 | 示例 | 数值 |
 |--------|---------|-------|
 | 十六进制带前缀 | `0x48` | 72 |
 | 十六进制不带前缀 | `48` | 72 |
-| 十进制 | `72` | 72 |
+| 十进制，三位数 | `100` | 100 |
+
+一位或两位数字总是按十六进制读取：`72` 是 `0x72`（114），而不是 72。小于 100 的十进制地址请用十六进制书写，例如用 `0x48` 表示 72（[#838](https://github.com/lagerdata/lager/issues/838)）。
 
 ---
 
@@ -321,8 +323,8 @@ Aardvark 适配器：
 | 格式 | 说明 |
 |--------|-------------|
 | `hex` | 以空格分隔的十六进制字节（例如 `0a 03 ff`） |
-| `bytes` | 原始字节值 |
-| `json` | 含数据数组和元信息的 JSON 对象 |
+| `bytes` | 以空格分隔的十进制值（例如 `10 3 255`） |
+| `json` | 只含数据数组的 JSON 对象（例如 `{"data": [10, 3, 255]}`） |
 
 ---
 

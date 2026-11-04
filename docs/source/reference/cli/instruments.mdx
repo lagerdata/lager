@@ -57,40 +57,67 @@ The box holds the channel list. Run `lager update` on the box to get the current
 The following instrument types are automatically detected:
 
 ### Power Supplies
-- Rigol DP800 series (DP811, DP821, DP832)
-- Keysight E36200/E36300 series
-- Keithley 2200/2280 series
-- EA PSB series
+- Rigol DP800 series (DP811, DP821, DP831, DP832)
+- Keysight E36233A, E36312A, E36313A
+- Keithley 2281S
+- Siglent SPD1168X
+- EA PSB 10060-60, PSB 10080-60
+
+A Rigol DP711 talks RS-232 through a USB-serial cable, so it is not detected. Assign the
+cable to it with `lager nets assign`.
 
 ### Oscilloscopes
-- Rigol MSO5000 series
+- Rigol MSO5204 (analog channels and logic analyzer)
+- Rigol DS1000Z series
 - PicoScope
 
 ### Battery/Solar Simulators
-- Keithley 2281S
-- EA PSI/EL series
+- Keithley 2281S (battery)
+- EA PSB 10060-60, PSB 10080-60 (solar)
 
 ### Electronic Loads
-- Rigol DL3000 series
+- Rigol DL3021
+
+### Multimeters
+- Siglent SDM3065X
 
 ### Data Acquisition
 - LabJack T7 (ADC, DAC, GPIO, SPI, I2C)
 - LabJack U3 (ADC, DAC, GPIO, SPI, I2C)
 - MCC USB-202 (ADC, DAC, GPIO)
 - Phidget thermocouples
-- Yocto watt meters
+- Yocto-Watt watt meters
+
+### Power Analyzers
+- Joulescope JS220 (watt meter, energy analyzer)
+- Nordic PPK2 (watt meter, energy analyzer)
+
+### Multi-Protocol Adapters
+- Total Phase Aardvark (SPI, I2C, GPIO)
+- FTDI FT232H, FT2232H, FT4232H (SPI, I2C, GPIO, UART, debug)
 
 ### USB Hubs
 - Acroname (4-port, 8-port)
-- YKUSH
+- YKUSH and YKUSH3 (a YKUSH3 also offers 3 GPIO pins)
+- Plugable USB hub
 
 ### Debug Probes
-- Segger J-Link
-- CMSIS-DAP
-- ST-Link
+- Segger J-Link, J-Link OB, J-Link Plus, J-Link Base Compact, Flasher ARM, Flasher Pro
+- CMSIS-DAP (DAPLink), Raspberry Pi Picoprobe, Atmel EDBG
+- ST-Link V2, V2-1, V3 and V3 Mini
 
 ### Serial Adapters
-- FTDI USB-to-serial
+- FTDI FT232R, Silicon Labs CP210x, Prolific USB-serial and ESP32 JTAG serial
+- The UART channels of the FTDI FT232H, FT2232H and FT4232H
+
+### Cameras
+- Logitech C270, C615, C920, C922 Pro, C925e, C930e, BRIO, StreamCam and 4K Pro
+- IPEVO V4K Pro and ELP Global Shutter AR0234
+- Any other UVC camera, as `UVC_Camera`
+
+### Other
+- YubiHSM 2 (`hsm`)
+- Rotrics Dexarm (`arm`)
 
 ---
 

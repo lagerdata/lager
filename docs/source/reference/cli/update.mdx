@@ -216,14 +216,15 @@ deployed ref. Use `lager hello` for the ref.
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | The box is in sync. Nothing to do |
-| `1` | The update changes something, or the check failed |
-| `2` | No SSH key is confirmed for the box, or git could not compare the box with the target |
+| `1` | The update changes something |
+| `2` | The check could not determine the state of the box |
 
-Exit `1` does not always mean that the box is behind. The check also exits `1`
-when it fails. Examples are an SSH timeout, a failed probe of the box state, and
-a box directory that is not a git checkout. A failed `git fetch` also gives `1`,
-and that includes a commit SHA that the box cannot fetch. A box locked by another
-holder also gives `1`. Read the output before you treat `1` as "update needed".
+Exit `2` covers every failure that leaves the state unknown. Examples are an SSH
+timeout, a failed probe of the box state, and a box directory that is not a git
+checkout. A failed `git fetch` also gives `2`, and that includes a commit SHA
+that the box cannot fetch. No confirmed SSH key and a box locked by another
+holder also give `2`. Without `--check`, the other failures exit `1`, and a
+missing SSH key starts the key setup.
 
 ---
 

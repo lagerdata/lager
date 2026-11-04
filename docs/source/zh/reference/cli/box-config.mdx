@@ -74,14 +74,14 @@ lager box-config apply --box my-lager-box                # 2. apply
 按 USB 厂商/产品 ID，在容器内部授予某个 USB 设备的读写权限。当刚插上的设备属主是 `root`、而容器内的工具打不开它时，请使用它。例如 `dfu-util` 会失败并报出 *"No DFU capable USB device available"*。
 
 ```bash
-lager box-config udev add VID:PID [VID:PID ...] [--mode 0666] [--usbtmc]
+lager box-config udev add VID:PID [VID:PID ...] [--mode 0660] [--usbtmc]
 lager box-config udev list [--json]
 lager box-config udev remove VID:PID [VID:PID ...]
 ```
 
 | 选项 | 说明 |
 |--------|-------------|
-| `--mode TEXT` | 设备节点权限模式，八进制（默认 `0666`） |
+| `--mode TEXT` | 设备节点权限模式，八进制（默认 `0660`） |
 | `--usbtmc` | 同时生成解绑 `usbtmc` 驱动的规则，通过 PyVISA/libusb 访问的 SCPI/USB-TMC 仪器需要它 |
 
 VID 和 PID 各为 4 位十六进制。接受 `0x` 前缀和大写并会归一化（因此 `0x1AB1:0E11` 变成 `1ab1:0e11`）。重复添加同一个 vid:pid 会就地更新它。
@@ -420,6 +420,14 @@ lager box-config audit --box my-lager-box       # recent changes (supports --ver
 lager box-config edit --box my-lager-box        # open in $EDITOR, then apply
 ```
 
+`show`、`status`、`diff` 和 `audit` 接受 `--json`，输出机器可读的结果。`audit` 有三个筛选选项：
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--tail N` | 要获取的最新条目数（默认 20；`0` 表示全部） |
+| `--since DURATION` | 只显示比给定时长更新的条目，例如 `30m`、`1h`、`2d` 或 `1w` |
+| `--verb VERB` | 只显示动词完全匹配的条目，例如 `apt-add` |
+
 ### 备份、恢复与修复
 
 ```bash
@@ -428,6 +436,8 @@ lager box-config import ./box.json --box my-lager-box      # replace config from
 lager box-config copy --from BOX_A --to BOX_B              # clone config between boxes
 lager box-config repair --box my-lager-box                 # restore the last applied config and restart
 ```
+
+`import`、`copy` 和 `repair` 会请求确认。在脚本中加上 `--yes` 可跳过提示。
 
 ---
 

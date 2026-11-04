@@ -33,7 +33,7 @@ The following values are accepted (case-insensitive):
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lager Box name or IP address |
-| `--hold` | Hold output state (keeps process alive until Ctrl+C) |
+| `--hold` | Accepted for older scripts. It has no effect; see [Hold Mode](#hold-mode) |
 | `--json` | Emit a machine-readable JSON object instead of formatted text |
 
 ---
@@ -60,16 +60,14 @@ lager gpo --box my-lager-box
 
 ### Hold Mode
 
-The `--hold` flag keeps the process alive after it sets the output level. The pin holds its state until you press Ctrl+C. Use it to assert a signal for manual testing, or when the pin state otherwise resets between CLI invocations.
+`--hold` has no effect ([#840](https://github.com/lagerdata/lager/issues/840)). The box keeps the device session open, so the pin keeps its level
+after the command exits, with or without `--hold`. The command prints a note and exits.
+To release a pin, set it to the other level.
 
 ```bash
-# Hold reset line low until manually released
-lager gpo RESET_N low --hold --box my-lager-box
-# Press Ctrl+C to release
-
-# Hold enable pin high during manual testing
-lager gpo EN high --hold
-# Press Ctrl+C when done
+# The level stays until the next command changes it
+lager gpo RESET_N low --box my-lager-box
+lager gpo RESET_N high --box my-lager-box
 ```
 
 ---
@@ -80,13 +78,14 @@ lager gpo EN high --hold
 |--------|------|---------|
 | LabJack T7 | FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2 | 3.3V logic |
 | LabJack U3 | FIO4-FIO7, EIO0-EIO7, CIO0-CIO3 | |
-| MCC USB-202 | DIO0-DIO7 (0-7) | 3.3V/5V TTL |
-| Aardvark | 0-5 (SCL, SDA, MISO, SCK, MOSI, SS) | 3.3V |
-| FT232H | 0-15 (AD0-AD7, AC0-AC7) | 3.3V |
+| MCC USB-202 | DIO0-DIO7 | 3.3V/5V TTL |
+| Aardvark | SCL, SDA, MISO, SCK, MOSI, SS | 3.3V |
+| FT232H, FT2232H | 4-15 (AD4-AD7, AC0-AC7) | 3.3V |
+| FT4232H | 0-7 | 3.3V |
+| YKUSH3 | 1-3 | |
 
-<Note>
-Aardvark and FT232H GPIO support is currently disabled. A future release can enable it again. LabJack T7, LabJack U3 and MCC USB-202 are the active GPIO backends.
-</Note>
+The pin column lists the exact channel tokens that `lager nets add` accepts. On a
+multi-channel FTDI part, the net's interface selects channel A, B, C or D.
 
 ### LabJack U3 Pins
 
@@ -97,7 +96,7 @@ Aardvark and FT232H GPIO support is currently disabled. A future release can ena
 
 ### Aardvark Pin Mapping
 
-The Aardvark I2C/SPI adapter exposes 6 GPIO pins on its 10-pin header. Pins can be specified by number or signal name:
+The Aardvark I2C/SPI adapter exposes 6 GPIO pins on its 10-pin header. Give the signal name as the channel:
 
 | Pin | Name | Header Pin |
 |-----|------|------------|
@@ -110,11 +109,12 @@ The Aardvark I2C/SPI adapter exposes 6 GPIO pins on its 10-pin header. Pins can 
 
 ### FT232H Pin Mapping
 
-The FT232H provides 16 GPIO pins across two ports:
+The FT232H and FT2232H offer 12 GPIO channels. `AD0`-`AD3` are not offered as `gpio`
+channels:
 
 | Pins | Names | Description |
 |------|-------|-------------|
-| 0-7 | AD0-AD7 | Port A data pins |
+| 4-7 | AD4-AD7 | Port A data pins |
 | 8-15 | AC0-AC7 | Port A control pins |
 
 ---
@@ -138,12 +138,10 @@ for i in {1..5}; do
     sleep 0.5
 done
 
-# Hold a signal during manual testing
-lager gpo BOOT0 high --hold --box my-lager-box
-# Ctrl+C to release, then flash firmware
-
-# Assert chip select for manual SPI debugging
-lager gpo CS_N low --hold --box my-lager-box
+# Assert a boot strap, flash, then release it
+lager gpo BOOT0 high --box my-lager-box
+lager debug flash --hex fw.hex --box my-lager-box
+lager gpo BOOT0 low --box my-lager-box
 ```
 
 ---
@@ -161,6 +159,6 @@ lager gpo CS_N low --hold --box my-lager-box
 - Default net can be set with `lager defaults add --gpio-net`
 - Pin must be configured as output in net configuration
 - Toggle reads current state and inverts it
-- USB-202 channels can be specified as `0`-`7` or `DIO0`-`DIO7`
-- `--hold` keeps the process running; press Ctrl+C to release the pin and exit
-- Without `--hold`, the output level is set and the command exits immediately; the pin retains its state until the next command
+- USB-202 channels are `DIO0`-`DIO7`
+- `--hold` has no effect; it prints a note and exits
+- The command sets the output level and exits immediately; the pin retains its state until the next command

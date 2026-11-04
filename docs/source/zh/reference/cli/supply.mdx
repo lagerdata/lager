@@ -243,7 +243,7 @@ lager supply NET_NAME set [--box TEXT]
 lager supply NET_NAME tui [--box TEXT]
 ```
 
-需要 `textual` Python 包（`pip install textual`）。
+TUI 使用 `textual` Python 包，它会随 `lager-cli` 一起安装。
 
 **TUI 显示内容：**
 - 实时的电压、电流和功率测量值（每秒更新）
@@ -317,10 +317,13 @@ lager supply PSU current 1.0 --ocp 1.2 --yes
 | Rigol | DP832 / DP832A | 3 | 通道 1-2：30V/3A，通道 3：5V/3A | 最常见 |
 | Rigol | DP821 | 2 | 通道 1：60V/1A，通道 2：8V/10A | |
 | Rigol | DP811 / DP811A | 1 | 20V/10A 或 40V/5A（分档） | |
+| Rigol | DP831 / DP831A | 3 | 通道 1：8V/5A，通道 2-3：30V/2A | |
+| Rigol | DP711 / DP712 | 1 | DP711：30V/5A | 通过 USB 转串口线缆走 RS-232 |
+| Siglent | SPD1168X / SPD1305X | 1 | 16V/8A；30V/5A | 没有 OVP/OCP。设定值改变后，回读约滞后 0.34 秒 |
 | Keithley | 2281S | 1 | 20V/6A/120W | 支持电池模拟模式 |
 | Keysight | E36200 系列 | 2 | E36233A：每通道 30V/20A | 双路输出 |
 | Keysight | E36300 系列 | 3 | E36311A/12A/13A | 三路输出 |
-| EA | PSI/EL 系列 | 1 | PSB 10080-60、PSB 10060-60 | 双象限 |
+| EA | PSB 系列 | 1 | PSB 10080-60、PSB 10060-60 | 双象限 |
 
 多通道电源使用 Net 记录中配置的通道号。每个通道通常配置为一个单独的 Net。
 

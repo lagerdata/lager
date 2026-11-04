@@ -58,6 +58,13 @@ reports. For any other ref, the brackets show that ref and its commit, as
 Version: 0.47.0 (main@5d84c68612384eed2854638c1e0941a4ff8b7893 -- not a release build)
 ```
 
+A box deployed with `lager update --fork` or `lager install --fork` names the fork and is
+always marked, even on a tag that looks like a release:
+
+```text
+Version: 0.62.0 (octocat/lager:my-branch@5d84c68612384eed2854638c1e0941a4ff8b7893 -- fork build, not a release)
+```
+
 A box that predates the ref record shows only the version. If the box reports no
 version, the line reads `Version: Unknown`. If the box answers `/hello` with an
 error, the last line reads `my-lager-box responded with HTTP <code>`.

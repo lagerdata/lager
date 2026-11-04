@@ -49,10 +49,12 @@ Managed with `lager defaults`.
 | `net_eload` | `--eload-net` | Default electronic load net |
 | `net_usb` | `--usb-net` | Default USB hub net |
 | `net_webcam` | `--webcam-net` | Default webcam net |
-| `net_watt_meter` | `--watt-meter-net` | Default watt meter net |
+| `net_watt_meter` | `--watt-meter-net` | Default watt meter net. `lager watt` does not read this key yet ([#836](https://github.com/lagerdata/lager/issues/836)); see [`lager watt`](/source/reference/cli/watt#default-net) |
 | `net_thermocouple` | `--thermocouple-net` | Default thermocouple net |
+| `net_dmm` | `--dmm-net` | Default multimeter net |
 | `net_uart` | `--uart-net` | Default UART net |
 | `net_arm` | `--arm-net` | Default robotic arm net |
+| `user` | `--user` | Username recorded on box locks |
 
 **Example:**
 
@@ -146,7 +148,7 @@ Stores hardware net configurations organized by box name. Each net maps a human-
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | Yes | Unique name for the net (e.g., `"VDD_MAIN"`, `"SWD"`) |
-| `role` | Yes | Net type: `supply`, `battery`, `solar`, `eload`, `adc`, `dac`, `gpio`, `debug`, `scope`, `logic`, `uart`, `i2c`, `spi`, `usb`, `watt`, `thermocouple`, `webcam`, `arm` |
+| `role` | Yes | Net type, matched exactly: `power-supply`, `battery`, `solar`, `eload`, `adc`, `dac`, `gpio`, `debug`, `scope`, `scope-channel`, `logic`, `uart`, `i2c`, `spi`, `usb`, `watt-meter`, `energy-analyzer`, `thermocouple`, `dmm`, `webcam`, `arm`, `hsm` |
 | `instrument` | Yes | Instrument model name (e.g., `"Rigol_DP831"`, `"LabJack_T7"`) |
 | `address` | Yes | Instrument address (USB or network path) |
 | `pin` | Yes | Channel or pin number on the instrument |
@@ -162,7 +164,7 @@ Stores hardware net configurations organized by box name. Each net maps a human-
     "my-lager-box": [
       {
         "name": "VDD_MAIN",
-        "role": "supply",
+        "role": "power-supply",
         "instrument": "Rigol_DP831",
         "address": "USB0::0x1AB1::0x0E11::DP8XXXXXXX::INSTR",
         "pin": "1"
@@ -417,7 +419,7 @@ No manual migration is required. The CLI reads both formats and writes back the 
     "my-lager-box": [
       {
         "name": "VDD_MAIN",
-        "role": "supply",
+        "role": "power-supply",
         "instrument": "Rigol_DP831",
         "address": "USB0::0x1AB1::0x0E11::DP8XXXXXXX::INSTR",
         "pin": "1"

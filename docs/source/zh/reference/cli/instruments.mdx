@@ -57,40 +57,66 @@ LabJack_U3               adc: AIN0, AIN1, AIN2, AIN3, AIN4, AIN5, AIN6, AIN7, AI
 以下仪器类型会被自动检测：
 
 ### 电源
-- Rigol DP800 系列（DP811、DP821、DP832）
-- Keysight E36200/E36300 系列
-- Keithley 2200/2280 系列
-- EA PSB 系列
+- Rigol DP800 系列（DP811、DP821、DP831、DP832）
+- Keysight E36233A、E36312A、E36313A
+- Keithley 2281S
+- Siglent SPD1168X
+- EA PSB 10060-60、PSB 10080-60
+
+Rigol DP711 通过 USB 转串口线缆走 RS-232，因此不会被检测到。请用 `lager nets assign` 把线缆分配给它。
 
 ### 示波器
-- Rigol MSO5000 系列
+- Rigol MSO5204（模拟通道和逻辑分析仪）
+- Rigol DS1000Z 系列
 - PicoScope
 
 ### 电池/太阳能模拟器
-- Keithley 2281S
-- EA PSI/EL 系列
+- Keithley 2281S（电池）
+- EA PSB 10060-60、PSB 10080-60（太阳能）
 
 ### 电子负载
-- Rigol DL3000 系列
+- Rigol DL3021
+
+### 万用表
+- Siglent SDM3065X
 
 ### 数据采集
 - LabJack T7（ADC、DAC、GPIO、SPI、I2C）
 - LabJack U3（ADC、DAC、GPIO、SPI、I2C）
 - MCC USB-202（ADC、DAC、GPIO）
 - Phidget 热电偶
-- Yocto 功率计
+- Yocto-Watt 功率计
+
+### 功率分析仪
+- Joulescope JS220（功率计、能量分析仪）
+- Nordic PPK2（功率计、能量分析仪）
+
+### 多协议适配器
+- Total Phase Aardvark（SPI、I2C、GPIO）
+- FTDI FT232H、FT2232H、FT4232H（SPI、I2C、GPIO、UART、调试）
 
 ### USB 集线器
-- Acroname（4 端口、8 端口）
-- YKUSH
+- Acroname（4 口、8 口）
+- YKUSH 和 YKUSH3（YKUSH3 还提供 3 个 GPIO 引脚）
+- Plugable USB 集线器
 
 ### 调试探针
-- Segger J-Link
-- CMSIS-DAP
-- ST-Link
+- Segger J-Link、J-Link OB、J-Link Plus、J-Link Base Compact、Flasher ARM、Flasher Pro
+- CMSIS-DAP（DAPLink）、Raspberry Pi Picoprobe、Atmel EDBG
+- ST-Link V2、V2-1、V3 和 V3 Mini
 
 ### 串口适配器
-- FTDI USB 转串口
+- FTDI FT232R、Silicon Labs CP210x、Prolific USB 转串口和 ESP32 JTAG 串口
+- FTDI FT232H、FT2232H 和 FT4232H 的 UART 通道
+
+### 摄像头
+- Logitech C270、C615、C920、C922 Pro、C925e、C930e、BRIO、StreamCam 和 4K Pro
+- IPEVO V4K Pro 和 ELP Global Shutter AR0234
+- 其他任何 UVC 摄像头，显示为 `UVC_Camera`
+
+### 其他
+- YubiHSM 2（`hsm`）
+- Rotrics Dexarm（`arm`）
 
 ---
 

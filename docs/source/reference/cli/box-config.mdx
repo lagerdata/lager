@@ -73,14 +73,14 @@ lager box-config apply --box my-lager-box                # 2. apply
 Grant a USB device read/write access from inside the container, by USB vendor/product id. Use this when a freshly-plugged device is owned by `root` and a tool inside the container cannot open it. For example, `dfu-util` fails with *"No DFU capable USB device available"*.
 
 ```bash
-lager box-config udev add VID:PID [VID:PID ...] [--mode 0666] [--usbtmc]
+lager box-config udev add VID:PID [VID:PID ...] [--mode 0660] [--usbtmc]
 lager box-config udev list [--json]
 lager box-config udev remove VID:PID [VID:PID ...]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--mode TEXT` | Octal device-node permission mode (default `0666`) |
+| `--mode TEXT` | Octal device-node permission mode (default `0660`) |
 | `--usbtmc` | Also emit the `usbtmc` driver-unbind rule, required for SCPI/USB‑TMC instruments accessed via PyVISA/libusb |
 
 VID and PID are 4 hex digits each. A `0x` prefix and uppercase are accepted and normalized (so `0x1AB1:0E11` becomes `1ab1:0e11`). Re-adding the same vid:pid updates it in place.
@@ -509,6 +509,15 @@ lager box-config audit --box my-lager-box       # recent changes (supports --ver
 lager box-config edit --box my-lager-box        # open in $EDITOR, then apply
 ```
 
+`show`, `status`, `diff` and `audit` take `--json` for machine-readable output. `audit`
+has three filters:
+
+| Option | Description |
+|--------|-------------|
+| `--tail N` | Number of most recent entries to fetch (default 20; `0` fetches all) |
+| `--since DURATION` | Only entries newer than a duration such as `30m`, `1h`, `2d` or `1w` |
+| `--verb VERB` | Only entries whose verb matches exactly, such as `apt-add` |
+
 ### Backup, restore, and recovery
 
 ```bash
@@ -517,6 +526,8 @@ lager box-config import ./box.json --box my-lager-box      # replace config from
 lager box-config copy --from BOX_A --to BOX_B              # clone config between boxes
 lager box-config repair --box my-lager-box                 # restore the last applied config and restart
 ```
+
+`import`, `copy` and `repair` ask for confirmation. Add `--yes` to skip the prompt in a script.
 
 ---
 

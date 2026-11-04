@@ -52,21 +52,23 @@ If `NET_NAME` is omitted and no default is set, `lager watt` lists all available
 
 ## Output
 
-Lager formats readings with an SI prefix, so small magnitudes stay readable. A 52.34 µW load appears as `52.340 µW` rather than as `0.000 W`:
+Lager prints each reading in its base unit (W, A or V) with up to six significant digits. A
+small reading appears in scientific notation, so a 52.34 µW load prints as `5.234e-05 W`
+([#837](https://github.com/lagerdata/lager/issues/837)):
 
 ```
-Power 'POWER_METER': 52.340 µW
-Current 'POWER_METER': 12.000 mA
-Voltage 'POWER_METER': 3.300 V
+Power 'POWER_METER': 5.234e-05 W
+Current 'POWER_METER': 0.012 A
+Voltage 'POWER_METER': 3.3 V
 ```
 
 `all` prints all three quantities:
 
 ```
 Measurements 'POWER_METER' (0.1s):
-  Current: 12.000 mA
-  Voltage: 3.300 V
-  Power:   39.600 mW
+  Current: 0.012 A
+  Voltage: 3.3 V
+  Power:   0.0396 W
 ```
 
 With `--json`, output is a single JSON object (units are base SI — amps, volts, watts):
@@ -82,7 +84,7 @@ The default reading timeout is 30 seconds (scaled up for long `--duration` windo
 
 Two levers improve a power/current reading:
 
-- **Display** — output is SI-scaled automatically, so sub-milliwatt and sub-milliamp readings are shown in µ/n units instead of rounding to zero. For a value too small for even the nano prefix, the reading appears in scientific notation (e.g. `3.000e-13 W`). A nonzero reading is never lost to rounding.
+- **Display** — output keeps six significant digits in the base unit. A sub-milliwatt or sub-milliamp reading appears in scientific notation (e.g. `5.234e-05 W`), not as zero. A nonzero reading is never lost to rounding.
 - **Averaging window** — pass `--duration` to average over a longer capture. A longer window reduces noise on the mean, giving a steadier, higher-effective-resolution value:
 
 ```bash
@@ -132,16 +134,18 @@ The backend driver is selected based on the instrument name in the net configura
 
 ## Default Net
 
-To avoid specifying the net name each time:
+`lager defaults add --watt-meter-net` saves the key `net_watt_meter`, but `lager watt` reads
+`net_watt`. A default set this way is therefore not used yet ([#836](https://github.com/lagerdata/lager/issues/836)). Give the net name
+in each command:
 
 ```bash
 lager defaults add --watt-meter-net POWER_METER
 ```
 
-Then:
+Then still name the net:
 
 ```bash
-lager watt
+lager watt POWER_METER
 ```
 
 ## Examples
@@ -213,7 +217,7 @@ done
 
 ## Notes
 
-- Readings are SI-scaled (W/mW/µW/nW, A/mA/µA/nA, V/mV) with 3 significant decimal places. A value too small for the nano prefix falls back to scientific notation instead of `0.000`. `--json` emits base SI units (W, A, V).
+- Readings print in base units (W, A, V) with up to six significant digits; a small value appears in scientific notation instead of `0`. `--json` emits the same base units.
 - `--duration` sets the averaging window; the Joulescope JS220 and Nordic PPK2 honor it, while the Yocto-Watt returns an instantaneous value and ignores it. On the JS220, windows longer than ~10 s are measured gaplessly with the on-device charge accumulator (constant memory, any length).
 - The Nordic PPK2 operates in source mode (supplies a configurable voltage 0.8–5V and measures current); its `voltage` reading is the configured source voltage.
 - The `current`, `voltage`, and `all` subcommands must follow the net name: `lager watt NET_NAME current`.

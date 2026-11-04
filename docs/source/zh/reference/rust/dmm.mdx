@@ -86,7 +86,7 @@ assert!((3.2..3.4).contains(&volts), "VBAT out of tolerance: {volts:.6} V");
 
 **返回：** 一个 `DmmReading`。万用表超量程时，`value` 为 `None`，`overload` 为 `true`。对于 `Continuity` 和 `Diode`，开路输入的读数也是这样。
 
-Box 会先对照万用表检查请求。如果万用表不支持该功能、量程、NPLC 值或传感器，调用会以 `Error::Box`（HTTP 400）失败。消息会给出原因，Box 也不会操作万用表。各仪器的有效量程和 NPLC 值见 [CLI 参考](/source/reference/cli/dmm#supported-hardware)。
+Box 会先对照万用表检查请求。如果万用表不支持该功能、量程、NPLC 值或传感器，调用会以 `Error::Box`（HTTP 400）失败。消息会给出原因，Box 也不会操作万用表。各仪器的有效量程和 NPLC 值见 [CLI 参考](/source/zh/reference/cli/dmm#受支持的硬件)。
 
 ### `identify() -> Result<String>`
 

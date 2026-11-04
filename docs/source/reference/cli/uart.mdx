@@ -22,7 +22,7 @@ lager uart [NETNAME] [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lager Box name or IP address |
-| `--baudrate RATE` | Baudrate (e.g., 9600, 115200) |
+| `--baudrate RATE` | Baudrate (e.g., 9600, 115200), from 300 to 3,000,000 |
 | `--bytesize SIZE` | Data bits (5, 6, 7, 8) |
 | `--parity MODE` | Parity: none, even, odd, mark, space |
 | `--stopbits BITS` | Stop bits (1, 1.5, 2) |
@@ -184,7 +184,8 @@ Common baudrates:
 | Hardware | `--rtscts` | RTS/CTS pins |
 | Hardware | `--dsrdtr` | DSR/DTR pins |
 
-Flow control types cannot be combined.
+Software and hardware flow control cannot be combined: `--xonxoff` refuses `--rtscts`
+and `--dsrdtr`. The two hardware types, `--rtscts` and `--dsrdtr`, can be used together.
 
 ---
 

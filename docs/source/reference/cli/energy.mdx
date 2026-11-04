@@ -49,9 +49,9 @@ Integrate current and power over a configurable duration. Returns energy in joul
 ### Output
 
 ```
-Energy 'POWER_METER' (10.0s):
-  Energy:  12.500 mWh  (45.000 mJ)
-  Charge:  3.472 mAh   (12.500 mC)
+Energy 'POWER_METER' (10.0s integration):
+  Energy:  45.000 mJ  (12.500 µWh)
+  Charge:  12.500 mC  (3.472 µAh)
 ```
 
 ### Examples
@@ -89,9 +89,9 @@ Compute mean, minimum, maximum, and standard deviation for current, voltage, and
 
 ```
 Stats 'POWER_METER' (1.0s):
-  Current (A):  mean=0.015200  min=0.014900  max=0.015600  std=0.000120
-  Voltage (V):  mean=3.301000  min=3.300500  max=3.301500  std=0.000200
-  Power   (W):  mean=0.050175  min=0.049185  max=0.051516  std=0.000400
+  Current   mean=15.200 mA     min=14.900 mA     max=15.600 mA     std=120.000 µA
+  Voltage   mean=3.301 V       min=3.300 V       max=3.302 V       std=200.000 µV
+  Power     mean=50.175 mW     min=49.185 mW     max=51.516 mW     std=400.000 µW
 ```
 
 ### Examples
@@ -122,11 +122,11 @@ For instantaneous power readings only, see [Watt Meter](/source/reference/cli/wa
 ```bash
 #!/bin/bash
 # Verify a device's energy consumption during a 10-second test
-RESULT=$(lager energy POWER_METER read --box my-lager-box --duration 10)
+RESULT=$(lager energy POWER_METER read --box my-lager-box --duration 10 --json)
 echo "$RESULT"
 
 # Extract mWh value for pass/fail
-MWH=$(echo "$RESULT" | grep -oP '[\d.]+(?= mWh)')
+MWH=$(echo "$RESULT" | jq '.energy_wh * 1000')
 if (( $(echo "$MWH > 50" | bc -l) )); then
     echo "FAIL: Energy consumption too high: ${MWH} mWh"
     exit 1
@@ -139,11 +139,11 @@ echo "PASS: Energy within budget"
 ```bash
 #!/bin/bash
 # Check sleep current is below 100 uA
-RESULT=$(lager energy POWER_METER stats --box my-lager-box --duration 5)
+RESULT=$(lager energy POWER_METER stats --box my-lager-box --duration 5 --json)
 echo "$RESULT"
 
 # Extract mean current in amps, convert to uA
-CURRENT_A=$(echo "$RESULT" | grep "Current" | grep -oP 'mean=\K[\d.]+')
+CURRENT_A=$(echo "$RESULT" | jq '.current.mean')
 CURRENT_UA=$(echo "$CURRENT_A * 1000000" | bc -l)
 
 if (( $(echo "$CURRENT_UA > 100" | bc -l) )); then

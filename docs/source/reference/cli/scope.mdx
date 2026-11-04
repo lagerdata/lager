@@ -76,7 +76,7 @@ Every command also accepts `--box`. The channel, capture-control, `autoscale`, `
 | `measure` | Measure waveform characteristics | Both (see note) |
 | `trigger` | Show the trigger, or set it with a subcommand | Both (see note) |
 | `acquire` | Set how captures combine (normal, average, peak) | Both |
-| `roll` | Set roll mode for slow timebases | PicoScope only |
+| `roll` | Set roll mode for slow timebases | PicoScope 2202, 2203, 2204(A) and 2205(A) only |
 | `fft` | Report the strongest frequency components of a channel | Both |
 | `display` | Set how the web UI draws the trace | Both |
 | `cursor` | Place cursors over the capture and read the deltas | `time`/`volts`/`off` on both; `set-a`/`set-b`/`move-a`/`move-b`/`hide` are Rigol only |
@@ -132,7 +132,7 @@ When you add nets, `lager nets tui` reads the channel count from the model numbe
 | Cursor control | Time/voltage cursors over the captured samples, and XY cursors on the instrument display | Time/voltage cursors over the captured samples |
 | Autoscale | Yes | No |
 | Averaging, peak detect, FFT | `acquire` (done by the instrument), `fft` | `acquire`, `fft` |
-| Roll mode | No | `roll` |
+| Roll mode | No | `roll`, on the 2202, 2203, 2204(A) and 2205(A) |
 | Web visualization | Yes, with a capture card | Yes (HTML5) |
 | Data export | Via measurements | CSV streaming |
 | Control method | SCPI over USB, via the box daemon | Vendor SDK, via the box daemon |
@@ -1202,14 +1202,14 @@ scope [NET_NAME] [--box BOX]
   └── trigger                                 (no subcommand: show it)
       ├── edge [--mode] [--coupling] [--source] [--slope] [--level]
       ├── holdoff [SECONDS]
-      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (Rigol)
-      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (Rigol)
+      ├── pulse [--trigger-on] [--upper] [--lower] [--level] ...   (refused)
+      ├── i2c [--source-scl] [--source-sda] [--trigger-on] [--address] ...   (refused)
       ├── spi [--source-mosi-miso] [--source-sck] [--source-cs] ...   (Rigol)
-      └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (Rigol)
+      └── uart [--baud] [--parity] [--trigger-on] [--data] ...   (refused)
 
   Acquisition and Display
   ├── acquire [normal|average|peak] [--count N]
-  ├── roll [auto|on|off]                      (PicoScope)
+  ├── roll [auto|on|off]                      (PicoScope 2000)
   ├── fft [--channel] [--window] [--peaks]
   └── display
       ├── persistence VALUE
@@ -1248,7 +1248,7 @@ scope [NET_NAME] [--box BOX]
 - Streaming works on a PicoScope, and on a Rigol paired with an HDMI capture card (`lager nets set-capture`)
 - Measurements work on both instruments. `--display` and `--cursor` are Rigol only, because they draw on the screen of the instrument
 - `cursor time`, `cursor volts` and `cursor off` work on both instruments. The display cursor commands are Rigol only
-- `roll` is PicoScope only
+- `roll` works only on a PicoScope 2202, 2203, 2204(A) or 2205(A)
 - The edge trigger is the only trigger type that works on both PicoScope and Rigol
 - On the Rigol MSO5000, only the edge and SPI triggers work (see [issue #418](https://github.com/lagerdata/lager/issues/418))
 - The web UI needs access to port 9000 on the Lager Box

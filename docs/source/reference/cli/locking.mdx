@@ -22,15 +22,20 @@ crashes, and signal-killed runs. The lock is released through a `finally`
 block, a signal handler, an `atexit` net, and (worst case) a server-side
 TTL reap.
 
+A plain `kill` (SIGTERM) or a closed terminal (SIGHUP) also releases the lock. The CLI
+turns both signals into a normal exit, so the release runs, and the command exits with
+`128 + signal`, as the default action reports.
+
 ### Which commands auto-lock
 
 | Category | Commands | Lock window | Why |
 |----------|----------|-------------|-----|
 | Test runner | `lager python` | Full test run (acquire → heartbeat → release) | Canonical test runner. |
-| Measurement | `gpi`, `gpo`, `adc`, `dac`, `thermocouple`, `watt`, `energy`, `scope`, `logic` | Single command invocation | Hardware I/O — interleaved access corrupts readings or pin state. |
+| Measurement | `gpi`, `gpo`, `adc`, `dac`, `thermocouple`, `watt`, `energy`, `dmm`, `scope`, `logic` | Single command invocation | Hardware I/O — interleaved access corrupts readings or pin state. |
 | Communication | `spi`, `i2c`, `uart`, `wifi`, `ble`, `blufi`, `usb`, `router` | Single command invocation | Bus/protocol transactions must not interleave across users. |
 | Power | `supply`, `battery`, `eload`, `solar` | Single command invocation (subcommands only, not listing) | Concurrent voltage/current changes are dangerous. |
-| Development | `debug` (flash/connect/erase/reset/etc.), `arm`, `webcam` | Single command invocation | Flashing or debug sessions must not collide. |
+| Development | `debug` (flash/connect/erase/reset/etc.), `arm`, `webcam`, `hsm` | Single command invocation | Flashing or debug sessions must not collide. |
+| Custom drivers | `lager custom` and the commands of a custom driver | Single command invocation | A custom driver drives hardware like any built-in command. |
 | Admin | `install`, `uninstall`, `update`, `install-wheel` | Destructive section only | Container restart/mutation mid-test would kill the test. |
 
 Read-only commands do **not** acquire the auto-lock. Examples are `lager hello`,

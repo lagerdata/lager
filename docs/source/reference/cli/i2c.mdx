@@ -135,9 +135,10 @@ lager i2c NETNAME write DATA [OPTIONS]
 | `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
 | `--data-file PATH` | File containing binary data to write | |
 | `--frequency FREQ` | Clock frequency override | |
-| `--format FORMAT` | Output format: `hex`, `bytes`, `json` | `hex` |
+| `--format FORMAT` | Accepted, but `write` prints no data, so it has no effect ([#840](https://github.com/lagerdata/lager/issues/840)) | `hex` |
 
-Provide data either as the `DATA` argument or via `--data-file`, but not both.
+Provide data either as the `DATA` argument or via `--data-file`. If you give both, `DATA`
+is written and the file is ignored ([#840](https://github.com/lagerdata/lager/issues/840)).
 
 **Examples:**
 
@@ -208,13 +209,17 @@ All values must be within byte range (`0x00`-`0xFF`).
 
 ## Address Format
 
-I2C addresses are 7-bit values (`0x00`-`0x7F`). You can specify addresses in hex or decimal:
+I2C addresses are 7-bit values (`0x00`-`0x7F`). You can specify addresses in hex, or in
+decimal with three digits:
 
 | Format | Example | Value |
 |--------|---------|-------|
 | Hex prefixed | `0x48` | 72 |
 | Hex unprefixed | `48` | 72 |
-| Decimal | `72` | 72 |
+| Decimal, three digits | `100` | 100 |
+
+One or two digits are always read as hex: `72` is `0x72` (114), not 72. Write a decimal
+address below 100 in hex, such as `0x48` for 72 ([#838](https://github.com/lagerdata/lager/issues/838)).
 
 ---
 
@@ -315,8 +320,8 @@ For Aardvark adapters:
 | Format | Description |
 |--------|-------------|
 | `hex` | Space-separated hex bytes (e.g., `0a 03 ff`) |
-| `bytes` | Raw byte values |
-| `json` | JSON object with data array and metadata |
+| `bytes` | Decimal values separated by spaces (e.g., `10 3 255`) |
+| `json` | JSON object with the data array only (e.g., `{"data": [10, 3, 255]}`) |
 
 ---
 

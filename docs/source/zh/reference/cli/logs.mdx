@@ -68,7 +68,7 @@ lager logs clean --box BOX [--older-than DAYS] [--yes]
 
 **选项：**
 - `--box BOX`（必填）- 要清理的 Lager Box
-- `--older-than DAYS` - 删除超过 N 天的日志（默认 1）
+- `--older-than DAYS` - 删除超过 N 个整天的日志（默认 1）。年龄只按整天计算，因此 `--older-than 1` 删除至少 48 小时之前的文件（[#851](https://github.com/lagerdata/lager/issues/851)）
 - `--yes` - 跳过确认提示
 
 **示例：**
@@ -150,7 +150,7 @@ Docker 容器使用自动日志轮转：
 ## 会清理哪些内容
 
 `clean` 命令删除：
-- Box 宿主机上 `~/box/logs` 中匹配 `*.log`、并且超过 `--older-than` 天数的文件
+- Box 宿主机上 `~/box/logs` 中匹配 `*.log`、并且超过 `--older-than` 个整天的文件
 
 它**不会**删除：
 - `/var/log/` 中的系统日志

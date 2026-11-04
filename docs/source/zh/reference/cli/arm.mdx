@@ -74,14 +74,14 @@ lager arm [NETNAME] move [OPTIONS]
 ```
 
 **选项：**
-- `--x FLOAT` - 目标 X 位置（mm）
-- `--y FLOAT` - 目标 Y 位置（mm）
-- `--z FLOAT` - 目标 Z 位置（mm）
+- `--x FLOAT` - 目标 X 位置（mm）。必需
+- `--y FLOAT` - 目标 Y 位置（mm）。必需
+- `--z FLOAT` - 目标 Z 位置（mm）。必需
 - `--box TEXT` - Lager Box 名称或 IP
 - `--timeout FLOAT` - 移动超时秒数（默认 15.0，最小 0.1，最大 25.0）
 - `--yes` - 不提示直接确认该操作
 
-每个轴都是一个具名选项，而不是位置参数，因此您可以只沿一个轴移动，而不必把其他轴也写出来。
+`move` 需要全部三个轴。若只沿一个轴移动，请使用 [`move-by`](#move-by)，只给该轴的偏移量。
 
 Box 会拒绝超出机械臂工作空间的目标。请参阅[工作空间范围](#工作空间范围)。
 
@@ -295,7 +295,7 @@ Box 会打开具有该 USB 序列号的那台机械臂。
 | Y | 170 | 360 |
 | Z | -140 | 100 |
 
-错误信息以 `Coordinates out of bounds` 开头，并逐一指出超出范围的轴。
+对于 `move`，CLI 会在发送命令之前检查这些范围，打印 `These coordinates are out of bounds:`，并为每个超出范围的轴各打印一行。对于 `move-by`，由 Box 检查目标，其错误信息以 `Coordinates out of bounds` 开头，并逐一指出超出范围的轴。
 
 ---
 

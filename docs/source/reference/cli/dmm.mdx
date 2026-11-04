@@ -39,7 +39,7 @@ With a default net set, a single function argument reads the default net: `lager
 | `--nplc N` | Integration time in power-line cycles; `dcv`, `dci`, `res` and `fres` only |
 | `--sensor PROBE` | Temperature probe for `temp`: `rtd:pt100`, `rtd:pt1000`, `ther:b`/`e`/`j`/`k`/`n`/`r`/`s`/`t` |
 | `--errors` | Read and clear the meter's error queue instead of measuring |
-| `--idn` | Print the meter's `*IDN?` reply instead of measuring |
+| `--idn` | Print the meter's `*IDN?` reply instead of measuring. It cannot be combined with `--errors` |
 | `--box TEXT` | Lager Box name or IP address |
 | `--json` | Emit a JSON object instead of formatted text |
 

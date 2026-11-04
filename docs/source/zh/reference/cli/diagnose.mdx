@@ -85,7 +85,7 @@ lager diagnose battery1 --box my-lager-box --type battery
 | `INSTRUMENT WEDGED` | VISA 报 `timeout` —— 能枚举、能打开，但不响应 `*IDN?` |
 | `NOT ENUMERATED` | 该设备没有出现在 USB 上（请检查供电/线缆） |
 | `REACHABLE` | `*IDN?` 有返回（显示 IDN 字符串） |
-| `REACHABLE (shared session)` | 因为 hw_service 持有活动会话，所以跳过了打开动作 |
+| `REACHABLE (hw_service has an active shared session ...)` | 因为 hw_service 持有活动会话，所以跳过了打开动作 |
 | `TRANSIENT: enumerated as USB-TMC but fresh open failed` | 枚举为 USB-TMC 类，但全新的 pyvisa 打开失败 |
 | `NOT USB-TMC` | 使用厂商 SDK 的仪器（LabJack/LJM、Picoscope、Acroname 等），不走 pyvisa |
 | `UNCLEAR` | 兜底 —— 请查看各节的输出 |
@@ -201,6 +201,25 @@ Classification: TARGET LOCKED: debug access is blocked by readout/IDCODE/AP
 protection. A mass-erase/unlock is required (e.g. `nrfjprog --recover` for nRF,
 or the vendor unlock flow).
 ```
+
+---
+
+## USB 集线器 Net
+
+`usb` Net 不是 USB-TMC 仪器，因此 `lager diagnose` 会把它交给 Box 的 `/diagnose/usbhub` 检查，而不是 VISA 探测。该检查报告内核看到的内容、厂商 SDK 能否找到集线器的序列号，以及驱动能否打开集线器。各个结论按顺序如下（第一个匹配者生效）：
+
+| 分类 | 触发条件 |
+|----------------|---------|
+| `UNCLEAR — this box does not serve /diagnose/usbhub` | Box 太旧，不支持集线器检查。请更新 Box |
+| `Could not reach the USB hub diagnose endpoint` | 请求超时或失败。这并不说明 Box 的版本 |
+| `NOT ENUMERATED` | 内核看不到该集线器。请检查它的上游线缆和端口供电 |
+| `NOT SUPPORTED` | 对这一厂商的集线器跳过 SDK 扫描和驱动打开。这不是故障 |
+| `BUSY` | 有其他程序正在驱动该集线器。请在它空闲时再次运行检查 |
+| `HUB WEDGED (electrical)` | 内核能看到集线器，但它的厂商 SDK 看不到。重启 Box 服务无济于事 |
+| `HUB CLAIMED` | SDK 能看到集线器，但打开失败，并且另一个进程持有它 |
+| `HUB WILL NOT OPEN` | SDK 能看到集线器，打开失败，且没有持有者 |
+| `REACHABLE` | 集线器能干净地打开和关闭。这测试的是到集线器的路径，而不是某个端口上的 DUT |
+| `UNCLEAR` | 兜底情况。请查看该节内容并再次运行检查 |
 
 ---
 

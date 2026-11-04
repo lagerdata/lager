@@ -35,6 +35,8 @@ lager login https://your-control-plane.example.com --no-browser
 
 浏览器登录需要认证服务器支持。如果服务器不支持，Lager 会明确说明，此时请使用密码登录。
 
+`--no-browser` 隐含 `--web`。使用这两个标志中的任意一个时，请不要再给出 `--email` 或 `--password`：命令会以用法错误停止。
+
 ### 非交互式登录
 
 两项凭据都可以作为选项传入，而不必等待提示，这正是 CI 作业所需要的：

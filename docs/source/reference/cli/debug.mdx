@@ -116,7 +116,7 @@ arm-none-eabi-gdb firmware.elf -ex 'target remote localhost:2331'
 - Ctrl-C closes the tunnel only. The GDB server continues to run on the box. To stop it, use `lager debug <NET> disconnect`.
 - If the local port is in use, the command stops with an error. Use `--local-port` to select a different local port.
 - With `--rtt`, `--rtt-reset` or `--interactive`, the tunnel stays open while the RTT stream runs. RTT does not use the tunnel: it goes through the gateway as normal HTTP.
-- With `--json`, the output has a `tunnel` object with `local_host` and `local_port`. Then the command stays in the foreground.
+- With `--json`, the output has a `tunnel` object with `local_host`, `local_port` and `box_port`. Then the command stays in the foreground. When no debugger on this machine can reach the server, the output has `"gdb_port_reachable": false` instead.
 - A script that must continue after the GDB server starts can use `--no-tunnel`. The command then returns and does not open a tunnel.
 - If an administrator removes your access to the box, the gateway closes the tunnel within about one minute. The command tells you. The next connection gets the access error.
 
@@ -156,10 +156,10 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--box TEXT` - Lager Box name or IP
 - `--hex FILE` - Path to Intel HEX file
 - `--elf FILE` - Path to ELF executable
-- `--bin FILE,ADDRESS` - Path to a binary file and its load address, as one argument (for example `build/app.bin,0x08000000`)
+- `--bin FILE,ADDRESS` - Path to a binary file and its load address, as one argument (for example `build/app.bin,0x08000000`). Give exactly one of `--hex`, `--elf` and `--bin`
 - `--verbose` - Show detailed J-Link output
 - `--force-reconnect` - Force clean reconnect before flash
-- `--no-erase` - Skip the erase step (by default `flash` erases before programming for a clean state)
+- `--no-erase` - Skip the erase step (by default `flash` erases before programming for a clean state). It cannot be combined with `--erase-start` or `--erase-size`
 - `--erase-start ADDR` - First address of the erase before programming, hex (`0x16000000`) or decimal. Given together with `--erase-size`.
 - `--erase-size BYTES` - Bytes to erase from `--erase-start`: decimal, `0x` hex, or a `K`/`M` suffix such as `2M`.
 - `--halt / --no-halt` - Halt device after flashing (default: no-halt)
@@ -304,12 +304,13 @@ lager debug [NET_NAME] memrd START_ADDR LENGTH [OPTIONS]
 
 **Arguments:**
 - `START_ADDR` - Starting memory address (e.g., 0x20000000)
-- `LENGTH` - Number of bytes to read
+- `LENGTH` - Number of bytes to read, decimal or `0x` hex
 
 **Options:**
 - `--box TEXT` - Lager Box name or IP
 - `--json` - Output results in JSON format
-- `--halt / --no-halt` - Halt device during read (default: no-halt). `--no-halt` overrides the auto-halt for DA1469x QSPI XIP
+- `--halt` - Halt the device during the read
+- `--no-halt` - Leave the target running. This overrides the auto-halt for DA1469x QSPI XIP. `--halt` and `--no-halt` are two separate flags, and both are off by default
 - `--no-reset` - **DA1469x only.** Skip the reset+halt the box performs before the read. A running DA1469x has SWD disabled, so without the reset the read fails — use this only on a blank/awake part to avoid rebooting it
 
 **Examples:**
@@ -420,10 +421,12 @@ lager debug health --box my-lager-box --verbose
 Debug Service Health:
   Status: healthy
   Version: 1.2.0
-  Uptime: 2.5 days (216000s)
+  Features: erase_range, halt, connect_transport
+  Uptime: 2.50 days (216000s)
   J-Link Running: True
   J-Link PID: 12345
   GDB Controllers Cached: 1
+  GDB Max Use Count: 0
   Active Connections: 1
 ```
 
@@ -724,6 +727,7 @@ Devices not in the table above default to Cortex-M4 (ARMv7E-M) architecture. If 
 - Memory reads are more reliable with `--halt` to pause the CPU
 - Use `lager debug health --verbose` to diagnose connection issues
 - JLinkScript files are base64-encoded for storage and decoded automatically on the box
+- The box runs one J-Link operation per probe at a time, so a flash and a reset on the same probe cannot interleave. A second command waits for the first. If it waits more than 300 seconds, the box answers 503 with a probe-busy error
 
 ## See Also
 

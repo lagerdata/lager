@@ -59,7 +59,10 @@ lager devenv create
 |--------|---------|-------------|
 | `--image TEXT` | `lagerdata/devenv-cortexm` | Docker image to use |
 | `--mount-dir TEXT` | `/app` | Where your source code is mounted inside the container |
-| `--shell TEXT` | `/bin/bash` | Shell executable inside the image |
+| `--shell TEXT` | `/bin/bash` for `lagerdata/*` images | Shell executable inside the image |
+
+With no options, `create` prompts for the image and the mount directory and offers the
+defaults above. Give `--image` and `--mount-dir` to create the section without prompts.
 
 The image name is validated against standard Docker naming (`name`,
 `name:tag`, `registry/name`, `registry/name:tag`). For `lagerdata/*` images the
@@ -178,7 +181,7 @@ you omit the command string, `add` prompts for it.
 | Subcommand | Option | Description |
 | --- | --- | --- |
 | `add` | `--warn` / `--no-warn` | Warn when overwriting an existing command (default: `--warn`) |
-| `delete` | `--devenv NAME` | Delete the command from a named devenv rather than the current one |
+| `delete` | `--devenv NAME` | Accepted, but has no effect. `delete` always edits the devenv of the current project ([#840](https://github.com/lagerdata/lager/issues/840)) |
 
 ---
 
