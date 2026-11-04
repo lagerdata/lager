@@ -20,7 +20,7 @@ lager defaults add --box my-lager-box
 # Set default nets for common instrument types
 lager defaults add --supply-net POWER
 lager defaults add --debug-net DEBUG_NET
-lager defaults add --i2c-net I2C_0
+lager defaults add --uart-net UART_0
 ```
 
 With defaults set, you can run commands more concisely (e.g., `lager supply voltage 3.3` instead of `lager supply POWER voltage 3.3 --box my-lager-box`). See the [defaults reference](/source/reference/cli/defaults) for all options.

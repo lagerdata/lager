@@ -17,7 +17,7 @@ lager spi [NETNAME] [OPTIONS] [SUBCOMMAND]
 
 | 参数 | 说明 |
 |----------|-------------|
-| `NETNAME` | SPI Net 名称（通过 `lager defaults add --spi-net` 设置了默认值时可省略） |
+| `NETNAME` | SPI Net 名称。不给名称也不给子命令时，命令会列出 SPI Net |
 
 ## 选项
 
@@ -166,7 +166,7 @@ lager spi NETNAME write DATA [OPTIONS]
 
 | 参数 | 说明 |
 |----------|-------------|
-| `DATA` | 要写入的十六进制数据（例如 `0x9f01020304`） |
+| `DATA` | 要写入的十六进制数据（例如 `"9f 01 02 03 04"`） |
 
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
@@ -183,29 +183,36 @@ lager spi NETNAME write DATA [OPTIONS]
 
 ```bash
 # Send JEDEC ID command and read response
-lager spi MY_SPI write 0x9f01020304
+lager spi MY_SPI write "9f 01 02 03 04"
 
 # Write with mode override
-lager spi MY_SPI write 0x0102 --mode 3
+lager spi MY_SPI write "01 02" --mode 3
 
 # Write and keep CS low for continued transfer
-lager spi MY_SPI write 0x03000000 --keep-cs
+lager spi MY_SPI write "03 00 00 00" --keep-cs
 ```
 
 ---
 
 ## 十六进制数据格式
 
-数据参数接受多种十六进制写法。解析方式取决于字长：
+数据参数接受多种十六进制写法。解析方式取决于字长。
 
-**8 位字长（默认）：**
+**分隔的数值（任意字长）：**
+
+| 格式 | 示例 | 解析为 |
+|--------|---------|-----------|
+| 空格分隔 | `9f 01 02` | `[0x9f, 0x01, 0x02]` |
+| 逗号分隔 | `9f,01,02` | `[0x9f, 0x01, 0x02]` |
+
+**连写十六进制并给出 `--word-size 8`：**
 
 | 格式 | 示例 | 解析为 |
 |--------|---------|-----------|
 | 带前缀连写 | `0x9f01` | `[0x9f, 0x01]` |
 | 不带前缀连写 | `9f01` | `[0x9f, 0x01]` |
-| 空格分隔 | `9f 01 02` | `[0x9f, 0x01, 0x02]` |
-| 逗号分隔 | `9f,01,02` | `[0x9f, 0x01, 0x02]` |
+
+只有给出 `--word-size 8` 时，CLI 才会把连写的十六进制拆成字节。不给 `--word-size` 时，`0x9f01` 是一个数值，8 位 Net 会因超出范围而拒绝它。在 8 位 Net 上，请把字节分隔开，或加上 `--word-size 8`。
 
 **16 位或 32 位字长：**
 
@@ -226,7 +233,9 @@ lager spi MY_SPI write 0x03000000 --keep-cs
 |--------|---------|-------|
 | 十六进制带前缀 | `0xff` | 255 |
 | 十六进制不带前缀 | `ff` | 255 |
-| 十进制 | `255` | 255 |
+| 十进制，三位数 | `255` | 255 |
+
+一位或两位数字总是按十六进制读取：`10` 是 16，而不是 10。较小的十进制数值请用十六进制书写，例如用 `0x0a` 表示 10。
 
 ---
 
@@ -289,7 +298,7 @@ lager nets add FLASH_CS gpio FIO4 <U3_ADDRESS> --box my-lager-box
 
 # CS stays low across both transfers
 lager gpo FLASH_CS low --box my-lager-box
-lager spi FLASH write 0x03001000 --box my-lager-box
+lager spi FLASH write "03 00 10 00" --box my-lager-box
 lager spi FLASH read 32 --box my-lager-box
 lager gpo FLASH_CS high --box my-lager-box
 ```
@@ -407,7 +416,7 @@ lager spi MY_SPI read 4
 
 ## 说明
 
-- 默认 SPI Net 可以用 `lager defaults add --spi-net NETNAME` 设置
+- `lager defaults` 没有 SPI Net 选项，因此请在每条命令中给出 Net 名称
 - 请求 800 kHz 及以上时，LabJack T7 约以 800 kHz 运行。请求在约 1 kHz 到 800 kHz 之间的多字节传输，约以 1 kHz 运行
 - LabJack U3 约在 5.4 kHz 至 71.4 kHz 之间运行，`config` 会打印硬件实际使用的速率
 - SPI 是全双工的：数据总是同时发送和接收

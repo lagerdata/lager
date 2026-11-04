@@ -164,7 +164,7 @@ flowchart TB
   Port 22 is the exception. SSH is the host's own daemon rather than a published container port,
   so `--no-publish` does not affect it.
 
-  A box set to `lager box-config network-mode host` also publishes no ports. There, the
+  A box set to `lager box-config network-mode set host` also publishes no ports. There, the
   container binds the ports on the host directly, and the host firewall governs them.
 </Note>
 
@@ -220,14 +220,12 @@ The record backing `psu1` looks like this:
 ```json
 {
   "name": "psu1",
-  "type": "power-supply",
-  "channel": 1,
-  "instrument": {
-    "name": "rigol-dp832",
-    "address": "USB0::0x1AB1::0x0E11::..."
-  },
-  "params": {
-    "voltage_limit": 5.0
+  "role": "power-supply",
+  "address": "USB0::0x1AB1::0x0E11::...",
+  "instrument": "Rigol_DP832",
+  "pin": "1",
+  "safety_limits": {
+    "max_voltage": 5.0
   }
 }
 ```
@@ -239,23 +237,28 @@ working.
 
 | Net Type | Instruments |
 |----------|-------------|
-| `power-supply` | Rigol DP800, Keithley 2200/2280, Keysight E36x00 |
+| `power-supply` | Rigol DP711, DP811, DP821, DP831, DP832; Keysight E36233A, E36312A, E36313A; Keithley 2281S; Siglent SPD1168X; EA PSB 10060-60, 10080-60 |
 | `battery` | Keithley 2281S |
 | `eload` | Rigol DL3021 |
-| `solar` | EA PSI / EL series |
-| `analog` | Rigol MSO5000 (oscilloscope analog channel) |
-| `logic` | Rigol MSO5000 (logic analyzer channel) |
+| `solar` | EA PSB 10060-60, 10080-60 |
+| `scope` | Rigol MSO5204, Rigol DS1000Z, PicoScope (the instrument) |
+| `scope-channel` | Rigol MSO5204, Rigol DS1000Z, PicoScope (one analog channel) |
+| `logic` | Rigol MSO5204 (logic analyzer channel) |
 | `adc` | LabJack T7, LabJack U3, USB-202 |
 | `dac` | LabJack T7, LabJack U3, USB-202 |
-| `gpio` | LabJack T7, LabJack U3, USB-202 |
+| `gpio` | LabJack T7, LabJack U3, USB-202, FT232H, FT2232H, FT4232H, Aardvark, YKUSH3 |
 | `thermocouple` | Phidget thermocouple |
-| `watt` | Yocto-Watt, Joulescope JS220 |
-| `debug` | J-Link (J-Link GDB server); ST-Link, CMSIS-DAP and FTDI debug adapters (OpenOCD) |
-| `uart` | USB-to-serial adapters |
-| `i2c` | Aardvark, LabJack T7, LabJack U3, FT232H |
-| `spi` | LabJack T7, LabJack U3, FT232H |
+| `dmm` | Siglent SDM3065X |
+| `watt-meter` | Yocto-Watt, Joulescope JS220, Nordic PPK2 |
+| `energy-analyzer` | Joulescope JS220, Nordic PPK2 |
+| `debug` | J-Link (J-Link GDB server); ST-Link, CMSIS-DAP, Picoprobe, Atmel EDBG and FTDI debug adapters (OpenOCD) |
+| `uart` | USB-to-serial adapters (FTDI, CP210x, Prolific, ESP32 JTAG serial) |
+| `i2c` | Aardvark, LabJack T7, LabJack U3, FT232H, FT2232H, FT4232H |
+| `spi` | Aardvark, LabJack T7, LabJack U3, FT232H, FT2232H, FT4232H |
 | `arm` | Rotrics Dexarm |
-| `usb-hub` | Acroname, YKUSH, Plugable |
+| `usb` | Acroname, YKUSH, YKUSH3, Plugable |
+| `webcam` | UVC cameras, including Logitech, IPEVO and ELP models |
+| `hsm` | YubiHSM 2 |
 
 ## Execution Flows
 

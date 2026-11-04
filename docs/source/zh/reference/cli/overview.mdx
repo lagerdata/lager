@@ -102,12 +102,12 @@ lager debug flash --hex "$FIRMWARE_PATH" --box "$LAGER_BOX"
 # 2. Power on the device
 echo "--> Enabling power..."
 lager supply "$VOLTAGE_NET" voltage 3.3 --box "$LAGER_BOX" --yes
-lager supply "$VOLTAGE_NET" enable --box "$LAGER_BOX"
+lager supply "$VOLTAGE_NET" enable --box "$LAGER_BOX" --yes
 sleep 2
 
 # 3. Take a sensor reading
 echo "--> Reading sensor..."
-READING=$(lager adc "$SENSOR_NET" --box "$LAGER_BOX")
+READING=$(lager adc "$SENSOR_NET" --box "$LAGER_BOX" --json | jq .voltage)
 echo "Sensor reading: $READING V"
 
 # 4. Check if value is within expected range

@@ -15,7 +15,7 @@ lager spi [NETNAME] [OPTIONS] [SUBCOMMAND]
 
 | Argument | Description |
 |----------|-------------|
-| `NETNAME` | SPI net name (optional if default is set via `lager defaults add --spi-net`) |
+| `NETNAME` | SPI net name. With no name and no subcommand, the command lists the SPI nets |
 
 ## Options
 
@@ -164,7 +164,7 @@ lager spi NETNAME write DATA [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `DATA` | Hex data to write (e.g., `0x9f01020304`) |
+| `DATA` | Hex data to write (e.g., `"9f 01 02 03 04"`) |
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -181,29 +181,38 @@ lager spi NETNAME write DATA [OPTIONS]
 
 ```bash
 # Send JEDEC ID command and read response
-lager spi MY_SPI write 0x9f01020304
+lager spi MY_SPI write "9f 01 02 03 04"
 
 # Write with mode override
-lager spi MY_SPI write 0x0102 --mode 3
+lager spi MY_SPI write "01 02" --mode 3
 
 # Write and keep CS low for continued transfer
-lager spi MY_SPI write 0x03000000 --keep-cs
+lager spi MY_SPI write "03 00 00 00" --keep-cs
 ```
 
 ---
 
 ## Hex Data Formats
 
-Data arguments accept multiple hex formats. Parsing behavior depends on word size:
+Data arguments accept multiple hex formats. Parsing behavior depends on word size.
 
-**8-bit word size (default):**
+**Separated values (any word size):**
+
+| Format | Example | Parsed As |
+|--------|---------|-----------|
+| Space-separated | `9f 01 02` | `[0x9f, 0x01, 0x02]` |
+| Comma-separated | `9f,01,02` | `[0x9f, 0x01, 0x02]` |
+
+**Continuous hex with `--word-size 8`:**
 
 | Format | Example | Parsed As |
 |--------|---------|-----------|
 | Prefixed continuous | `0x9f01` | `[0x9f, 0x01]` |
 | Unprefixed continuous | `9f01` | `[0x9f, 0x01]` |
-| Space-separated | `9f 01 02` | `[0x9f, 0x01, 0x02]` |
-| Comma-separated | `9f,01,02` | `[0x9f, 0x01, 0x02]` |
+
+The CLI splits continuous hex into bytes only when you give `--word-size 8`. Without
+`--word-size`, `0x9f01` is one value, and an 8-bit net refuses it as out of range. On an
+8-bit net, separate the bytes or add `--word-size 8`.
 
 **16-bit or 32-bit word size:**
 
@@ -224,7 +233,10 @@ The `--fill` option accepts hex or decimal values:
 |--------|---------|-------|
 | Hex prefixed | `0xff` | 255 |
 | Hex unprefixed | `ff` | 255 |
-| Decimal | `255` | 255 |
+| Decimal, three digits | `255` | 255 |
+
+One or two digits are always read as hex: `10` is 16, not 10. Write a small decimal value
+in hex, such as `0x0a` for 10.
 
 ---
 
@@ -284,7 +296,7 @@ lager nets add FLASH_CS gpio FIO4 <U3_ADDRESS> --box my-lager-box
 
 # CS stays low across both transfers
 lager gpo FLASH_CS low --box my-lager-box
-lager spi FLASH write 0x03001000 --box my-lager-box
+lager spi FLASH write "03 00 10 00" --box my-lager-box
 lager spi FLASH read 32 --box my-lager-box
 lager gpo FLASH_CS high --box my-lager-box
 ```
@@ -402,7 +414,7 @@ lager spi MY_SPI read 4
 
 ## Notes
 
-- Default SPI net can be set with `lager defaults add --spi-net NETNAME`
+- `lager defaults` has no SPI net option, so give the net name in each command
 - LabJack T7 runs at about 800 kHz for a request of 800 kHz or more. A multi-byte transfer with a request between about 1 kHz and 800 kHz runs at about 1 kHz
 - LabJack U3 runs from about 5.4 kHz to 71.4 kHz, and `config` prints the rate that the hardware uses
 - SPI is full-duplex: data is always sent and received simultaneously

@@ -44,7 +44,7 @@ Integrate current and power over a configurable duration. Returns energy in joul
 
 | Argument | Description |
 |----------|-------------|
-| `NET_NAME` | Name of the energy-analyzer net (optional if default is set) |
+| `NET_NAME` | Name of the energy-analyzer net. `lager defaults` has no energy-analyzer option |
 
 ### Output
 
@@ -62,9 +62,6 @@ lager energy POWER_METER read --box my-lager-box
 
 # Integrate over 60 seconds
 lager energy POWER_METER read --box my-lager-box --duration 60
-
-# Use the default net
-lager energy read
 ```
 
 ---
@@ -86,7 +83,7 @@ Compute mean, minimum, maximum, and standard deviation for current, voltage, and
 
 | Argument | Description |
 |----------|-------------|
-| `NET_NAME` | Name of the energy-analyzer net (optional if default is set) |
+| `NET_NAME` | Name of the energy-analyzer net. `lager defaults` has no energy-analyzer option |
 
 ### Output
 
@@ -105,27 +102,9 @@ lager energy POWER_METER stats --box my-lager-box
 
 # Stats over 5 seconds for better averaging
 lager energy POWER_METER stats --box my-lager-box --duration 5
-
-# Use the default net
-lager energy stats
 ```
 
 ---
-
-## Default Net
-
-To avoid specifying the net name each time:
-
-```bash
-lager defaults add --energy-net POWER_METER
-```
-
-Then:
-
-```bash
-lager energy read
-lager energy stats
-```
 
 ## Supported Hardware
 

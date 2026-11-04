@@ -712,6 +712,8 @@ lager scope NET_NAME cursor [--box BOX]
 lager scope NET_NAME cursor time T1 T2 [--box BOX]
 ```
 
+CLI 会把负值当作选项。请把 `--` 放在两个值之前、所有选项之后：`lager scope NET_NAME cursor time --box BOX -- -0.001 0.002`。`cursor volts` 也是如此。
+
 回复给出两个光标之间的时间间隔、作为频率的间隔倒数，以及每个光标下波形的电压。因此，相隔一个周期的一对光标会直接显示频率。Box 在采样点之间插值计算电压，因为光标停留在您放置的位置，而不是对齐到采样网格。
 
 ### `cursor volts`
@@ -1125,7 +1127,7 @@ lager scope ANALOG1 trigger spi \
 
 ```bash
 # PicoScope: measure the time between two events, and read it back
-lager scope PICO1 cursor time -0.001 0.002 --box my-lager-box
+lager scope PICO1 cursor time --box my-lager-box -- -0.001 0.002
 lager scope PICO1 cursor --box my-lager-box
 
 # Rigol: measure the voltage difference with the display cursors

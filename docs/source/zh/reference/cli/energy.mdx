@@ -44,7 +44,7 @@ lager energy --box my-lager-box
 
 | 参数 | 说明 |
 |----------|-------------|
-| `NET_NAME` | 能量分析仪 Net 的名称（设置了默认值时可省略） |
+| `NET_NAME` | 能量分析仪 Net 的名称。`lager defaults` 没有能量分析仪选项 |
 
 ### 输出
 
@@ -62,9 +62,6 @@ lager energy POWER_METER read --box my-lager-box
 
 # Integrate over 60 seconds
 lager energy POWER_METER read --box my-lager-box --duration 60
-
-# Use the default net
-lager energy read
 ```
 
 ---
@@ -86,7 +83,7 @@ lager energy read
 
 | 参数 | 说明 |
 |----------|-------------|
-| `NET_NAME` | 能量分析仪 Net 的名称（设置了默认值时可省略） |
+| `NET_NAME` | 能量分析仪 Net 的名称。`lager defaults` 没有能量分析仪选项 |
 
 ### 输出
 
@@ -105,27 +102,9 @@ lager energy POWER_METER stats --box my-lager-box
 
 # Stats over 5 seconds for better averaging
 lager energy POWER_METER stats --box my-lager-box --duration 5
-
-# Use the default net
-lager energy stats
 ```
 
 ---
-
-## 默认 Net
-
-为避免每次都输入 Net 名称：
-
-```bash
-lager defaults add --energy-net POWER_METER
-```
-
-之后：
-
-```bash
-lager energy read
-lager energy stats
-```
 
 ## 受支持的硬件
 

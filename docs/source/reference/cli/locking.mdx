@@ -355,5 +355,5 @@ were unfixable in that design:
 | *"Detached processes left stale locks"*                      | All ephemeral locks have `ttl_seconds=1800` + heartbeat every 60s. If the CLI dies, the box reaps the lock within one TTL. `--detach` (on `lager python` only) has no CLI left to heartbeat, so the box holds that lock for exactly as long as the job it launched and releases it when the job ends — including a job that fails to start, which used to leave the box locked with nothing running on it. |
 
 `--force-command` is **gone**. Collision policy is structured (fail-fast
-in dev, queue in CI) and the existing `lager boxes lock --force` is the
+in dev, queue in CI) and the existing `lager boxes unlock --force` is the
 escape hatch when you genuinely need to override.

@@ -15,7 +15,7 @@ lager i2c [NETNAME] [OPTIONS] [SUBCOMMAND]
 
 | Argument | Description |
 |----------|-------------|
-| `NETNAME` | I2C net name (optional if default is set via `lager defaults add --i2c-net`) |
+| `NETNAME` | I2C net name. With no name and no subcommand, the command lists the I2C nets |
 
 ## Options
 
@@ -373,7 +373,7 @@ lager i2c MY_I2C read 6 --address 0x76
 
 ## Notes
 
-- Default I2C net can be set with `lager defaults add --i2c-net NETNAME`
+- `lager defaults` has no I2C net option, so give the net name in each command
 - LabJack T7 runs from about 130 Hz to 450 kHz. LabJack U3 runs from about 10 kHz to 150 kHz
 - `config` prints the clock rate that a LabJack U3 uses, which can differ from the request
 - Aardvark adapters support internal pull-ups that can be toggled via `config --pull-ups`

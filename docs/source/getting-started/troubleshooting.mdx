@@ -276,7 +276,7 @@ or a `docker exec`.
    psu.set_voltage(3.3)
    ```
 2. Check what already holds the address with `lager diagnose <net> --box <box>`. A VISA section
-   that reports `REACHABLE (shared session)` means the hardware service holds it and skipped
+   that reports `REACHABLE (hw_service has an active shared session for this address; ...)` means the hardware service holds it and skipped
    its own probe. See [`lager diagnose`](/source/reference/cli/diagnose).
 3. To open the instrument yourself, take the same cross-process lock the drivers take.
 

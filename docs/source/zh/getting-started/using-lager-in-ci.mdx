@@ -29,7 +29,7 @@ steps:
 ```yaml
 runs-on: [self-hosted, lager-bench]
 steps:
-  - run: pip install lager-cli==0.47.0
+  - run: pip install lager-cli==0.62.0
   - run: lager login "$AUTH_URL" --email "$EMAIL" --password "$PASSWORD"
   - run: lager boxes add --name BENCH-1 --ip "$BOX_IP" --user lagerdata --yes
   - run: lager python tests/hil --box BENCH-1
@@ -194,7 +194,7 @@ CLI 在 `~/.lager` 的 `BOXES` 段中查找 `--box` 的值。这个文件是 JSO
 ```json
 {
   "BOXES": {
-    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.47.0" }
+    "BENCH-1": { "ip": "10.0.1.42", "user": "lagerdata", "version": "0.62.0" }
   },
   "DEFAULTS": { "gateway_id": "BENCH-1" }
 }
@@ -229,6 +229,8 @@ CLI 按以下顺序查找，排在前面的优先级更高。
 4. 如果都没有找到，CLI 会报错。
 
 请在作业的 `env:` 块中一次性设置 `LAGER_BOX`，然后在各个步骤中不再使用 `--box`。这样每个实验台上的工作流都相同。要更改 Box 的名称，您只需改一行。
+
+`lager boxes lock` 和 `lager boxes unlock` 不读取 `LAGER_BOX`。它们的 `--box` 选项是必需的，因此请在这些步骤中给出：`--box "$LAGER_BOX"`。
 
 ```yaml
 jobs:
@@ -432,11 +434,12 @@ Box 只为完全相同的持有者字符串释放锁。因此 `lager boxes unloc
 
 - `lager python`
 - 仪器命令 `adc`、`dac`、`gpi`、`gpo`、`thermocouple`、`watt`、
-  `energy`、`scope`、`logic`
+  `energy`、`dmm`、`scope`、`logic`
 - 通信命令 `spi`、`i2c`、`uart`、`usb`、`wifi`、`ble`、
   `blufi`、`router`
 - 电源命令 `supply`、`battery`、`eload`、`solar`
-- 设备命令 `debug`、`arm`、`webcam`
+- 设备命令 `debug`、`arm`、`webcam`、`hsm`
+- `lager custom` 以及自定义驱动的命令
 - 管理命令 `install`、`uninstall`、`update`、`install-wheel`
 
 以下命令不使用锁：
@@ -676,7 +679,7 @@ Box 提供 Python 环境、仪器驱动程序、Net 定义和 Lager Box 软件�
 
 ```bash
 lager update --box BENCH-1 --version main --yes
-lager update --box BENCH-1 --version v0.47.0 --yes
+lager update --box BENCH-1 --version v0.62.0 --yes
 ```
 
 `--version` 接受发布标签或版本号，开头可以带 `v`，也可以不带。它也接受分支名称或完整的 40 位提交 SHA。默认值是 `main`。其他标志有 `--force`、`--pull`、
@@ -696,7 +699,7 @@ lager box-config pip list --box BENCH-1
 导出配置并导入到其他实验台，可以让各个实验台保持一致：
 
 ```bash
-lager box-config export --box BENCH-1 -o bench-config.json
+lager box-config export bench-config.json --box BENCH-1
 lager box-config import bench-config.json --box BENCH-2
 ```
 
@@ -1277,6 +1280,8 @@ CLI 把会话保存在运行器账户的主目录中，并会自动续期。
 lager login https://gateway.example.com
 lager whoami
 ```
+
+使用单点登录的账户没有可输入的密码。请使用 `lager login https://gateway.example.com --web --no-browser`。CLI 会打印一个链接。在任意计算机上打开它，然后粘贴它显示的代码。
 
 有些情况需要在作业中登录，例如运行器在另一台计算机上且没有令牌，或者 Box 会被定期重装。这些情况请使用以下标志：
 
