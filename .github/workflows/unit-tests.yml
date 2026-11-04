@@ -232,6 +232,28 @@ jobs:
           echo "resolved mcp provides every surface the server imports"
         shell: bash
 
+      - name: Prove the engine image's requirement resolves alone and with the box's
+        # engine.Dockerfile installs ONLY requirements-engine.txt and ships
+        # box/lager/mcp under an empty lager/__init__.py. Reproduce that: a
+        # clean venv with that file alone must import the service. Then the
+        # engine and mcp requirements must resolve together, so the box and
+        # the image cannot end up on different pydantic majors.
+        run: |
+          python -m venv "$RUNNER_TEMP/engine-only"
+          "$RUNNER_TEMP/engine-only/bin/pip" install --quiet \
+            -r box/lager/docker/requirements-engine.txt
+          stub="$RUNNER_TEMP/engine-stub"
+          mkdir -p "$stub/lager"
+          : > "$stub/lager/__init__.py"
+          cp -R box/lager/mcp "$stub/lager/mcp"
+          PYTHONPATH="$stub" "$RUNNER_TEMP/engine-only/bin/python" -I -c \
+            "import sys; sys.path.insert(0, '$stub'); import lager.mcp.engine_service.app"
+          "$RUNNER_TEMP/engine-only/bin/pip" install --quiet --dry-run \
+            -r box/lager/docker/requirements-engine.txt \
+            -r box/lager/docker/requirements-mcp.txt
+          echo "engine requirement imports the service and co-resolves with mcp"
+        shell: bash
+
       - name: Install the CLI, the box mcp requirement and the test deps
         run: |
           pip install -e "cli/"

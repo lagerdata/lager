@@ -465,6 +465,7 @@ jobs:
           pip install --upgrade pip setuptools
           pip install -e "cli/"
           pip install -r box/lager/docker/requirements-mcp.txt
+          pip install -r box/lager/docker/requirements-engine.txt
           pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
           pip install -r test/requirements-unit.txt
           pip install 'pip-audit==2.10.1'

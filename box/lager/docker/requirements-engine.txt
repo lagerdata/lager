@@ -1,0 +1,15 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# The bench engine service (`python -m lager.mcp.engine_service`), built into
+# its own image by engine.Dockerfile. It needs the pure engine's pydantic plus
+# an ASGI stack, and nothing else from the box.
+#
+# On the box these packages arrive only through the MCP SDK (requirements-mcp.txt),
+# so the bounds here sit inside the SDK's own floors (pydantic>=2.12,
+# starlette>=0.48, uvicorn>=0.31.1 for mcp 2.x). A test asserts the engine's
+# set still resolves together with the SDK's, so the box and the image cannot
+# drift onto different pydantic majors.
+pydantic>=2.12,<3
+starlette>=0.48,<2
+uvicorn>=0.31.1,<1

@@ -23,6 +23,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   reports `dut_updated_at`, the later of the clock a writer records and the file's
   mtime, so a control plane that keeps its own copy can tell which side is newer;
   `lager dut edit` and `add-doc` record that clock too.
+- **The bench engine service answers bench questions about a stored manifest,
+  with no box attached.** `python -m lager.mcp.engine_service`, or the
+  `ghcr.io/lagerdata/lager-bench-engine` image published with each release,
+  takes the manifest a box published at `GET :9000/bench` in each request. It
+  returns the bench summary, one net's detail, the DUT context and briefing,
+  the documents behind a net, the `lager.Net` API reference, and whether the
+  bench can run a test, for one bench or a whole fleet. It is stateless and
+  never contacts a box, so it also answers for a box that is offline.
+  `test/mcp/fixtures/engine-views-golden.json` records every view for a fixed
+  set of manifests, so a tool that computes them itself can check it agrees.
 
 ## [0.62.0] - 2026-11-02
 

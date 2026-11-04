@@ -55,9 +55,9 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (box)` | `test/unit/box/` | 5227 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 425 |
+| `unit (mcp)` | `test/mcp/unit/` | 484 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9943** |
+| | **Total gated** | **10002** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -890,7 +890,7 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (`test/mcp/unit/` -- 17 files)
+#### Unit Tests (`test/mcp/unit/` -- 21 files)
 
 | File | What it tests |
 |------|---------------|
@@ -910,6 +910,10 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_server_app.py` | `lager.mcp.server.build_app` puts the bearer check in the request path of the BUILT app, each app runs the session manager its own route uses (the SDK makes a new one per build), and the startup posture lines warn when a control or exec tier is on with no token |
 | `test_net_types.py` | The one net-type table (`engine.net_types`): every `NetType` member has a row and every row's role resolves through `NetType.from_role` (the no-enum allowlist stays honest), every `reference` names an `API_REFERENCE` entry and the rows without one are exactly the documented exceptions, role and alias lookups resolve while an enum name is never aliased (`PowerSupply2Q` stays unanswered), and the bench loader, the capability graph and the planner's phase all read the same row |
 | `test_bench_manifest.py` | The bench manifest and what feeds it: `schema_version`, `box_id` and a content hash that ignores `generated_at`, changes with the bench and survives a JSON round trip; `capability_bindings` filled from the graph on a copy (the shared bench is never mutated); `reference_keys` per net and `reference_entries` for exactly those keys, as copies of the module dicts, inside the hash and bounded in size for a bench of every type; `dut_updated_at` as the later of the bench.json key and the file mtime, normalised to UTC; `metadata_sources` naming `bench.json` or `saved_net` per field, a malformed override not credited; the box-id chain (file, env, hostname) shared by the loader and every tool reply; the HTTP loader gone; scanner records flattened to descriptors; the instrument cache scanning once per TTL, remembering a failed scan for the TTL, sharing one scan across concurrent callers and handing out copies; and `get_test_example` returning per-type snippets plus a repository link with no file dependency |
+| `test_engine_fleet.py` | `lager.mcp.engine.fleet`, the views of a STORED manifest read as a plain dict: the module imports nothing box-side; role counts come from the stored bindings (an unknown role still counted); `box_id` falls back to the manifest's but an empty bench value is kept; an empty object reads as present (`calibration: {}` is unhealthy); empty net fields dropped while the owning subsystem and compact doc refs are attached; the no-nets / no-DUT / no-reference sentences replaceable through `messages` (an unknown key or an over-long value refused, the defaults name no host screen); cite's refs and its JSON `raw`, not-found and no-DUT shapes; reference `available` keyed on the field's presence (absent differs from `{}`) with gotchas and examples opt-in; suitability through the box's own engine, an unknown role skipped and named in `warnings`; and search isolating a bench that cannot be assessed |
+| `test_engine_service.py` | `lager.mcp.engine_service` driven as a raw ASGI callable: `/healthz` reports version, revision and max schema version; every view answers exactly what `engine.fleet` answers; `messages` passed through and an unknown key a 422; search per bench; a body that is not a manifest (missing, bad or boolean `schema_version`, non-object bench) and bad arguments refused with a reason; a NEWER manifest still answered; non-JSON 400, non-object 422; an oversized body 413 by declared length and while streaming; wrong method and unknown path answer JSON; the token required on every view but not health; and the entry point refusing a bad port and binding loopback by default |
+| `test_engine_service_isolation.py` | The service imports in a fresh interpreter under an EMPTY `lager/__init__.py` (as in the engine image) without loading the MCP SDK, the server, tools, resources, live state or any driver; `requirements-engine.txt` pins pydantic, starlette and uvicorn with a floor and a ceiling, never below the MCP SDK's floors; and `engine.Dockerfile` installs that file, probes the import and runs the service |
+| `test_engine_golden.py` | `test/mcp/fixtures/engine-views-golden.json` equals what `tools/gen_engine_golden.py` builds now (stale means an `engine.fleet` change was not regenerated), and every replaceable sentence appears as its `{{message:<key>}}` placeholder |
 | `test_test_patterns.py` | The agent-facing test-pattern catalog names only real `NetType` members, so a script an agent generates cannot fail on an enum member that does not exist |
 
 #### Integration Tests (`test/mcp/integration/` -- 1 file)

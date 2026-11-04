@@ -227,3 +227,69 @@ jobs:
           # quirks. Revisit when boxes are uniformly on Docker >= 24.
           provenance: false
           sbom: false
+
+  # The bench engine service image (box/lager/docker/engine.Dockerfile): the
+  # engine answering over HTTP for a host that stores bench manifests. Small
+  # (slim Python + pydantic + an ASGI server), so it needs no layer cache.
+  # Release tags only: a cache-only or rebuild dispatch is about the box image.
+  publish-engine-image:
+    name: publish-engine-image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE_NAME: ghcr.io/lagerdata/lager-bench-engine
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v*) ;;
+            *) echo "tag must look like vX.Y.Z (got: $tag)" >&2; exit 1 ;;
+          esac
+          {
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+          } >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+
+      - name: Resolve checked-out commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: box/lager
+          file: box/lager/docker/engine.Dockerfile
+          push: true
+          # amd64 only, like the box image: an arm64 build here would need a
+          # QEMU step to run the image's `pip install` under emulation.
+          platforms: linux/amd64
+          build-args: |
+            LAGER_ENGINE_VERSION=${{ steps.tag.outputs.tag }}
+            LAGER_ENGINE_REVISION=${{ steps.commit.outputs.sha }}
+            LAGER_ENGINE_SOURCE=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
+          provenance: false
+          sbom: false

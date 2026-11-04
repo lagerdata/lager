@@ -1,0 +1,104 @@
+---
+title: Bench Engine Service
+description: Run Lager's bench reasoning against stored bench manifests, with no box attached
+---
+
+The **bench engine service** answers the same bench questions as the on-box
+[MCP server](/source/reference/mcp/overview), but about a bench manifest that you
+send with each request. Use it when you keep copies of many boxes' manifests,
+for example in a fleet tool or a hosted agent endpoint. It works when a box is
+offline.
+
+The service is stateless. It does not connect to a box, run code, or drive
+hardware. Each request carries the manifest that a box published at
+`GET :9000/bench` (see [`lager bench export`](/source/reference/cli/bench)).
+
+```
+Your fleet tool
+    |  stores each box's manifest (GET :9000/bench)
+    |
+    |  POST /v1/<view>  {manifest, ...}
+    v
+Bench engine service (port 8200)
+    |  suitability, renderings, citations, API reference
+    v
+JSON answer
+```
+
+## Run it
+
+The image is published for each release as
+`ghcr.io/lagerdata/lager-bench-engine:<version>`:
+
+```bash
+docker run --rm -p 127.0.0.1:8200:8200 ghcr.io/lagerdata/lager-bench-engine:<version>
+curl http://127.0.0.1:8200/healthz
+```
+
+You can also run it from a checkout. It needs only `pydantic`, `starlette` and
+`uvicorn` (`box/lager/docker/requirements-engine.txt`):
+
+```bash
+PYTHONPATH=box python -m lager.mcp.engine_service
+```
+
+| Variable | Default | What it does |
+|---|---|---|
+| `LAGER_ENGINE_HOST` | `127.0.0.1` (`0.0.0.0` in the image) | Bind address |
+| `LAGER_ENGINE_PORT` | `8200` | Port |
+| `LAGER_ENGINE_TOKEN` | not set | When set, every view requires it in the `X-Lager-Engine-Token` header |
+
+<Warning>
+The service has no other access control. Publish its port on loopback only, as
+in the example above. If other hosts must reach it, set `LAGER_ENGINE_TOKEN`.
+</Warning>
+
+## Views
+
+Every view is a `POST` with a JSON body. `manifest` is the manifest a box
+published, unchanged.
+
+| Path | Body | Answer |
+|---|---|---|
+| `/v1/summary` | `manifest` | Box identity, DUT slots, instruments, nets, interfaces, capability counts |
+| `/v1/net` | `manifest`, `net` | `{net}`: everything about one net, or `null` |
+| `/v1/dut` | `manifest` | The DUT slots in full |
+| `/v1/dut-overview` | `manifest` | `{markdown}`: a DUT briefing |
+| `/v1/cite` | `manifest`, `net` | The DUT, subsystem and documents for one net |
+| `/v1/reference` | `manifest`, `nets` (optional), `include_gotchas`, `include_examples` | `{available, keys, text}`: the `lager.Net` API reference for the bench |
+| `/v1/suitability` | `manifest`, `description` | `{requirement, report}`: whether the bench can run a test |
+| `/v1/search` | `description`, `benches` | One report per bench |
+
+`GET /healthz` returns the engine version and the newest manifest
+`schema_version` it was written for. It does not require the token.
+
+`/v1/search` takes each bench as `{key, box_id, capability_bindings}`, not the
+full manifest, so one request can cover a large fleet. A bench that cannot be
+assessed gets `{error}` under its key. The other benches are not affected. The
+service does not rank the results, because only the caller knows which boxes are
+online.
+
+### Your own wording
+
+Some answers contain a sentence that tells the reader what to do next, for
+example the warning for a box with no DUT context. The default sentences name
+`lager` commands. To point at your own tool instead, send `messages` with any of
+these keys: `advisory_note`, `no_nets`, `no_dut`, `cite_no_dut`, `docs_note`,
+`cite_guidance`, `reference_unavailable`. An unknown key is a `422`.
+
+## Manifest versions
+
+The service answers a manifest with a newer `schema_version` than it knows.
+Fields are only added within a schema version, and the views read the stable
+fields. A capability with a role the service does not know is skipped, and the
+suitability answer names it in `warnings`.
+
+A body that is not a manifest is a `422` with the reason in `error`. A body over
+2 MB is a `413`.
+
+## Check a reimplementation
+
+`test/mcp/fixtures/engine-views-golden.json` records every view for a fixed set
+of manifests. A tool that computes these views itself can compare its output
+with this file. Replaceable sentences are recorded as `{{message:<key>}}`.
+Regenerate the file with `python tools/gen_engine_golden.py`.

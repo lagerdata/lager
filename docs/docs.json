@@ -294,7 +294,8 @@
                 "group": "Model Context Protocol",
                 "pages": [
                   "source/reference/mcp/overview",
-                  "source/reference/mcp/dut-context"
+                  "source/reference/mcp/dut-context",
+                  "source/reference/mcp/engine-service"
                 ]
               }
             ]

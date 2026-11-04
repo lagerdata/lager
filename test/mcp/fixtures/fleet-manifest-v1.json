@@ -1,0 +1,379 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-23T22:22:05Z",
+  "content_hash": "94174efb851e8ec9a1d1915e28a061d2d356143237918407a3453d5f873928f0",
+  "box_id": "box-fixture",
+  "bench": {
+    "box_id": "box-fixture",
+    "hostname": "bench-fixture",
+    "version": "0.50.0",
+    "dut_slots": [
+      {
+        "name": "demo-board",
+        "active": true,
+        "board_profile": null,
+        "firmware": null,
+        "purpose": "bring-up target",
+        "summary": "",
+        "mcu": "nRF52840",
+        "key_peripherals": [
+          "accelerometer"
+        ],
+        "schematic_refs": [
+          {
+            "title": "Main schematic",
+            "kind": "schematic",
+            "url": null,
+            "repo_path": null,
+            "external_id": "doc-1",
+            "external_url": null,
+            "pages": "3-4",
+            "notes": null
+          }
+        ],
+        "datasheet_refs": [],
+        "firmware_refs": [],
+        "extra_docs": [],
+        "subsystems": [
+          {
+            "name": "power",
+            "summary": "3V3 rail",
+            "nets": [
+              "vin"
+            ],
+            "doc_refs": []
+          }
+        ]
+      }
+    ],
+    "dut_updated_at": "2026-09-23T10:00:00Z",
+    "instruments": [],
+    "nets": [
+      {
+        "name": "vin",
+        "aliases": [],
+        "net_type": "power-supply",
+        "electrical_type": "power",
+        "voltage_domain": null,
+        "directionality": "bidirectional",
+        "controllable": true,
+        "observable": true,
+        "roles": [
+          "source_power",
+          "drive",
+          "measure",
+          "sweep_voltage"
+        ],
+        "safety_limits": null,
+        "timing_constraints": null,
+        "instrument": "supply1",
+        "channel": "1",
+        "params": {},
+        "purpose": "DUT main rail",
+        "notes": "",
+        "tags": [
+          "power"
+        ],
+        "dut_connection": "",
+        "test_hints": []
+      },
+      {
+        "name": "uart0",
+        "aliases": [],
+        "net_type": "uart",
+        "electrical_type": "protocol",
+        "voltage_domain": null,
+        "directionality": "bidirectional",
+        "controllable": true,
+        "observable": true,
+        "roles": [
+          "observe",
+          "protocol_master"
+        ],
+        "safety_limits": null,
+        "timing_constraints": null,
+        "instrument": "ftdi1",
+        "channel": "",
+        "params": {},
+        "purpose": "console",
+        "notes": "",
+        "tags": [],
+        "dut_connection": "J3 pins 2-3",
+        "test_hints": [
+          "115200 8N1"
+        ]
+      },
+      {
+        "name": "reset",
+        "aliases": [],
+        "net_type": "gpio",
+        "electrical_type": "digital",
+        "voltage_domain": null,
+        "directionality": "bidirectional",
+        "controllable": true,
+        "observable": true,
+        "roles": [
+          "drive",
+          "observe",
+          "control_state"
+        ],
+        "safety_limits": null,
+        "timing_constraints": null,
+        "instrument": "labjack1",
+        "channel": "FIO4",
+        "params": {},
+        "purpose": "",
+        "notes": "",
+        "tags": [],
+        "dut_connection": "",
+        "test_hints": []
+      }
+    ],
+    "interfaces": [
+      {
+        "name": "uart0",
+        "protocol": "uart",
+        "nets": [
+          "uart0"
+        ],
+        "roles": [
+          "observe",
+          "protocol_master"
+        ],
+        "max_frequency": null,
+        "supported_modes": null,
+        "notes": null
+      }
+    ],
+    "routing": [],
+    "constraints": null,
+    "calibration": {
+      "healthy": true,
+      "instruments": [],
+      "last_check": null
+    },
+    "capability_bindings": [
+      {
+        "role": "source_power",
+        "target": "vin",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": null
+      },
+      {
+        "role": "drive",
+        "target": "vin",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": null
+      },
+      {
+        "role": "measure",
+        "target": "vin",
+        "parameters": null,
+        "confidence": 0.9,
+        "notes": null
+      },
+      {
+        "role": "sweep_voltage",
+        "target": "vin",
+        "parameters": null,
+        "confidence": 0.9,
+        "notes": null
+      },
+      {
+        "role": "observe",
+        "target": "uart0",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": null
+      },
+      {
+        "role": "protocol_master",
+        "target": "uart0",
+        "parameters": null,
+        "confidence": 0.9,
+        "notes": null
+      },
+      {
+        "role": "drive",
+        "target": "reset",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": null
+      },
+      {
+        "role": "observe",
+        "target": "reset",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": null
+      },
+      {
+        "role": "control_state",
+        "target": "reset",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": null
+      },
+      {
+        "role": "run_local_program",
+        "target": "_box",
+        "parameters": null,
+        "confidence": 1.0,
+        "notes": "On-box Python execution via lager python service"
+      }
+    ],
+    "metadata_sources": {
+      "vin": {
+        "purpose": "saved_net",
+        "tags": "saved_net"
+      },
+      "uart0": {
+        "purpose": "saved_net",
+        "dut_connection": "saved_net",
+        "test_hints": "saved_net"
+      }
+    }
+  },
+  "reference_keys": {
+    "vin": "PowerSupply",
+    "uart0": "UART",
+    "reset": "GPIO"
+  },
+  "reference_entries": {
+    "GPIO": {
+      "net_type_enum": "NetType.GPIO",
+      "get_pattern": "gpio = Net.get(\"gpio1\", type=NetType.GPIO)",
+      "methods": [
+        {
+          "name": "input",
+          "sig": "input() -> int",
+          "desc": "Read the current state of the GPIO pin."
+        },
+        {
+          "name": "output",
+          "sig": "output(level: 'int | str') -> None",
+          "desc": "Set the output state of the GPIO pin."
+        },
+        {
+          "name": "wait_for_level",
+          "sig": "wait_for_level(level: 'int', timeout: 'float | None' = None, poll_interval: 'float' = 0.01, **kwargs) -> float",
+          "desc": "Block until the pin reaches the target level."
+        }
+      ],
+      "gotchas": [
+        "GPIO nets are LabJack/FT232H pins \u2014 they are box-side, not DUT-side. They drive signals INTO the DUT or read signals FROM the DUT.",
+        "wait_for_level raises on timeout \u2014 wrap in try/except if you want to handle it gracefully."
+      ],
+      "example_snippet": "from lager import Net, NetType\n\nbtn = Net.get(\"button1\", type=NetType.GPIO)\nled = Net.get(\"led1\", type=NetType.GPIO)\n\n# Simulate button press\nbtn.output(1)\nimport time; time.sleep(0.1)\n\n# Check DUT reacted\nassert led.input() == 1, \"LED did not turn on after button press\"\n\nbtn.output(0)\n",
+      "source_module": "lager.io.gpio.gpio_net.GPIOBase"
+    },
+    "PowerSupply": {
+      "net_type_enum": "NetType.PowerSupply",
+      "get_pattern": "psu = Net.get(\"supply1\", type=NetType.PowerSupply)",
+      "methods": [
+        {
+          "name": "clear_ocp",
+          "sig": "clear_ocp() -> None",
+          "desc": "Clear an over-current protection (OCP) trip on this net."
+        },
+        {
+          "name": "clear_ovp",
+          "sig": "clear_ovp() -> None",
+          "desc": "Clear an over-voltage protection (OVP) trip on this net."
+        },
+        {
+          "name": "current",
+          "sig": "current(value: 'float | None' = None, ocp: 'float | None' = None, ovp: 'float | None' = None) -> None",
+          "desc": "Set or read the net's current. If `value` is provided, set the output current; otherwise read and print the present current."
+        },
+        {
+          "name": "disable",
+          "sig": "disable() -> None",
+          "desc": "Disable (turn off) the supply output for this net."
+        },
+        {
+          "name": "enable",
+          "sig": "enable() -> None",
+          "desc": "Enable (turn on) the supply output for this net."
+        },
+        {
+          "name": "get_full_state",
+          "sig": "get_full_state() -> None",
+          "desc": "Get full state including measurements, setpoints, and limits. This is optional and can be overridden by specific drivers."
+        },
+        {
+          "name": "get_monitor_state",
+          "sig": "get_monitor_state(channel=None) -> dict",
+          "desc": "Gather the supply TUI's full monitor state in ONE call."
+        },
+        {
+          "name": "ocp",
+          "sig": "ocp(value: 'float | None' = None) -> None",
+          "desc": "Set or read over-current protection limit. If `value` is provided, set the OCP limit; otherwise read and print the current OCP limit."
+        },
+        {
+          "name": "ovp",
+          "sig": "ovp(value: 'float | None' = None) -> None",
+          "desc": "Set or read over-voltage protection limit. If `value` is provided, set the OVP limit; otherwise read and print the current OVP limit."
+        },
+        {
+          "name": "set_mode",
+          "sig": "set_mode() -> None",
+          "desc": "Set the instrument mode to DC power supply (if applicable)."
+        },
+        {
+          "name": "state",
+          "sig": "state() -> None",
+          "desc": "Print a comprehensive power state for this net (voltage, current, power, OCP/OVP status)."
+        },
+        {
+          "name": "voltage",
+          "sig": "voltage(value: 'float | None' = None, ocp: 'float | None' = None, ovp: 'float | None' = None) -> None",
+          "desc": "Set or read the net's voltage. If `value` is provided, set the output voltage; otherwise read and print the present voltage."
+        }
+      ],
+      "gotchas": [
+        "Always call set_voltage() BEFORE enable() \u2014 enabling with no voltage set may use the last-programmed value.",
+        "Wrap tests in try/finally and call disable() in the finally block to avoid leaving supplies on.",
+        "Readback values may differ slightly from setpoints due to instrument resolution."
+      ],
+      "example_snippet": "from lager import Net, NetType\n\npsu = Net.get(\"supply1\", type=NetType.PowerSupply)\ntry:\n    psu.set_voltage(3.3)\n    psu.set_current(1.0)\n    psu.enable()\n    import time; time.sleep(0.5)\n    v = psu.voltage()\n    print(f\"Measured voltage: {v:.3f} V\")\n    assert abs(v - 3.3) < 0.2, f\"Voltage out of range: {v}\"\nfinally:\n    psu.disable()\n",
+      "source_module": "lager.power.supply.supply_net.SupplyNet"
+    },
+    "UART": {
+      "net_type_enum": "NetType.UART",
+      "get_pattern": "uart = Net.get(\"uart1\", type=NetType.UART)",
+      "methods": [
+        {
+          "name": "connect",
+          "sig": "connect(**overrides) -> serial.Serial",
+          "desc": "Connect to the UART serial port with pyserial."
+        },
+        {
+          "name": "get_baudrate",
+          "sig": "get_baudrate() -> int",
+          "desc": "Get the configured baudrate for this net."
+        },
+        {
+          "name": "get_config",
+          "sig": "get_config() -> dict",
+          "desc": "Get the raw net configuration dict."
+        },
+        {
+          "name": "get_path",
+          "sig": "get_path() -> str",
+          "desc": "Get the device path for this UART net."
+        }
+      ],
+      "gotchas": [
+        "connect() returns a standard pyserial Serial object \u2014 use ser.write(), ser.read(), ser.readline() etc.",
+        "Always close the serial connection when done (use try/finally or with-statement pattern).",
+        "For UART expect-style patterns: read in a loop, check for pattern match, respect timeouts."
+      ],
+      "example_snippet": "from lager import Net, NetType\n\nuart = Net.get(\"uart1\", type=NetType.UART)\nser = uart.connect(baudrate=115200, timeout=2)\ntry:\n    ser.reset_input_buffer()\n    ser.write(b\"version\\r\\n\")\n    import time; time.sleep(0.5)\n    response = ser.read(ser.in_waiting).decode(\"utf-8\", errors=\"ignore\")\n    print(f\"DUT response: {response}\")\n    assert \"v1.\" in response, f\"Unexpected version: {response}\"\nfinally:\n    ser.close()\n",
+      "source_module": "lager.protocols.uart.uart_net.UARTNet"
+    }
+  }
+}
