@@ -43,6 +43,12 @@ the running containers. The box keeps its services up during the download.
 The old containers stop only after the pull succeeds. The deployment then
 clears the Docker build cache, because the pulled image needs no build.
 
+When no pre-built image is available, or with `--no-pull` or `--fork`, the
+deployment builds the image on the box before it stops the running containers.
+The box keeps its services up during the build, and the old containers stop
+only after the build succeeds. A failed build stops nothing, so the box keeps
+running its previous containers. Fix the build error and run the install again.
+
 When the deployment builds on the box, it keeps the build cache. A later build
 on the same box reuses the layers that did not change. `lager uninstall` clears
 that cache.

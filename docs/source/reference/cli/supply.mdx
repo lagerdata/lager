@@ -59,6 +59,21 @@ The CLI enforces conservative upper bounds before sending commands to hardware:
 
 All values must be positive. OVP must be greater than or equal to the voltage setpoint.
 
+### Box limits per channel
+
+The box then checks each value against the channel that receives it. A voltage or
+current setpoint must not exceed the channel's rated output. OVP and OCP must not exceed
+the channel's protection maximum.
+
+On a Rigol DP800 (DP811, DP821, DP831, DP832), the protection maximum is 110% of the
+channel's rating. The supply ships with its protection limits there, so you can set a
+lowered limit back to the factory value. For example, DP821 channel 2 is rated 8 V / 10 A
+and ships with OVP 8.8 V and OCP 11 A. On every other supply, the protection maximum is
+the rated output.
+
+The box refuses a value over a maximum and names it, for example
+`OVP 9.0V exceeds the channel's OVP maximum 8.8V`.
+
 ## Command Reference
 
 ### `voltage`
