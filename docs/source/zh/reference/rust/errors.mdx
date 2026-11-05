@@ -45,6 +45,8 @@ online and updated
 
 **客户端侧**的截止时间到了：HTTP 请求、流式会话的连接确认，或者一直没等到的 `wait_for` 目标。
 
+HTTP 截止时间覆盖整个响应，包括响应体：盒子发出响应头之后，JSON 响应体停滞超过截止时间，同样返回 `Error::Timeout`。lager-net 0.12 之前，阻塞客户端把这种情况报告为 `Error::Decode`。
+
 ```text
 request to the Lager box timed out: {msg}
 ```

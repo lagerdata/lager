@@ -49,6 +49,11 @@ online and updated
 A **client-side** deadline expired: the HTTP request, a streaming session's connect
 confirmation, or a `wait_for` needle that never arrived.
 
+The HTTP deadline covers the whole response, including the body. If a box sends the
+headers and then stalls on a JSON body past the deadline, the result is also
+`Error::Timeout`. Before lager-net 0.12, the blocking client reported that case as
+`Error::Decode`.
+
 ```text
 request to the Lager box timed out: {msg}
 ```
