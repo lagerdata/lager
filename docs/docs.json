@@ -571,6 +571,7 @@
                   "source/zh/reference/cli/hello",
                   "source/zh/reference/cli/boxes",
                   "source/zh/reference/cli/locking",
+                  "source/zh/reference/cli/lease",
                   "source/zh/reference/cli/login",
                   "source/zh/reference/cli/install",
                   "source/zh/reference/cli/install-wheel",

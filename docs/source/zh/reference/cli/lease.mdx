@@ -1,0 +1,112 @@
+---
+title: 从池中租用 Box
+description: 使用 lager lease 在任意一台具备所需设备的可用 Box 上运行命令
+---
+
+测试通常会指定它使用的 Box，例如 `--box BENCH-3`。使用 `lager lease` 时，测试改为从一个**池**中申请 Box。池是一组带名称的要求，例如“一块 nRF52840 开发板和一个调试探针”。租用服务器会找到一台符合这些要求、在线且未被占用的 Box。随后 Lager 在该 Box 上运行您的命令，并在命令结束时释放该 Box。
+
+租用服务器不属于 Lager。Lager 发送池名称，并得到一台 Box。服务器保存各个池以及每次租用的记录。
+
+## 语法
+
+```bash
+lager lease --pool NAME [--ttl SECONDS] [--context KEY=VALUE]... -- COMMAND [ARGS]...
+```
+
+`--` 把 `lager lease` 的选项与您的命令分开。`lager lease` 不读取 `--` 之后的文本。
+
+```text
+lager lease --pool nrf52  --  lager python flash_and_test.py
+\______________________/      \____________________________/
+ options for lager lease       COMMAND: runs as you typed it
+```
+
+## 选项
+
+| 选项 | 说明 |
+| --- | --- |
+| `--pool NAME` | 池的名称。必需。 |
+| `--ttl SECONDS` | 最后一次续期之后租用保持有效的时间。范围：60 到 1800。默认值：300。 |
+| `--context KEY=VALUE` | 租用服务器随租用一起显示的信息，例如某次 CI 运行的 URL。此选项最多可使用 10 次。 |
+| `--server URL` | 租用服务器。请参阅[服务器与凭据](#服务器与凭据)。 |
+| `--org ORG` | 组织（id、slug 或名称）。仅当您的账户属于多个组织时才需要使用。 |
+
+## 工作方式
+
+1. Lager 向租用服务器申请池中的一台 Box。
+2. 服务器为这次租用锁定一台 Box，并把该 Box 的地址发送给 Lager。
+3. Lager 使用以下环境变量运行 COMMAND：
+
+   | 变量 | 值 |
+   | --- | --- |
+   | `LAGER_BOX` | 所租用 Box 的地址。 |
+   | `LAGER_LOCK_HOLDER` | 这次租用的锁身份。 |
+   | `LAGER_LEASE_ID` | 这次租用的标识符。 |
+
+4. COMMAND 运行期间，Lager 按服务器设定的间隔为租用续期。
+5. COMMAND 结束时，Lager 释放该 Box。COMMAND 失败时以及您按下 Ctrl-C 时也是如此。
+
+COMMAND 中的每条 `lager` 命令都会使用 `LAGER_BOX` 和 `LAGER_LOCK_HOLDER`。因此，每条命令都使用所租用的 Box，并把这次租用的锁视为自己的锁。请参阅 [Box 锁定](/source/zh/reference/cli/locking)。
+
+<Warning>
+不要在 COMMAND 中使用 `--box`。`--box` 会覆盖 `LAGER_BOX`。命令随后会使用另一台 Box，而所租用的 Box 在命令结束之前一直闲置。
+</Warning>
+
+## 示例
+
+在租用的 Box 上运行一个脚本：
+
+```bash
+lager lease --pool nrf52 -- lager python flash_and_test.py
+```
+
+在同一台 Box 上运行多条命令。租用会一直占用该 Box，直到 shell 结束：
+
+```bash
+lager lease --pool nrf52 -- sh -c '
+  lager python flash.py &&
+  lager python test_ble.py
+'
+```
+
+在 GitHub Actions 作业中运行测试：
+
+```yaml
+- run: >
+    lager lease --pool nrf52
+    --context run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    -- pytest tests/hardware
+  env:
+    STOUT_URL: https://your-control-plane.example.com
+    STOUT_TOKEN: ${{ secrets.STOUT_TOKEN }}
+```
+
+## 服务器与凭据
+
+Lager 按以下顺序查找租用服务器：
+
+1. `--server` 选项。
+2. `STOUT_URL` 环境变量。
+3. 您的 `lager login` 会话所在的服务器（仅当您恰好有一个会话时）。
+
+对于凭据，如果设置了 `STOUT_TOKEN` 环境变量，Lager 就使用它；否则 Lager 使用您的 `lager login` 会话。请参阅[登录](/source/zh/reference/cli/login)。在 CI 中请使用令牌，因为 CI 作业无法登录。
+
+## 退出状态
+
+| 状态 | 含义 |
+| --- | --- |
+| COMMAND 的状态 | COMMAND 已运行。状态 128+N 表示信号 N 终止了 COMMAND。 |
+| `75` | Lager 无法租到 Box，因此 COMMAND 没有运行。或者，租用在 COMMAND 运行期间结束，因此 Lager 终止了 COMMAND。 |
+| `127` | Lager 无法启动 COMMAND。 |
+
+状态 75 与测试失败不同。因此，您的 CI 可以把“没有可用的 Box”与“测试失败”分开显示。
+
+## 问题
+
+| 问题 | 结果 |
+| --- | --- |
+| 所有符合条件的 Box 都在使用中。 | Lager 以状态 75 退出，并显示所有 Box 都在使用中。 |
+| 没有 Box 符合池的要求。 | Lager 以状态 75 退出。请修改池的要求。 |
+| 续期时租用服务器不可用。 | COMMAND 继续运行。租用在 TTL 结束前保持有效。经过一半 TTL 后，Lager 会显示警告。 |
+| 作业或计算机意外停止。 | 续期停止。TTL 结束后，租用结束，Box 自行释放。 |
+| 管理员结束了这次租用。 | Lager 终止 COMMAND，并以状态 75 退出。随后其他作业可以使用该 Box。 |
