@@ -19,8 +19,8 @@ Before you start a release, confirm each item:
 - [ ] A hardware smoke of the release branch passes on a lab box. Update the box to the
       release branch's commit with `lager update --box <box> --version <sha>`, and run
       `lager hello`. Then run the `test/api/` scripts for the instruments on that box. Put the
-      PASS or FAIL result of each script in the release pull request. While the bench is
-      offline, this smoke is the only hardware test that a release gets.
+      PASS or FAIL result of each script in the release pull request. The bench is
+      retired, so this smoke is the only hardware test that a release gets.
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for every user-facing change.
 - [ ] `## [Unreleased]` holds each `###` heading at most once. Two branches that each add a
       `### Fixed` block both merge cleanly. Merge the blocks in Keep a Changelog order: Added,
