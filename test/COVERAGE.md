@@ -38,9 +38,9 @@ changes. The others run on a schedule, through `workflow_call`, on a tag push, o
 `nightly-bench.yml` reaches the other two bench workflows above it through `workflow_call`, so
 neither of those carries a `schedule` or `push` trigger of its own.
 
-The hardware bench is offline at this time, and all five bench workflows are disabled. Until
-the bench returns, no suite in this file runs on hardware. Each "nightly" entry below describes
-the coverage that the bench gives when it runs.
+The hardware bench (`MASTER`) was retired on 2026-11-02, and all five bench workflows are
+disabled. Until a new bench exists, no suite in this file runs on hardware. Each "nightly" or
+"weekly" entry below describes the coverage that the bench gave up to that date.
 
 A job only *blocks* a merge once its status context is listed in branch ruleset 14535039.
 Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `compat (...)` jobs,
