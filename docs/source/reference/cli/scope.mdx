@@ -712,9 +712,8 @@ Place the two time cursors, in seconds from the trigger. A negative time is befo
 lager scope NET_NAME cursor time T1 T2 [--box BOX]
 ```
 
-A negative value looks like an option to the CLI. Put `--` before the two values, after
-every option: `lager scope NET_NAME cursor time --box BOX -- -0.001 0.002`. The same
-applies to `cursor volts`.
+Pass negative values directly to `cursor time` and `cursor volts`.
+For example, run `lager scope NET_NAME cursor time -0.001 0.002 --box BOX`.
 
 The reply gives the interval between the cursors, its reciprocal as a frequency, and the voltage of the trace under each cursor. So a pair one cycle apart shows the frequency directly. The box interpolates the voltages between samples, because a cursor stays where you put it, not on the sample grid.
 
@@ -1129,7 +1128,7 @@ lager scope ANALOG1 trigger spi \
 
 ```bash
 # PicoScope: measure the time between two events, and read it back
-lager scope PICO1 cursor time --box my-lager-box -- -0.001 0.002
+lager scope PICO1 cursor time -0.001 0.002 --box my-lager-box
 lager scope PICO1 cursor --box my-lager-box
 
 # Rigol: measure the voltage difference with the display cursors

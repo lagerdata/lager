@@ -153,12 +153,13 @@ def test_scope_scale_zero_is_refused(lager, scope_box):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("which", ["time", "volts"])
-def test_scope_cursor_pair_sets_then_measures(lager, scope_box, which):
-    result = lager("scope", "scope1", "cursor", which, "0.001", "0.002")
+@pytest.mark.parametrize("first, second", [("0.001", "0.002"), ("-0.001", "0.002"), ("0.001", "-0.002")])
+def test_scope_cursor_pair_sets_then_measures(lager, scope_box, which, first, second):
+    result = lager("scope", "scope1", "cursor", which, first, second)
     assert result.exit_code == 0, result.output
     actions = [body["action"] for _, body in scope_box.posts]
     assert actions == ["set_cursor", "measure_cursor"]
-    assert scope_box.posts[0][1]["params"] == {which: {"1": 0.001, "2": 0.002}}
+    assert scope_box.posts[0][1]["params"] == {which: {"1": float(first), "2": float(second)}}
 
 
 @pytest.mark.parametrize("argv, action, params", [
