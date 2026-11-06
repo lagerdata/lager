@@ -12,6 +12,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **`lager scope NET cursor time` and `cursor volts` accept negative values.** A
+  negative first or second value no longer needs a `--` separator.
+
 ## [0.64.0] - 2026-11-13
 
 ### Fixed
