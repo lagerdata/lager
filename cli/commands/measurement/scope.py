@@ -1076,7 +1076,7 @@ def cursor(ctx, box, mcu):
     _run_backend(ctx, box_ip, "measure_cursor", netname=netname, mcu=mcu)
 
 
-@cursor.command("time")
+@cursor.command("time", context_settings={"ignore_unknown_options": True})
 @click.argument("t1", type=float)
 @click.argument("t2", type=float)
 @click.pass_context
@@ -1100,7 +1100,7 @@ def cursor_time(ctx, t1, t2, box, mcu):
     _run_backend(ctx, box_ip, "measure_cursor", netname=netname, mcu=mcu)
 
 
-@cursor.command("volts")
+@cursor.command("volts", context_settings={"ignore_unknown_options": True})
 @click.argument("v1", type=float)
 @click.argument("v2", type=float)
 @click.pass_context
