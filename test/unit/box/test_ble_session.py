@@ -28,35 +28,52 @@ def _make_module(name: str) -> types.ModuleType:
 
 
 def _stub(dotted: str) -> None:
-    parts = dotted.split('.')
+    parts = dotted.split(".")
     for i in range(1, len(parts) + 1):
-        key = '.'.join(parts[:i])
+        key = ".".join(parts[:i])
         if key not in sys.modules:
             sys.modules[key] = _make_module(key)
 
 
 _HARDWARE_STUBS = [
-    'pyvisa', 'pyvisa.constants', 'pyvisa_py',
-    'usb', 'usb.util', 'usb.core',
-    'pigpio', 'labjack', 'labjack.ljm', 'nidaqmx',
-    'phidget22', 'phidget22.Phidget', 'phidget22.Net',
-    'bleak', 'picoscope',
-    'serial', 'serial.tools', 'serial.tools.list_ports',
-    'spidev', 'smbus', 'smbus2', 'RPi', 'RPi.GPIO', 'gpiod',
-    'flask_socketio',
+    "pyvisa",
+    "pyvisa.constants",
+    "pyvisa_py",
+    "usb",
+    "usb.util",
+    "usb.core",
+    "pigpio",
+    "labjack",
+    "labjack.ljm",
+    "nidaqmx",
+    "phidget22",
+    "phidget22.Phidget",
+    "phidget22.Net",
+    "bleak",
+    "picoscope",
+    "serial",
+    "serial.tools",
+    "serial.tools.list_ports",
+    "spidev",
+    "smbus",
+    "smbus2",
+    "RPi",
+    "RPi.GPIO",
+    "gpiod",
+    "flask_socketio",
 ]
 for _dep in _HARDWARE_STUBS:
     _stub(_dep)
 
 _BOX_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box')
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "box")
 )
 if _BOX_ROOT not in sys.path:
     sys.path.insert(0, _BOX_ROOT)
 
-from flask import Flask  # noqa: E402
-from lager.http_handlers import ble as ble_handler  # noqa: E402
-from lager.http_handlers import blufi as blufi_handler  # noqa: E402
+from flask import Flask
+from lager.http_handlers import ble as ble_handler
+from lager.http_handlers import blufi as blufi_handler
 
 _real_ensure_reaper = ble_handler._ensure_reaper
 
@@ -134,6 +151,7 @@ class _FakeBleakClient:
 
 def _run_on_new_loop(coro, timeout):
     import asyncio
+
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
@@ -154,16 +172,15 @@ class _SessionHarness:
         _FakeBleakClient.instances = []
         self._clear_sessions()
 
-        bleak = sys.modules['bleak']
-        patcher = patch.object(bleak, 'BleakClient', _FakeBleakClient,
-                               create=True)
+        bleak = sys.modules["bleak"]
+        patcher = patch.object(bleak, "BleakClient", _FakeBleakClient, create=True)
         patcher.start()
         self.addCleanup(patcher.stop)
         if not self.real_bleak_loop:
-            runner = patch.object(ble_handler, 'run_bleak', _run_on_new_loop)
+            runner = patch.object(ble_handler, "run_bleak", _run_on_new_loop)
             runner.start()
             self.addCleanup(runner.stop)
-        reaper = patch.object(ble_handler, '_ensure_reaper')
+        reaper = patch.object(ble_handler, "_ensure_reaper")
         reaper.start()
         self.addCleanup(reaper.stop)
         self.addCleanup(self._close_leftover_session)
@@ -178,8 +195,9 @@ class _SessionHarness:
         self._post("session_close", force=True)
 
     def _post(self, action, **params):
-        return self.client.post('/ble/command',
-                                json={"action": action, "params": params})
+        return self.client.post(
+            "/ble/command", json={"action": action, "params": params}
+        )
 
     def _open(self, address=ADDR):
         r = self._post("session_open", address=address)
@@ -189,14 +207,18 @@ class _SessionHarness:
     def _blufi_status(self):
         app = Flask(__name__)
         blufi_handler.register_blufi_routes(app)
-        fake = types.ModuleType('lager.blufi')
+        fake = types.ModuleType("lager.blufi")
         fake.BlufiClient = MagicMock()
         import lager as lager_pkg
-        with patch.dict(sys.modules, {'lager.blufi': fake}), \
-                patch.object(lager_pkg, 'blufi', fake, create=True):
+
+        with (
+            patch.dict(sys.modules, {"lager.blufi": fake}),
+            patch.object(lager_pkg, "blufi", fake, create=True),
+        ):
             return app.test_client().post(
-                '/blufi/command',
-                json={"action": "status", "params": {"device_name": "x"}})
+                "/blufi/command",
+                json={"action": "status", "params": {"device_name": "x"}},
+            )
 
     def _device(self):
         self.assertTrue(_FakeBleakClient.instances)
@@ -204,7 +226,6 @@ class _SessionHarness:
 
 
 class TestBleSession(_SessionHarness, unittest.TestCase):
-
     def test_open_returns_id_without_services_and_holds_the_link(self):
         r = self._post("session_open", address=ADDR)
         self.assertEqual(r.status_code, 200)
@@ -216,8 +237,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         data = self._post("session_read", session_id=sid, char=CHAR).get_json()
         self.assertEqual(data["value"]["data"], "64")
         # Still connected — no disconnect between open and read.
-        self.assertEqual(self._device().calls,
-                         ["connect", ("read", CHAR)])
+        self.assertEqual(self._device().calls, ["connect", ("read", CHAR)])
 
     def test_second_open_is_409(self):
         sid = self._open()
@@ -243,8 +263,9 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json()["value"]["paired"])
 
-        r = self._post("session_write", session_id=sid, char=CHAR,
-                       data="01ff", response=True)
+        r = self._post(
+            "session_write", session_id=sid, char=CHAR, data="01ff", response=True
+        )
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.get_json()["value"]["length"], 2)
 
@@ -253,9 +274,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
 
         self.assertEqual(
             self._device().calls,
-            ["connect", "pair",
-             ("write", CHAR, b"\x01\xff", True),
-             ("read", CHAR)],
+            ["connect", "pair", ("write", CHAR, b"\x01\xff", True), ("read", CHAR)],
         )
 
     def test_multi_char_notify_poll(self):
@@ -263,29 +282,34 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         device = self._device()
 
         self.assertEqual(
-            self._post("session_notify_start", session_id=sid, char=CHAR)
-            .status_code, 200)
+            self._post("session_notify_start", session_id=sid, char=CHAR).status_code,
+            200,
+        )
         self.assertEqual(
-            self._post("session_notify_start", session_id=sid, char=CHAR2)
-            .status_code, 200)
+            self._post("session_notify_start", session_id=sid, char=CHAR2).status_code,
+            200,
+        )
 
         device.push_notify(CHAR, b"\x01")
         device.push_notify(CHAR2, b"\x02")
         device.push_notify(CHAR, b"\x03")
 
-        r = self._post("session_notify_poll", session_id=sid,
-                       max_messages=10, wait=0)
+        r = self._post("session_notify_poll", session_id=sid, max_messages=10, wait=0)
         self.assertEqual(r.status_code, 200)
         messages = r.get_json()["value"]["messages"]
-        self.assertEqual(messages, [
-            {"char": CHAR, "data": "01"},
-            {"char": CHAR2, "data": "02"},
-            {"char": CHAR, "data": "03"},
-        ])
+        self.assertEqual(
+            messages,
+            [
+                {"char": CHAR, "data": "01"},
+                {"char": CHAR2, "data": "02"},
+                {"char": CHAR, "data": "03"},
+            ],
+        )
         self.assertTrue(r.get_json()["value"]["timed_out"])
 
-        r = self._post("session_notify_poll", session_id=sid, char=CHAR2,
-                       max_messages=5, wait=0)
+        r = self._post(
+            "session_notify_poll", session_id=sid, char=CHAR2, max_messages=5, wait=0
+        )
         # Nothing left for CHAR2.
         self.assertEqual(r.get_json()["value"]["messages"], [])
 
@@ -297,8 +321,9 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
     def test_notify_start_twice_is_400(self):
         sid = self._open()
         self.assertEqual(
-            self._post("session_notify_start", session_id=sid, char=CHAR)
-            .status_code, 200)
+            self._post("session_notify_start", session_id=sid, char=CHAR).status_code,
+            200,
+        )
         r = self._post("session_notify_start", session_id=sid, char=CHAR)
         self.assertEqual(r.status_code, 400)
 
@@ -323,7 +348,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
 
     def _fake_clock(self):
         now = [1000.0]
-        patcher = patch.object(ble_handler, '_monotonic', lambda: now[0])
+        patcher = patch.object(ble_handler, "_monotonic", lambda: now[0])
         patcher.start()
         self.addCleanup(patcher.stop)
         return now
@@ -344,8 +369,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         r = self._post("session_read", session_id=sid, char=CHAR)
         self.assertEqual(r.status_code, 400)
         self.assertIn("ended: lifetime expired", r.get_json()["error"])
-        self.assertEqual(self._post("session_open", address=ADDR).status_code,
-                         200)
+        self.assertEqual(self._post("session_open", address=ADDR).status_code, 200)
 
     def test_ensure_reaper_starts_one_thread(self):
         release = threading.Event()
@@ -356,7 +380,10 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
             started.append(threading.current_thread())
             release.wait(10)
 
-        with patch.object(ble_handler, '_reaper_thread', None),                 patch.object(ble_handler, '_reaper_loop', blocking_loop):
+        with (
+            patch.object(ble_handler, "_reaper_thread", None),
+            patch.object(ble_handler, "_reaper_loop", blocking_loop),
+        ):
             _real_ensure_reaper()
             _real_ensure_reaper()
             thread = ble_handler._reaper_thread
@@ -365,6 +392,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         release.set()
         thread.join(5)
         self.assertEqual(len(started), 1)
+
     def test_blufi_refuses_while_session_open(self):
         sid = self._open()
         r = self._blufi_status()
@@ -379,8 +407,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("ended: peer disconnected", r.get_json()["error"])
         self.assertEqual(self._post("pair", address=ADDR).status_code, 200)
-        self.assertEqual(self._post("session_close", session_id=sid)
-                         .status_code, 200)
+        self.assertEqual(self._post("session_close", session_id=sid).status_code, 200)
 
     def test_our_own_close_keeps_closed_reason(self):
         sid = self._open()
@@ -437,8 +464,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
     def test_poll_filtered_to_unknown_char_is_400(self):
         sid = self._open()
         self._post("session_notify_start", session_id=sid, char=CHAR)
-        r = self._post("session_notify_poll", session_id=sid, char=CHAR2,
-                       wait=0)
+        r = self._post("session_notify_poll", session_id=sid, char=CHAR2, wait=0)
         self.assertEqual(r.status_code, 400)
 
     def test_poll_wait_is_clamped_to_remaining_lifetime(self):
@@ -472,8 +498,9 @@ class TestBleSessionOnBleakLoop(_SessionHarness, unittest.TestCase):
             self.poll_entered.set()
             return await original(*args)
 
-        announce = patch.object(ble_handler, '_session_notify_poll_async',
-                                announcing_poll)
+        announce = patch.object(
+            ble_handler, "_session_notify_poll_async", announcing_poll
+        )
         announce.start()
         self.addCleanup(announce.stop)
 
@@ -488,9 +515,13 @@ class TestBleSessionOnBleakLoop(_SessionHarness, unittest.TestCase):
 
         def run():
             client = self.app.test_client()
-            result["response"] = client.post("/ble/command", json={
-                "action": "session_notify_poll",
-                "params": {"session_id": sid, "wait": wait}})
+            result["response"] = client.post(
+                "/ble/command",
+                json={
+                    "action": "session_notify_poll",
+                    "params": {"session_id": sid, "wait": wait},
+                },
+            )
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
@@ -519,9 +550,13 @@ class TestBleSessionOnBleakLoop(_SessionHarness, unittest.TestCase):
 
         def first_start():
             client = self.app.test_client()
-            result["response"] = client.post("/ble/command", json={
-                "action": "session_notify_start",
-                "params": {"session_id": sid, "char": CHAR}})
+            result["response"] = client.post(
+                "/ble/command",
+                json={
+                    "action": "session_notify_start",
+                    "params": {"session_id": sid, "char": CHAR},
+                },
+            )
 
         thread = threading.Thread(target=first_start, daemon=True)
         thread.start()
@@ -601,5 +636,5 @@ class TestBleSessionOnBleakLoop(_SessionHarness, unittest.TestCase):
         self.assertEqual(self._post("pair", address=ADDR).status_code, 200)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

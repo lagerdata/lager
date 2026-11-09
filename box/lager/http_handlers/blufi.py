@@ -20,6 +20,7 @@ Provisioning can take 30s+ end to end (BLE connect + security negotiation +
 target joining WiFi), so no aggressive timeouts here; the CLI/Rust clients
 widen their HTTP budgets to match.
 """
+
 import atexit
 import logging
 import time
@@ -36,8 +37,16 @@ from lager.http_handlers.ble import (
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("scan", "connect", "provision", "wifi_scan", "status", "version",
-                  "set_mode", "custom_data")
+_VALID_ACTIONS = (
+    "scan",
+    "connect",
+    "provision",
+    "wifi_scan",
+    "status",
+    "version",
+    "set_mode",
+    "custom_data",
+)
 
 # BluFi BLE service UUID, used to identify BluFi-capable devices in scans.
 BLUFI_SERVICE_UUID = "0000ffff-0000-1000-8000-00805f9b34fb"
@@ -73,7 +82,8 @@ def _connect_and_secure(params):
     try:
         if not client.connectByName(device_name, timeout=timeout):
             raise RuntimeError(
-                "Failed to connect to '%s' within %ss" % (device_name, timeout))
+                "Failed to connect to '%s' within %ss" % (device_name, timeout)
+            )
         client.negotiateSecurity()
     except Exception:
         _teardown(client)
@@ -123,12 +133,14 @@ async def _scan_async(timeout):
     devices = []
     for address, (device, adv) in found.items():
         uuids = list(adv.service_uuids or []) if adv is not None else []
-        devices.append({
-            "name": device.name or address,
-            "address": address,
-            "rssi": adv.rssi if adv is not None else -100,
-            "uuids": uuids,
-        })
+        devices.append(
+            {
+                "name": device.name or address,
+                "address": address,
+                "rssi": adv.rssi if adv is not None else -100,
+                "uuids": uuids,
+            }
+        )
     return devices
 
 
@@ -142,8 +154,8 @@ def _scan(params):
     for d in devices:
         has_blufi_uuid = BLUFI_SERVICE_UUID in d["uuids"]
         name_match = bool(
-            name_contains and d["name"]
-            and name_contains.lower() in d["name"].lower())
+            name_contains and d["name"] and name_contains.lower() in d["name"].lower()
+        )
         if has_blufi_uuid or name_match:
             matched.append(d)
     matched.sort(key=lambda d: (d["name"] == d["address"], d["name"]))
@@ -165,12 +177,10 @@ def _connect(params):
         time.sleep(0.5)
         state = _wifi_state(client)
 
-        value = {"device_name": params.get("device_name"),
-                 "version": version, **state}
+        value = {"device_name": params.get("device_name"), "version": version, **state}
         return {
             "message": "Connected to %s (version %s, STA: %s)"
-                       % (params.get("device_name"), version or "N/A",
-                          state["staConnName"]),
+            % (params.get("device_name"), version or "N/A", state["staConnName"]),
             "value": value,
         }
     finally:
@@ -200,8 +210,7 @@ def _provision(params):
         if state["staConn"] != STA_CONN_SUCCESS:
             # Report the provisioning outcome as a command failure so clients
             # (CLI exit code, Rust Result) see it without inspecting `value`.
-            raise RuntimeError(
-                "Device connection status: %s" % state["staConnName"])
+            raise RuntimeError("Device connection status: %s" % state["staConnName"])
         return {
             "message": "Device connected to '%s' successfully" % ssid,
             "value": {
@@ -223,12 +232,10 @@ def _wifi_scan(params):
     try:
         client.requestDeviceScan(timeout=scan_timeout)
         networks = client.getSSIDList()
-        networks = sorted(networks, key=lambda n: n.get("rssi", -100),
-                          reverse=True)
+        networks = sorted(networks, key=lambda n: n.get("rssi", -100), reverse=True)
         return {
             "message": "Found %d network(s)" % len(networks),
-            "value": {"device_name": params.get("device_name"),
-                      "networks": networks},
+            "value": {"device_name": params.get("device_name"), "networks": networks},
         }
     finally:
         _teardown(client)
@@ -242,8 +249,7 @@ def _status(params):
         state = _wifi_state(client)
         return {
             "message": "Op Mode: %s, STA: %s, SoftAP: %s"
-                       % (state["opModeName"], state["staConnName"],
-                          state["softAPConn"]),
+            % (state["opModeName"], state["staConnName"], state["softAPConn"]),
             "value": {"device_name": params.get("device_name"), **state},
         }
     finally:
@@ -258,8 +264,7 @@ def _version(params):
         version = client.getVersion()
         return {
             "message": "Firmware version: %s" % (version or "N/A"),
-            "value": {"device_name": params.get("device_name"),
-                      "version": version},
+            "value": {"device_name": params.get("device_name"), "version": version},
         }
     finally:
         _teardown(client)
@@ -275,8 +280,9 @@ def _op_mode(value):
         by_name = {n.lower(): m for m, n in OP_MODE_NAMES.items()}
         if value.strip().lower() in by_name:
             return by_name[value.strip().lower()]
-    raise ValueError("mode must be one of %s, or 0-3"
-                     % ", ".join(OP_MODE_NAMES.values()))
+    raise ValueError(
+        "mode must be one of %s, or 0-3" % ", ".join(OP_MODE_NAMES.values())
+    )
 
 
 def _set_mode(params):
@@ -293,9 +299,12 @@ def _set_mode(params):
         # SoftAP mode can need more configuration before the device shows it.
         return {
             "message": "Requested op mode %s; device reports %s"
-                       % (OP_MODE_NAMES[op_mode], state["opModeName"]),
-            "value": {"device_name": params.get("device_name"),
-                      "requested": op_mode, **state},
+            % (OP_MODE_NAMES[op_mode], state["opModeName"]),
+            "value": {
+                "device_name": params.get("device_name"),
+                "requested": op_mode,
+                **state,
+            },
         }
     finally:
         _teardown(client)
@@ -327,11 +336,12 @@ def _custom_data(params):
             time.sleep(reply_timeout)
         return {
             "message": "Sent %d byte(s), received %d repl%s"
-                       % (len(data), len(replies),
-                          "y" if len(replies) == 1 else "ies"),
-            "value": {"device_name": params.get("device_name"),
-                      "sent": len(data),
-                      "replies": [r.hex() for r in list(replies)]},
+            % (len(data), len(replies), "y" if len(replies) == 1 else "ies"),
+            "value": {
+                "device_name": params.get("device_name"),
+                "sent": len(data),
+                "replies": [r.hex() for r in list(replies)],
+            },
         }
     finally:
         _teardown(client)
@@ -352,7 +362,7 @@ _ACTIONS = {
 def register_blufi_routes(app: Flask) -> None:
     """Register the /blufi/command route on the Flask app."""
 
-    @app.route('/blufi/command', methods=['POST'])
+    @app.route("/blufi/command", methods=["POST"])
     def blufi_command_http():
         """
         Execute a BluFi (ESP32 WiFi provisioning over BLE) command.
@@ -364,32 +374,38 @@ def register_blufi_routes(app: Flask) -> None:
         """
         try:
             data = request.get_json() or {}
-            action = data.get('action')
-            params = data.get('params') or {}
+            action = data.get("action")
+            params = data.get("params") or {}
 
             if action not in _VALID_ACTIONS:
-                return jsonify({
-                    'success': False,
-                    'error': 'action (scan|connect|provision|wifi_scan|status'
-                             '|version|set_mode|custom_data) is required',
-                }), 400
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "action (scan|connect|provision|wifi_scan|status"
+                        "|version|set_mode|custom_data) is required",
+                    }
+                ), 400
 
             try:
                 with bt_adapter_lock:
                     require_no_ble_session()
                     result = _ACTIONS[action](params)
             except BleSessionConflict as e:
-                return jsonify({'success': False, 'error': str(e)}), 409
+                return jsonify({"success": False, "error": str(e)}), 409
             except ValueError as e:
-                return jsonify({'success': False, 'error': str(e)}), 400
+                return jsonify({"success": False, "error": str(e)}), 400
             except Exception as e:
                 logger.exception("[HTTP] /blufi/command %s failed", action)
-                return jsonify({'success': False,
-                                'error': bluez_unavailable_hint(e) or 'BluFi error: %s' % e}), 502
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": bluez_unavailable_hint(e) or "BluFi error: %s" % e,
+                    }
+                ), 502
 
             logger.info("[HTTP] /blufi/command %s ok", action)
-            return jsonify({'success': True, 'action': action, **result})
+            return jsonify({"success": True, "action": action, **result})
 
         except Exception as e:
             logger.exception("[HTTP] /blufi/command unexpected error")
-            return jsonify({'success': False, 'error': str(e)}), 500
+            return jsonify({"success": False, "error": str(e)}), 500
