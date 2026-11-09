@@ -12,28 +12,51 @@ bleak is asyncio-only and box_http_server runs Flask-SocketIO in threading
 mode, so all bleak coroutines execute on one dedicated event-loop thread
 (created lazily, shared across requests). Requests submit coroutines with
 ``asyncio.run_coroutine_threadsafe`` and block on the result with a widened
-timeout. There is a single BT adapter, so every BLE operation additionally
-serializes under ``bt_adapter_lock`` — the same lock the blufi handler takes,
-because BluFi drives the same adapter through its own internal bleak thread.
+timeout. There is a single BT adapter, so every one-shot BLE operation
+additionally serializes under ``bt_adapter_lock`` — the same lock the blufi
+handler takes, because BluFi drives the same adapter through its own internal
+bleak thread.
 
-Links are per request. Each GATT action (read, write, notify, pair) connects,
-does its one operation and disconnects, so a device that needs a held
-connection between operations cannot be driven from here.
+One-shot GATT actions (read, write, notify, pair) still connect, do one
+operation, and disconnect. Held-link work uses the ``session_*`` actions:
+one open session owns the adapter until close, peer disconnect, or the 300 s
+lifetime cap; other ``/ble/command`` and BluFi actions fail fast with 409 while
+it is open. Of the session actions, only session_open and session_close take
+``bt_adapter_lock``; operations on an open session never do, so a long notify poll cannot block
+those 409s or session_close.
 """
 import asyncio
+import collections
+import concurrent.futures
+import contextlib
 import logging
 import re
 import threading
+import time
+import uuid
 
 from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("scan", "info", "connect", "disconnect",
-                  "read", "write", "notify", "pair")
+_VALID_ACTIONS = (
+    "scan", "info", "connect", "disconnect",
+    "read", "write", "notify", "pair",
+    "session_open", "session_pair", "session_read", "session_write",
+    "session_notify_start", "session_notify_poll", "session_notify_stop",
+    "session_close",
+)
 
 # XX:XX:XX:XX:XX:XX (colons or dashes)
 _BLE_ADDRESS_RE = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$')
+
+SESSION_MAX_LIFETIME_S = 300.0
+_REAPER_INTERVAL_S = 1.0
+_ENDED_SESSIONS_KEPT = 16
+_NOTIFY_BUFFER_MAX = 10000
+
+# Module-level so tests can fake the clock.
+_monotonic = time.monotonic
 
 # One BT adapter on the box: serialize every BLE *and* BluFi operation.
 # blufi.py imports this lock so the two handlers can't fight over the radio.
@@ -43,18 +66,15 @@ bt_adapter_lock = threading.Lock()
 _bleak_loop = None
 _bleak_loop_guard = threading.Lock()
 
+# Single held GATT session (v1). _sessions_lock guards _sessions and _ended;
+# bleak awaits run on the bleak loop via run_bleak.
+_sessions_lock = threading.Lock()
+_sessions = {}  # session_id -> _BleSession
+_ended = collections.OrderedDict()  # recently ended session_id -> reason
 
-def get_bleak_loop():
-    """Return the shared bleak event loop, starting its thread on first use."""
-    global _bleak_loop
-    with _bleak_loop_guard:
-        if _bleak_loop is None or _bleak_loop.is_closed():
-            loop = asyncio.new_event_loop()
-            thread = threading.Thread(
-                target=loop.run_forever, name="ble-bleak-loop", daemon=True)
-            thread.start()
-            _bleak_loop = loop
-        return _bleak_loop
+
+class BleSessionConflict(Exception):
+    """A held BLE session owns the adapter; the requested action cannot run."""
 
 
 # bleak reaches the HOST's bluetoothd over the mounted /var/run/dbus socket; the
@@ -76,10 +96,192 @@ def bluez_unavailable_hint(exc):
     return None
 
 
+def get_bleak_loop():
+    """Return the shared bleak event loop, starting its thread on first use."""
+    global _bleak_loop
+    with _bleak_loop_guard:
+        if _bleak_loop is None or _bleak_loop.is_closed():
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=loop.run_forever, name="ble-bleak-loop", daemon=True)
+            thread.start()
+            _bleak_loop = loop
+        return _bleak_loop
+
+
 def run_bleak(coro, timeout):
     """Run a coroutine on the bleak loop from Flask's worker thread."""
     future = asyncio.run_coroutine_threadsafe(coro, get_bleak_loop())
-    return future.result(timeout)
+    try:
+        return future.result(timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise
+
+
+def _char_key(char):
+    """Stable dict key for a characteristic UUID string or handle."""
+    if isinstance(char, int):
+        return char
+    return char.strip().lower()
+
+
+class _NotifyBuf:
+    __slots__ = ("messages", "label")
+
+    def __init__(self, label):
+        self.label = label
+        self.messages = collections.deque(maxlen=_NOTIFY_BUFFER_MAX)
+
+
+class _BleSession:
+    """Client, loop and activity event are filled in by _session_open_async."""
+    __slots__ = ("session_id", "address", "client", "loop", "activity",
+                 "created_at", "ended_reason", "notify_bufs", "notify_chars")
+
+    def __init__(self, session_id, address):
+        self.session_id = session_id
+        self.address = address
+        self.client = None
+        self.loop = None
+        self.activity = None  # set on notification or session end
+        self.created_at = _monotonic()
+        self.ended_reason = None
+        self.notify_bufs = {}  # char_key -> _NotifyBuf
+        self.notify_chars = {}  # char_key -> original char for stop_notify
+
+
+def _session_remaining_s(session):
+    return SESSION_MAX_LIFETIME_S - (_monotonic() - session.created_at)
+
+
+def _session_expired(session):
+    return _session_remaining_s(session) <= 0
+
+
+def _ended_error(session_id, reason):
+    return ValueError("BLE session %s ended: %s" % (session_id, reason))
+
+
+def _wake_pollers(session):
+    try:
+        session.loop.call_soon_threadsafe(session.activity.set)
+    except RuntimeError:
+        logger.debug("bleak loop closed; cannot wake pollers", exc_info=True)
+
+
+def _end_session(session, reason):
+    """Unregister the session and wake pollers. Only the first caller wins, so
+    the disconnect callback fired by our own teardown cannot overwrite the
+    reason. Returns whether this call ended it."""
+    with _sessions_lock:
+        if _sessions.pop(session.session_id, None) is None:
+            return False
+        session.ended_reason = reason
+        _ended[session.session_id] = reason
+        while len(_ended) > _ENDED_SESSIONS_KEPT:
+            _ended.popitem(last=False)
+    logger.info("BLE session %s ended (%s)", session.session_id, reason)
+    _wake_pollers(session)
+    return True
+
+
+async def _disconnect_client(client):
+    try:
+        await client.disconnect()
+    except Exception:
+        logger.debug("session disconnect failed", exc_info=True)
+
+
+async def _teardown_session_async(session):
+    for key, char in list(session.notify_chars.items()):
+        try:
+            await session.client.stop_notify(char)
+        except Exception:
+            logger.debug("session stop_notify failed for %s", key, exc_info=True)
+    session.notify_chars.clear()
+    session.notify_bufs.clear()
+    await _disconnect_client(session.client)
+
+
+def _close_session(session, reason):
+    """End and tear down a session. Caller holds bt_adapter_lock."""
+    if not _end_session(session, reason):
+        return
+    try:
+        run_bleak(_teardown_session_async(session), 30.0)
+    except Exception:
+        logger.debug("BLE session teardown failed", exc_info=True)
+
+
+def reap_expired_sessions():
+    """Close sessions past the lifetime cap; one reaper tick."""
+    with _sessions_lock:
+        expired = [s for s in _sessions.values() if _session_expired(s)]
+    if not expired:
+        return
+    with bt_adapter_lock:
+        for session in expired:
+            _close_session(session, "lifetime expired")
+
+
+def _reaper_loop():
+    while True:
+        time.sleep(_REAPER_INTERVAL_S)
+        try:
+            reap_expired_sessions()
+        except Exception:
+            logger.exception("BLE session reaper failed")
+
+
+_reaper_guard = threading.Lock()
+_reaper_thread = None
+
+
+def _ensure_reaper():
+    global _reaper_thread
+    with _reaper_guard:
+        if _reaper_thread is None:
+            _reaper_thread = threading.Thread(
+                target=_reaper_loop, name="ble-session-reaper", daemon=True)
+            _reaper_thread.start()
+
+
+def ble_session_busy_message():
+    """Error text when a held session blocks other BLE/BluFi work, or None."""
+    with _sessions_lock:
+        if not _sessions:
+            return None
+        sid = next(iter(_sessions))
+        return (
+            "BLE session %s is open; close it before other BLE/BluFi operations"
+            % sid
+        )
+
+
+def require_no_ble_session():
+    """Raise BleSessionConflict if a GATT session owns the adapter."""
+    msg = ble_session_busy_message()
+    if msg:
+        raise BleSessionConflict(msg)
+
+
+def _get_live_session(session_id):
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        reason = _ended.get(session_id)
+    if session is not None:
+        return session
+    if reason is not None:
+        raise _ended_error(session_id, reason)
+    raise ValueError("unknown BLE session_id")
+
+
+def _require_session_id(params):
+    session_id = params.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("session_id is required")
+    return session_id.strip()
 
 
 async def _scan_async(timeout):
@@ -187,7 +389,127 @@ async def _pair_async(address, timeout):
         await client.pair()
 
 
+async def _session_open_async(session, timeout):
+    from bleak import BleakClient
+
+    def on_disconnect(_client):
+        _end_session(session, "peer disconnected")
+
+    session.loop = asyncio.get_running_loop()
+    session.activity = asyncio.Event()
+    client = BleakClient(session.address, timeout=timeout,
+                         disconnected_callback=on_disconnect)
+    try:
+        await client.connect()
+    except asyncio.CancelledError:
+        await _disconnect_client(client)
+        raise
+    session.client = client
+    with _sessions_lock:
+        _sessions[session.session_id] = session
+
+
+async def _session_read_async(session, char):
+    data = await session.client.read_gatt_char(char)
+    return bytes(data)
+
+
+async def _session_write_async(session, char, data, response):
+    await session.client.write_gatt_char(char, data, response=response)
+
+
+async def _session_pair_async(session):
+    await session.client.pair()
+
+
+async def _session_notify_start_async(session, char):
+    key = _char_key(char)
+    if key in session.notify_chars:
+        raise ValueError("notifications already started for this characteristic")
+
+    buf = _NotifyBuf(char)
+
+    def on_notify(_c, data):
+        buf.messages.append(bytes(data))
+        session.activity.set()
+
+    # Claim the key before awaiting so a concurrent start for the same char
+    # is refused instead of subscribing twice.
+    session.notify_bufs[key] = buf
+    session.notify_chars[key] = char
+    try:
+        await session.client.start_notify(char, on_notify)
+    except BaseException:
+        if session.notify_chars.get(key) is char:
+            session.notify_chars.pop(key)
+            session.notify_bufs.pop(key, None)
+        raise
+
+
+async def _session_notify_stop_async(session, char):
+    key = _char_key(char)
+    stored = session.notify_chars.pop(key, None)
+    session.notify_bufs.pop(key, None)
+    if stored is None:
+        raise ValueError("notifications are not active for this characteristic")
+    try:
+        await session.client.stop_notify(stored)
+    except Exception:
+        logger.debug("session stop_notify failed", exc_info=True)
+
+
+def _poll_keys(session, char_filter):
+    if char_filter is None:
+        return list(session.notify_bufs.keys())
+    key = _char_key(char_filter)
+    if key not in session.notify_bufs:
+        raise ValueError("notifications are not active for this characteristic")
+    return [key]
+
+
+def _drain_round_robin(session, keys, out, max_messages):
+    """Append buffered messages one per char per pass so interleaved notifies
+    stay interleaved, until the buffers are empty or max_messages is reached."""
+    progressed = True
+    while progressed and len(out) < max_messages:
+        progressed = False
+        for key in keys:
+            buf = session.notify_bufs.get(key)
+            if buf is None or not buf.messages:
+                continue
+            out.append({"char": buf.label, "data": buf.messages.popleft().hex()})
+            progressed = True
+            if len(out) >= max_messages:
+                break
+
+
+async def _session_notify_poll_async(session, char_filter, max_messages, wait):
+    """Drain buffered notifications, waiting up to `wait` seconds for more.
+
+    Returns (messages, timed_out). Raises if the session ends mid-poll.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait
+    out = []
+    while True:
+        session.activity.clear()
+        if session.ended_reason is not None:
+            raise _ended_error(session.session_id, session.ended_reason)
+        _drain_round_robin(session, _poll_keys(session, char_filter), out,
+                           max_messages)
+        if len(out) >= max_messages:
+            return out, False
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return out, True
+        try:
+            await asyncio.wait_for(session.activity.wait(), remaining)
+        except asyncio.TimeoutError:
+            pass
+
+
 def scan(params):
+    require_no_ble_session()
     timeout = float(params.get("timeout") or 5.0)
     if not 0.1 <= timeout <= 300.0:
         raise ValueError("timeout must be between 0.1 and 300 seconds")
@@ -218,6 +540,7 @@ def _require_address(params):
 
 
 def info(params):
+    require_no_ble_session()
     address = _require_address(params)
     timeout = float(params.get("timeout") or 10.0)
     result = run_bleak(_device_info_async(address, timeout), timeout + 20.0)
@@ -229,6 +552,7 @@ def info(params):
 
 
 def disconnect(params):
+    require_no_ble_session()
     address = _require_address(params)
     result = run_bleak(_disconnect_async(address), 30.0)
     return {
@@ -251,6 +575,13 @@ def _require_char(params):
     raise ValueError("char (characteristic UUID or handle) is required")
 
 
+def _optional_char(params):
+    """Like _require_char, but absent/None means no filter."""
+    if "char" not in params or params.get("char") is None:
+        return None
+    return _require_char(params)
+
+
 def _number(params, key, default):
     # An explicit 0 is a value to range-check, not a request for the default.
     value = params.get(key)
@@ -265,6 +596,7 @@ def _timeout(params, default):
 
 
 def read(params):
+    require_no_ble_session()
     address = _require_address(params)
     char = _require_char(params)
     timeout = _timeout(params, 10.0)
@@ -276,6 +608,7 @@ def read(params):
 
 
 def write(params):
+    require_no_ble_session()
     address = _require_address(params)
     char = _require_char(params)
     timeout = _timeout(params, 10.0)
@@ -300,6 +633,7 @@ def write(params):
 
 
 def notify(params):
+    require_no_ble_session()
     address = _require_address(params)
     char = _require_char(params)
     timeout = _timeout(params, 10.0)
@@ -324,12 +658,151 @@ def notify(params):
 
 
 def pair(params):
+    require_no_ble_session()
     address = _require_address(params)
     timeout = _timeout(params, 10.0)
     run_bleak(_pair_async(address, timeout), timeout + 20.0)
     return {
         "message": "Paired with %s" % address,
         "value": {"address": address, "paired": True},
+    }
+
+
+def session_open(params):
+    address = _require_address(params)
+    timeout = _timeout(params, 10.0)
+    require_no_ble_session()
+    _ensure_reaper()
+    session = _BleSession(uuid.uuid4().hex, address)
+    run_bleak(_session_open_async(session, timeout), timeout + 20.0)
+    return {
+        "message": "Opened BLE session %s to %s" % (session.session_id, address),
+        "value": {"session_id": session.session_id, "address": address},
+    }
+
+
+def session_pair(params):
+    session = _get_live_session(_require_session_id(params))
+    timeout = _timeout(params, 10.0)
+    run_bleak(_session_pair_async(session), timeout + 20.0)
+    return {
+        "message": "Paired session %s with %s" % (session.session_id,
+                                                  session.address),
+        "value": {"session_id": session.session_id, "address": session.address,
+                  "paired": True},
+    }
+
+
+def session_read(params):
+    session = _get_live_session(_require_session_id(params))
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    data = run_bleak(_session_read_async(session, char), timeout + 20.0)
+    return {
+        "message": "Read %d byte(s) from %s" % (len(data), char),
+        "value": {"session_id": session.session_id, "char": char,
+                  "data": data.hex()},
+    }
+
+
+def session_write(params):
+    session = _get_live_session(_require_session_id(params))
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    raw = params.get("data")
+    if not isinstance(raw, str):
+        raise ValueError("data (hex string) is required")
+    try:
+        data = bytes.fromhex(raw)
+    except ValueError:
+        raise ValueError("data must be a hex string, e.g. '0102ff'")
+    response = params.get("response")
+    if response is not None:
+        response = bool(response)
+    run_bleak(_session_write_async(session, char, data, response),
+              timeout + 20.0)
+    return {
+        "message": "Wrote %d byte(s) to %s" % (len(data), char),
+        "value": {"session_id": session.session_id, "char": char,
+                  "length": len(data)},
+    }
+
+
+def session_notify_start(params):
+    session = _get_live_session(_require_session_id(params))
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    run_bleak(_session_notify_start_async(session, char), timeout + 20.0)
+    return {
+        "message": "Started notifications on %s" % char,
+        "value": {"session_id": session.session_id, "char": char},
+    }
+
+
+def session_notify_stop(params):
+    session = _get_live_session(_require_session_id(params))
+    char = _require_char(params)
+    timeout = _timeout(params, 10.0)
+    run_bleak(_session_notify_stop_async(session, char), timeout + 20.0)
+    return {
+        "message": "Stopped notifications on %s" % char,
+        "value": {"session_id": session.session_id, "char": char},
+    }
+
+
+def session_notify_poll(params):
+    session = _get_live_session(_require_session_id(params))
+    char = _optional_char(params)
+    max_messages = int(_number(params, "max_messages", 1))
+    if not 1 <= max_messages <= 10000:
+        raise ValueError("max_messages must be between 1 and 10000")
+    wait = _number(params, "wait", 0.0)
+    if not 0.0 <= wait <= 300.0:
+        raise ValueError("wait must be between 0 and 300 seconds")
+    if not session.notify_bufs:
+        raise ValueError("no notifications are active; call session_notify_start first")
+    wait = min(wait, max(0.0, _session_remaining_s(session)))
+    messages, timed_out = run_bleak(
+        _session_notify_poll_async(session, char, max_messages, wait),
+        wait + 20.0)
+    return {
+        "message": "Received %d notification(s)" % len(messages),
+        "value": {
+            "session_id": session.session_id,
+            "messages": messages,
+            "timed_out": timed_out,
+        },
+    }
+
+
+def session_close(params):
+    """Idempotent: an unknown or already-ended session_id still succeeds.
+
+    Without session_id, closes nothing unless ``force`` is set, which closes
+    whatever session is open (recovery for a client that lost the id).
+    """
+    session_id = params.get("session_id")
+    if isinstance(session_id, str) and session_id.strip():
+        session_id = session_id.strip()
+        with _sessions_lock:
+            session = _sessions.get(session_id)
+        targets = [session] if session is not None else []
+    else:
+        with _sessions_lock:
+            targets = list(_sessions.values())
+        if not targets:
+            return {
+                "message": "No BLE session to close",
+                "value": {"closed": True, "session_id": None},
+            }
+        if not params.get("force"):
+            raise ValueError("session_id is required")
+        session_id = targets[0].session_id
+    for session in targets:
+        _close_session(session, "closed")
+    return {
+        "message": "Closed BLE session %s" % session_id,
+        "value": {"closed": True, "session_id": session_id},
     }
 
 
@@ -342,7 +815,22 @@ _ACTIONS = {
     "write": write,
     "notify": notify,
     "pair": pair,
+    "session_open": session_open,
+    "session_pair": session_pair,
+    "session_read": session_read,
+    "session_write": session_write,
+    "session_notify_start": session_notify_start,
+    "session_notify_poll": session_notify_poll,
+    "session_notify_stop": session_notify_stop,
+    "session_close": session_close,
 }
+
+# Run on the held link without bt_adapter_lock so a long poll cannot block
+# the 409s for other BLE/BluFi work or session_close.
+_SESSION_OPERATION_ACTIONS = frozenset((
+    "session_pair", "session_read", "session_write",
+    "session_notify_start", "session_notify_poll", "session_notify_stop",
+))
 
 
 def register_ble_routes(app: Flask) -> None:
@@ -354,8 +842,7 @@ def register_ble_routes(app: Flask) -> None:
         Execute a BLE command using the box's Bluetooth adapter.
 
         Request body:
-            { "action": "scan" | "info" | "connect" | "disconnect"
-                        | "read" | "write" | "notify" | "pair",
+            { "action": "<one-shot or session_* action>",
               "params": { ... } }
         """
         try:
@@ -366,13 +853,23 @@ def register_ble_routes(app: Flask) -> None:
             if action not in _VALID_ACTIONS:
                 return jsonify({
                     'success': False,
-                    'error': 'action (scan|info|connect|disconnect|read|write'
-                             '|notify|pair) is required',
+                    'error': (
+                        'action (scan|info|connect|disconnect|read|write|'
+                        'notify|pair|session_open|session_pair|session_read|'
+                        'session_write|session_notify_start|session_notify_poll|'
+                        'session_notify_stop|session_close) is required'
+                    ),
                 }), 400
 
+            if action in _SESSION_OPERATION_ACTIONS:
+                adapter_guard = contextlib.nullcontext()
+            else:
+                adapter_guard = bt_adapter_lock
             try:
-                with bt_adapter_lock:
+                with adapter_guard:
                     result = _ACTIONS[action](params)
+            except BleSessionConflict as e:
+                return jsonify({'success': False, 'error': str(e)}), 409
             except ValueError as e:
                 return jsonify({'success': False, 'error': str(e)}), 400
             except Exception as e:
