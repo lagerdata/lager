@@ -19,9 +19,11 @@ bleak thread.
 
 One-shot GATT actions (read, write, notify, pair) still connect, do one
 operation, and disconnect. Held-link work uses the ``session_*`` actions:
-one open session owns the adapter until close, peer disconnect, or the 300 s
-lifetime cap; other ``/ble/command`` and BluFi actions fail fast with 409 while
-it is open. Of the session actions, only session_open and session_close take
+one open session owns the adapter until close, peer disconnect, its
+``max_lifetime`` cap (default 300 s), or ``idle_timeout`` (default 60 s) without
+any session request; other ``/ble/command`` and BluFi actions fail fast with 409
+while it is open. Notifications buffered when a session ends other than by
+``session_close`` stay pollable for 60 s. Of the session actions, only session_open and session_close take
 ``bt_adapter_lock``; operations on an open session never do, so a long notify poll cannot block
 those 409s or session_close.
 """
@@ -62,13 +64,19 @@ _VALID_ACTIONS = (
 # XX:XX:XX:XX:XX:XX (colons or dashes)
 _BLE_ADDRESS_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
-SESSION_MAX_LIFETIME_S = 300.0
+SESSION_DEFAULT_MAX_LIFETIME_S = 300.0
+SESSION_MAX_LIFETIME_CEILING_S = 1800.0
+SESSION_DEFAULT_IDLE_TIMEOUT_S = 60.0
+SESSION_MIN_TIMEOUT_S = 5.0
+_CLIENT_CLOSE_REASON = "closed"
+_ENDED_RETENTION_S = 60.0
 _REAPER_INTERVAL_S = 1.0
 _ENDED_SESSIONS_KEPT = 16
 _NOTIFY_BUFFER_MAX = 10000
 
-# Module-level so tests can fake the clock.
+# Module-level so tests can fake the clocks.
 _monotonic = time.monotonic
+_wall_clock = time.time
 
 # One BT adapter on the box: serialize every BLE *and* BluFi operation.
 # blufi.py imports this lock so the two handlers can't fight over the radio.
@@ -78,11 +86,13 @@ bt_adapter_lock = threading.Lock()
 _bleak_loop = None
 _bleak_loop_guard = threading.Lock()
 
-# Single held GATT session (v1). _sessions_lock guards _sessions and _ended;
+# Single held GATT session (v1). _sessions_lock guards _sessions, _ended,
+# _retained and each session's activity fields;
 # bleak awaits run on the bleak loop via run_bleak.
 _sessions_lock = threading.Lock()
 _sessions = {}  # session_id -> _BleSession
 _ended = collections.OrderedDict()  # recently ended session_id -> reason
+_retained = {}  # ended session_id -> session whose notify buffers are still pollable
 
 
 class BleSessionConflict(Exception):
@@ -140,10 +150,11 @@ def _char_key(char):
 
 
 class _NotifyBuf:
-    __slots__ = ("label", "messages")
+    __slots__ = ("count", "label", "messages")
 
     def __init__(self, label):
         self.label = label
+        self.count = 0
         self.messages = collections.deque(maxlen=_NOTIFY_BUFFER_MAX)
 
 
@@ -155,31 +166,61 @@ class _BleSession:
         "address",
         "client",
         "created_at",
+        "ended_at",
         "ended_reason",
+        "idle_timeout",
+        "in_flight",
+        "last_activity",
         "loop",
+        "max_lifetime",
         "notify_bufs",
         "notify_chars",
         "session_id",
     )
 
-    def __init__(self, session_id, address):
+    def __init__(self, session_id, address, max_lifetime, idle_timeout):
         self.session_id = session_id
         self.address = address
+        self.max_lifetime = max_lifetime
+        self.idle_timeout = idle_timeout
+        self.in_flight = 0
         self.client = None
         self.loop = None
         self.activity = None  # set on notification or session end
         self.created_at = _monotonic()
+        self.last_activity = self.created_at
+        self.ended_at = None
         self.ended_reason = None
         self.notify_bufs = {}  # char_key -> _NotifyBuf
         self.notify_chars = {}  # char_key -> original char for stop_notify
 
 
 def _session_remaining_s(session):
-    return SESSION_MAX_LIFETIME_S - (_monotonic() - session.created_at)
+    return session.max_lifetime - (_monotonic() - session.created_at)
 
 
-def _session_expired(session):
-    return _session_remaining_s(session) <= 0
+def _reap_reason(session):
+    """Why the session should be reaped now, or None. Caller holds _sessions_lock."""
+    if _session_remaining_s(session) <= 0:
+        return "lifetime expired"
+    idle_s = _monotonic() - session.last_activity
+    if session.in_flight == 0 and idle_s >= session.idle_timeout:
+        return "idle timeout"
+    return None
+
+
+@contextlib.contextmanager
+def _session_request(session):
+    """Counts the request as activity at start and end; busy sessions never idle."""
+    with _sessions_lock:
+        session.in_flight += 1
+        session.last_activity = _monotonic()
+    try:
+        yield
+    finally:
+        with _sessions_lock:
+            session.in_flight -= 1
+            session.last_activity = _monotonic()
 
 
 def _ended_error(session_id, reason):
@@ -201,9 +242,13 @@ def _end_session(session, reason):
         if _sessions.pop(session.session_id, None) is None:
             return False
         session.ended_reason = reason
+        session.ended_at = _monotonic()
         _ended[session.session_id] = reason
+        if reason != _CLIENT_CLOSE_REASON:
+            _retained[session.session_id] = session
         while len(_ended) > _ENDED_SESSIONS_KEPT:
-            _ended.popitem(last=False)
+            evicted, _ = _ended.popitem(last=False)
+            _retained.pop(evicted, None)
     logger.info("BLE session %s ended (%s)", session.session_id, reason)
     _wake_pollers(session)
     return True
@@ -223,7 +268,6 @@ async def _teardown_session_async(session):
         except Exception:
             logger.debug("session stop_notify failed for %s", key, exc_info=True)
     session.notify_chars.clear()
-    session.notify_bufs.clear()
     await _disconnect_client(session.client)
 
 
@@ -237,15 +281,33 @@ def _close_session(session, reason):
         logger.debug("BLE session teardown failed", exc_info=True)
 
 
-def reap_expired_sessions():
-    """Close sessions past the lifetime cap; one reaper tick."""
+def _drop_stale_retained():
+    now = _monotonic()
     with _sessions_lock:
-        expired = [s for s in _sessions.values() if _session_expired(s)]
-    if not expired:
+        stale = [
+            sid
+            for sid, s in _retained.items()
+            if now - s.ended_at >= _ENDED_RETENTION_S
+        ]
+        for sid in stale:
+            del _retained[sid]
+
+
+def reap_expired_sessions():
+    """Close sessions past lifetime or idle limits and drop stale retained
+    buffers; one reaper tick."""
+    _drop_stale_retained()
+    with _sessions_lock:
+        doomed = [
+            (s, reason)
+            for s in _sessions.values()
+            if (reason := _reap_reason(s)) is not None
+        ]
+    if not doomed:
         return
     with bt_adapter_lock:
-        for session in expired:
-            _close_session(session, "lifetime expired")
+        for session, reason in doomed:
+            _close_session(session, reason)
 
 
 def _reaper_loop():
@@ -298,6 +360,15 @@ def _get_live_session(session_id):
     if reason is not None:
         raise _ended_error(session_id, reason)
     raise ValueError("unknown BLE session_id")
+
+
+def _get_pollable_session(session_id):
+    """Live session, or an ended one whose buffers are still retained."""
+    with _sessions_lock:
+        retained = _retained.get(session_id)
+    if retained is not None:
+        return retained
+    return _get_live_session(session_id)
 
 
 def _require_session_id(params):
@@ -437,6 +508,7 @@ async def _session_open_async(session, timeout):
         raise
     session.client = client
     with _sessions_lock:
+        session.last_activity = _monotonic()
         _sessions[session.session_id] = session
 
 
@@ -461,7 +533,15 @@ async def _session_notify_start_async(session, char):
     buf = _NotifyBuf(char)
 
     def on_notify(_c, data):
-        buf.messages.append(bytes(data))
+        buf.count += 1
+        buf.messages.append(
+            {
+                "char": buf.label,
+                "n": buf.count,
+                "ts": _wall_clock(),
+                "data": bytes(data).hex(),
+            }
+        )
         session.activity.set()
 
     # Claim the key before awaiting so a concurrent start for the same char
@@ -508,27 +588,28 @@ def _drain_round_robin(session, keys, out, max_messages):
             buf = session.notify_bufs.get(key)
             if buf is None or not buf.messages:
                 continue
-            out.append({"char": buf.label, "data": buf.messages.popleft().hex()})
+            out.append(buf.messages.popleft())
             progressed = True
             if len(out) >= max_messages:
                 break
 
 
 async def _session_notify_poll_async(session, char_filter, max_messages, wait):
-    """Drain buffered notifications, waiting up to `wait` seconds for more.
+    """Return buffered notifications, waiting up to `wait` seconds for the first.
 
-    Returns (messages, timed_out). Raises if the session ends mid-poll.
+    Returns (messages, timed_out). Raises if the session ended with nothing
+    buffered.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + wait
     out = []
     while True:
         session.activity.clear()
+        _drain_round_robin(session, _poll_keys(session, char_filter), out, max_messages)
+        if out:
+            return out, False
         if session.ended_reason is not None:
             raise _ended_error(session.session_id, session.ended_reason)
-        _drain_round_robin(session, _poll_keys(session, char_filter), out, max_messages)
-        if len(out) >= max_messages:
-            return out, False
         remaining = deadline - loop.time()
         if remaining <= 0:
             return out, True
@@ -696,23 +777,47 @@ def pair(params):
     }
 
 
+def _session_limits(params):
+    max_lifetime = _number(params, "max_lifetime", SESSION_DEFAULT_MAX_LIFETIME_S)
+    if not SESSION_MIN_TIMEOUT_S <= max_lifetime <= SESSION_MAX_LIFETIME_CEILING_S:
+        raise ValueError(
+            "max_lifetime must be between %g and %g seconds"
+            % (SESSION_MIN_TIMEOUT_S, SESSION_MAX_LIFETIME_CEILING_S)
+        )
+    default_idle = min(SESSION_DEFAULT_IDLE_TIMEOUT_S, max_lifetime)
+    idle_timeout = _number(params, "idle_timeout", default_idle)
+    if not SESSION_MIN_TIMEOUT_S <= idle_timeout <= max_lifetime:
+        raise ValueError(
+            "idle_timeout must be between %g and max_lifetime (%g) seconds"
+            % (SESSION_MIN_TIMEOUT_S, max_lifetime)
+        )
+    return max_lifetime, idle_timeout
+
+
 def session_open(params):
     address = _require_address(params)
     timeout = _timeout(params, 10.0)
+    max_lifetime, idle_timeout = _session_limits(params)
     require_no_ble_session()
     _ensure_reaper()
-    session = _BleSession(uuid.uuid4().hex, address)
+    session = _BleSession(uuid.uuid4().hex, address, max_lifetime, idle_timeout)
     run_bleak(_session_open_async(session, timeout), timeout + 20.0)
     return {
         "message": "Opened BLE session %s to %s" % (session.session_id, address),
-        "value": {"session_id": session.session_id, "address": address},
+        "value": {
+            "session_id": session.session_id,
+            "address": address,
+            "max_lifetime": max_lifetime,
+            "idle_timeout": idle_timeout,
+        },
     }
 
 
 def session_pair(params):
     session = _get_live_session(_require_session_id(params))
     timeout = _timeout(params, 10.0)
-    run_bleak(_session_pair_async(session), timeout + 20.0)
+    with _session_request(session):
+        run_bleak(_session_pair_async(session), timeout + 20.0)
     return {
         "message": "Paired session %s with %s" % (session.session_id, session.address),
         "value": {
@@ -727,7 +832,8 @@ def session_read(params):
     session = _get_live_session(_require_session_id(params))
     char = _require_char(params)
     timeout = _timeout(params, 10.0)
-    data = run_bleak(_session_read_async(session, char), timeout + 20.0)
+    with _session_request(session):
+        data = run_bleak(_session_read_async(session, char), timeout + 20.0)
     return {
         "message": "Read %d byte(s) from %s" % (len(data), char),
         "value": {"session_id": session.session_id, "char": char, "data": data.hex()},
@@ -748,7 +854,8 @@ def session_write(params):
     response = params.get("response")
     if response is not None:
         response = bool(response)
-    run_bleak(_session_write_async(session, char, data, response), timeout + 20.0)
+    with _session_request(session):
+        run_bleak(_session_write_async(session, char, data, response), timeout + 20.0)
     return {
         "message": "Wrote %d byte(s) to %s" % (len(data), char),
         "value": {"session_id": session.session_id, "char": char, "length": len(data)},
@@ -759,7 +866,8 @@ def session_notify_start(params):
     session = _get_live_session(_require_session_id(params))
     char = _require_char(params)
     timeout = _timeout(params, 10.0)
-    run_bleak(_session_notify_start_async(session, char), timeout + 20.0)
+    with _session_request(session):
+        run_bleak(_session_notify_start_async(session, char), timeout + 20.0)
     return {
         "message": "Started notifications on %s" % char,
         "value": {"session_id": session.session_id, "char": char},
@@ -770,7 +878,8 @@ def session_notify_stop(params):
     session = _get_live_session(_require_session_id(params))
     char = _require_char(params)
     timeout = _timeout(params, 10.0)
-    run_bleak(_session_notify_stop_async(session, char), timeout + 20.0)
+    with _session_request(session):
+        run_bleak(_session_notify_stop_async(session, char), timeout + 20.0)
     return {
         "message": "Stopped notifications on %s" % char,
         "value": {"session_id": session.session_id, "char": char},
@@ -778,7 +887,7 @@ def session_notify_stop(params):
 
 
 def session_notify_poll(params):
-    session = _get_live_session(_require_session_id(params))
+    session = _get_pollable_session(_require_session_id(params))
     char = _optional_char(params)
     max_messages = int(_number(params, "max_messages", 1))
     if not 1 <= max_messages <= 10000:
@@ -786,18 +895,20 @@ def session_notify_poll(params):
     wait = _number(params, "wait", 0.0)
     if not 0.0 <= wait <= 300.0:
         raise ValueError("wait must be between 0 and 300 seconds")
-    if not session.notify_bufs:
+    if session.ended_reason is None and not session.notify_bufs:
         raise ValueError("no notifications are active; call session_notify_start first")
     wait = min(wait, max(0.0, _session_remaining_s(session)))
-    messages, timed_out = run_bleak(
-        _session_notify_poll_async(session, char, max_messages, wait), wait + 20.0
-    )
+    with _session_request(session):
+        messages, timed_out = run_bleak(
+            _session_notify_poll_async(session, char, max_messages, wait), wait + 20.0
+        )
     return {
         "message": "Received %d notification(s)" % len(messages),
         "value": {
             "session_id": session.session_id,
             "messages": messages,
             "timed_out": timed_out,
+            "ended": session.ended_reason,
         },
     }
 
@@ -813,6 +924,7 @@ def session_close(params):
         session_id = session_id.strip()
         with _sessions_lock:
             session = _sessions.get(session_id)
+            _retained.pop(session_id, None)
         targets = [session] if session is not None else []
     else:
         with _sessions_lock:
@@ -826,7 +938,7 @@ def session_close(params):
             raise ValueError("session_id is required")
         session_id = targets[0].session_id
     for session in targets:
-        _close_session(session, "closed")
+        _close_session(session, _CLIENT_CLOSE_REASON)
     return {
         "message": "Closed BLE session %s" % session_id,
         "value": {"closed": True, "session_id": session_id},
