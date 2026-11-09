@@ -25,6 +25,7 @@ it is open. Of the session actions, only session_open and session_close take
 ``bt_adapter_lock``; operations on an open session never do, so a long notify poll cannot block
 those 409s or session_close.
 """
+
 import asyncio
 import collections
 import concurrent.futures
@@ -40,15 +41,26 @@ from flask import Flask, jsonify, request
 logger = logging.getLogger(__name__)
 
 _VALID_ACTIONS = (
-    "scan", "info", "connect", "disconnect",
-    "read", "write", "notify", "pair",
-    "session_open", "session_pair", "session_read", "session_write",
-    "session_notify_start", "session_notify_poll", "session_notify_stop",
+    "scan",
+    "info",
+    "connect",
+    "disconnect",
+    "read",
+    "write",
+    "notify",
+    "pair",
+    "session_open",
+    "session_pair",
+    "session_read",
+    "session_write",
+    "session_notify_start",
+    "session_notify_poll",
+    "session_notify_stop",
     "session_close",
 )
 
 # XX:XX:XX:XX:XX:XX (colons or dashes)
-_BLE_ADDRESS_RE = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$')
+_BLE_ADDRESS_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
 SESSION_MAX_LIFETIME_S = 300.0
 _REAPER_INTERVAL_S = 1.0
@@ -103,7 +115,8 @@ def get_bleak_loop():
         if _bleak_loop is None or _bleak_loop.is_closed():
             loop = asyncio.new_event_loop()
             thread = threading.Thread(
-                target=loop.run_forever, name="ble-bleak-loop", daemon=True)
+                target=loop.run_forever, name="ble-bleak-loop", daemon=True
+            )
             thread.start()
             _bleak_loop = loop
         return _bleak_loop
@@ -127,7 +140,7 @@ def _char_key(char):
 
 
 class _NotifyBuf:
-    __slots__ = ("messages", "label")
+    __slots__ = ("label", "messages")
 
     def __init__(self, label):
         self.label = label
@@ -136,8 +149,18 @@ class _NotifyBuf:
 
 class _BleSession:
     """Client, loop and activity event are filled in by _session_open_async."""
-    __slots__ = ("session_id", "address", "client", "loop", "activity",
-                 "created_at", "ended_reason", "notify_bufs", "notify_chars")
+
+    __slots__ = (
+        "activity",
+        "address",
+        "client",
+        "created_at",
+        "ended_reason",
+        "loop",
+        "notify_bufs",
+        "notify_chars",
+        "session_id",
+    )
 
     def __init__(self, session_id, address):
         self.session_id = session_id
@@ -243,7 +266,8 @@ def _ensure_reaper():
     with _reaper_guard:
         if _reaper_thread is None:
             _reaper_thread = threading.Thread(
-                target=_reaper_loop, name="ble-session-reaper", daemon=True)
+                target=_reaper_loop, name="ble-session-reaper", daemon=True
+            )
             _reaper_thread.start()
 
 
@@ -254,8 +278,7 @@ def ble_session_busy_message():
             return None
         sid = next(iter(_sessions))
         return (
-            "BLE session %s is open; close it before other BLE/BluFi operations"
-            % sid
+            "BLE session %s is open; close it before other BLE/BluFi operations" % sid
         )
 
 
@@ -290,12 +313,14 @@ async def _scan_async(timeout):
     found = await BleakScanner.discover(timeout=timeout, return_adv=True)
     devices = []
     for address, (device, adv) in found.items():
-        devices.append({
-            "name": device.name or address,
-            "address": address,
-            "rssi": adv.rssi if adv is not None else -100,
-            "uuids": list(adv.service_uuids or []) if adv is not None else [],
-        })
+        devices.append(
+            {
+                "name": device.name or address,
+                "address": address,
+                "rssi": adv.rssi if adv is not None else -100,
+                "uuids": list(adv.service_uuids or []) if adv is not None else [],
+            }
+        )
     return devices
 
 
@@ -306,18 +331,20 @@ async def _device_info_async(address, timeout):
     async with BleakClient(address, timeout=timeout) as client:
         services = []
         for service in client.services:
-            services.append({
-                "uuid": str(service.uuid),
-                "description": service.description,
-                "characteristics": [
-                    {
-                        "uuid": str(char.uuid),
-                        "description": char.description,
-                        "properties": list(char.properties),
-                    }
-                    for char in service.characteristics
-                ],
-            })
+            services.append(
+                {
+                    "uuid": str(service.uuid),
+                    "description": service.description,
+                    "characteristics": [
+                        {
+                            "uuid": str(char.uuid),
+                            "description": char.description,
+                            "properties": list(char.properties),
+                        }
+                        for char in service.characteristics
+                    ],
+                }
+            )
     return {"address": address, "connected": True, "services": services}
 
 
@@ -333,8 +360,11 @@ async def _disconnect_async(address):
         return {"address": address, "disconnected": True}
     except Exception as e:
         # Unreachable means already disconnected — that's the desired state.
-        return {"address": address, "disconnected": True,
-                "note": bluez_unavailable_hint(e) or "Device not reachable: %s" % e}
+        return {
+            "address": address,
+            "disconnected": True,
+            "note": bluez_unavailable_hint(e) or "Device not reachable: %s" % e,
+        }
 
 
 async def _read_async(address, char, timeout):
@@ -397,8 +427,9 @@ async def _session_open_async(session, timeout):
 
     session.loop = asyncio.get_running_loop()
     session.activity = asyncio.Event()
-    client = BleakClient(session.address, timeout=timeout,
-                         disconnected_callback=on_disconnect)
+    client = BleakClient(
+        session.address, timeout=timeout, disconnected_callback=on_disconnect
+    )
     try:
         await client.connect()
     except asyncio.CancelledError:
@@ -495,8 +526,7 @@ async def _session_notify_poll_async(session, char_filter, max_messages, wait):
         session.activity.clear()
         if session.ended_reason is not None:
             raise _ended_error(session.session_id, session.ended_reason)
-        _drain_round_robin(session, _poll_keys(session, char_filter), out,
-                           max_messages)
+        _drain_round_robin(session, _poll_keys(session, char_filter), out, max_messages)
         if len(out) >= max_messages:
             return out, False
         remaining = deadline - loop.time()
@@ -521,8 +551,7 @@ def scan(params):
     if name_exact:
         devices = [d for d in devices if d["name"] == name_exact]
     if name_contains:
-        devices = [d for d in devices
-                   if name_contains.lower() in d["name"].lower()]
+        devices = [d for d in devices if name_contains.lower() in d["name"].lower()]
     devices.sort(key=lambda d: (d["name"] == d["address"], d["name"]))
 
     return {
@@ -534,8 +563,7 @@ def scan(params):
 def _require_address(params):
     address = params.get("address") or ""
     if not _BLE_ADDRESS_RE.match(address):
-        raise ValueError(
-            "Invalid BLE address format. Use XX:XX:XX:XX:XX:XX")
+        raise ValueError("Invalid BLE address format. Use XX:XX:XX:XX:XX:XX")
     return address
 
 
@@ -546,7 +574,7 @@ def info(params):
     result = run_bleak(_device_info_async(address, timeout), timeout + 20.0)
     return {
         "message": "Connected to %s: %d service(s)"
-                   % (address, len(result["services"])),
+        % (address, len(result["services"])),
         "value": result,
     }
 
@@ -624,8 +652,7 @@ def write(params):
     response = params.get("response")
     if response is not None:
         response = bool(response)
-    run_bleak(_write_async(address, char, data, response, timeout),
-              timeout + 20.0)
+    run_bleak(_write_async(address, char, data, response, timeout), timeout + 20.0)
     return {
         "message": "Wrote %d byte(s) to %s" % (len(data), char),
         "value": {"address": address, "char": char, "length": len(data)},
@@ -645,7 +672,8 @@ def notify(params):
         raise ValueError("duration must be between 0.1 and 300 seconds")
     messages, timed_out = run_bleak(
         _notify_async(address, char, max_messages, duration, timeout),
-        timeout + duration + 20.0)
+        timeout + duration + 20.0,
+    )
     return {
         "message": "Received %d notification(s) from %s" % (len(messages), char),
         "value": {
@@ -686,10 +714,12 @@ def session_pair(params):
     timeout = _timeout(params, 10.0)
     run_bleak(_session_pair_async(session), timeout + 20.0)
     return {
-        "message": "Paired session %s with %s" % (session.session_id,
-                                                  session.address),
-        "value": {"session_id": session.session_id, "address": session.address,
-                  "paired": True},
+        "message": "Paired session %s with %s" % (session.session_id, session.address),
+        "value": {
+            "session_id": session.session_id,
+            "address": session.address,
+            "paired": True,
+        },
     }
 
 
@@ -700,8 +730,7 @@ def session_read(params):
     data = run_bleak(_session_read_async(session, char), timeout + 20.0)
     return {
         "message": "Read %d byte(s) from %s" % (len(data), char),
-        "value": {"session_id": session.session_id, "char": char,
-                  "data": data.hex()},
+        "value": {"session_id": session.session_id, "char": char, "data": data.hex()},
     }
 
 
@@ -719,12 +748,10 @@ def session_write(params):
     response = params.get("response")
     if response is not None:
         response = bool(response)
-    run_bleak(_session_write_async(session, char, data, response),
-              timeout + 20.0)
+    run_bleak(_session_write_async(session, char, data, response), timeout + 20.0)
     return {
         "message": "Wrote %d byte(s) to %s" % (len(data), char),
-        "value": {"session_id": session.session_id, "char": char,
-                  "length": len(data)},
+        "value": {"session_id": session.session_id, "char": char, "length": len(data)},
     }
 
 
@@ -763,8 +790,8 @@ def session_notify_poll(params):
         raise ValueError("no notifications are active; call session_notify_start first")
     wait = min(wait, max(0.0, _session_remaining_s(session)))
     messages, timed_out = run_bleak(
-        _session_notify_poll_async(session, char, max_messages, wait),
-        wait + 20.0)
+        _session_notify_poll_async(session, char, max_messages, wait), wait + 20.0
+    )
     return {
         "message": "Received %d notification(s)" % len(messages),
         "value": {
@@ -827,16 +854,22 @@ _ACTIONS = {
 
 # Run on the held link without bt_adapter_lock so a long poll cannot block
 # the 409s for other BLE/BluFi work or session_close.
-_SESSION_OPERATION_ACTIONS = frozenset((
-    "session_pair", "session_read", "session_write",
-    "session_notify_start", "session_notify_poll", "session_notify_stop",
-))
+_SESSION_OPERATION_ACTIONS = frozenset(
+    (
+        "session_pair",
+        "session_read",
+        "session_write",
+        "session_notify_start",
+        "session_notify_poll",
+        "session_notify_stop",
+    )
+)
 
 
 def register_ble_routes(app: Flask) -> None:
     """Register the /ble/command route on the Flask app."""
 
-    @app.route('/ble/command', methods=['POST'])
+    @app.route("/ble/command", methods=["POST"])
     def ble_command_http():
         """
         Execute a BLE command using the box's Bluetooth adapter.
@@ -847,19 +880,21 @@ def register_ble_routes(app: Flask) -> None:
         """
         try:
             data = request.get_json() or {}
-            action = data.get('action')
-            params = data.get('params') or {}
+            action = data.get("action")
+            params = data.get("params") or {}
 
             if action not in _VALID_ACTIONS:
-                return jsonify({
-                    'success': False,
-                    'error': (
-                        'action (scan|info|connect|disconnect|read|write|'
-                        'notify|pair|session_open|session_pair|session_read|'
-                        'session_write|session_notify_start|session_notify_poll|'
-                        'session_notify_stop|session_close) is required'
-                    ),
-                }), 400
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": (
+                            "action (scan|info|connect|disconnect|read|write|"
+                            "notify|pair|session_open|session_pair|session_read|"
+                            "session_write|session_notify_start|session_notify_poll|"
+                            "session_notify_stop|session_close) is required"
+                        ),
+                    }
+                ), 400
 
             if action in _SESSION_OPERATION_ACTIONS:
                 adapter_guard = contextlib.nullcontext()
@@ -869,19 +904,23 @@ def register_ble_routes(app: Flask) -> None:
                 with adapter_guard:
                     result = _ACTIONS[action](params)
             except BleSessionConflict as e:
-                return jsonify({'success': False, 'error': str(e)}), 409
+                return jsonify({"success": False, "error": str(e)}), 409
             except ValueError as e:
-                return jsonify({'success': False, 'error': str(e)}), 400
+                return jsonify({"success": False, "error": str(e)}), 400
             except Exception as e:
                 # bleak errors (adapter off, device unreachable, connect
                 # timeout) are hardware errors, not server bugs.
                 logger.exception("[HTTP] /ble/command %s failed", action)
-                return jsonify({'success': False,
-                                'error': bluez_unavailable_hint(e) or 'BLE error: %s' % e}), 502
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": bluez_unavailable_hint(e) or "BLE error: %s" % e,
+                    }
+                ), 502
 
             logger.info("[HTTP] /ble/command %s ok", action)
-            return jsonify({'success': True, 'action': action, **result})
+            return jsonify({"success": True, "action": action, **result})
 
         except Exception as e:
             logger.exception("[HTTP] /ble/command unexpected error")
-            return jsonify({'success': False, 'error': str(e)}), 500
+            return jsonify({"success": False, "error": str(e)}), 500
