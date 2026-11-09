@@ -4,8 +4,9 @@
 
 Covers session_open/pair/read/write/notify_*/close, the single-session and
 adapter-ownership rules (one-shot BLE + BluFi refuse while open), idempotent
-and forced close, peer disconnect, and the 300 s lifetime reaper. Bleak is
-faked. Most tests run coroutines on a fresh loop per call; the "bleak loop"
+and forced close, peer disconnect, the lifetime/idle reaper, notification
+numbering, and retention of buffered notifications after a session ends. Bleak
+is faked. Most tests run coroutines on a fresh loop per call; the "bleak loop"
 class uses the real run_bleak so the client lives on the persistent loop.
 """
 
@@ -190,6 +191,7 @@ class _SessionHarness:
         with ble_handler._sessions_lock:
             ble_handler._sessions.clear()
             ble_handler._ended.clear()
+            ble_handler._retained.clear()
 
     def _close_leftover_session(self):
         self._post("session_close", force=True)
@@ -199,10 +201,24 @@ class _SessionHarness:
             "/ble/command", json={"action": action, "params": params}
         )
 
-    def _open(self, address=ADDR):
-        r = self._post("session_open", address=address)
+    def _open(self, address=ADDR, **params):
+        r = self._post("session_open", address=address, **params)
         self.assertEqual(r.status_code, 200, r.get_json())
         return r.get_json()["value"]["session_id"]
+
+    def _fake_clock(self):
+        now = [1000.0]
+        patcher = patch.object(ble_handler, "_monotonic", lambda: now[0])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return now
+
+    def _fake_wall_clock(self):
+        now = [1_700_000_000.0]
+        patcher = patch.object(ble_handler, "_wall_clock", lambda: now[0])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return now
 
     def _blufi_status(self):
         app = Flask(__name__)
@@ -230,14 +246,45 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         r = self._post("session_open", address=ADDR)
         self.assertEqual(r.status_code, 200)
         value = r.get_json()["value"]
-        self.assertEqual(set(value.keys()), {"session_id", "address"})
+        self.assertEqual(
+            set(value.keys()),
+            {"session_id", "address", "max_lifetime", "idle_timeout"},
+        )
         self.assertEqual(value["address"], ADDR)
+        self.assertEqual(value["max_lifetime"], 300)
+        self.assertEqual(value["idle_timeout"], 60)
         sid = value["session_id"]
 
         data = self._post("session_read", session_id=sid, char=CHAR).get_json()
         self.assertEqual(data["value"]["data"], "64")
         # Still connected — no disconnect between open and read.
         self.assertEqual(self._device().calls, ["connect", ("read", CHAR)])
+
+    def test_open_echoes_custom_limits(self):
+        r = self._post("session_open", address=ADDR, max_lifetime=60, idle_timeout=10)
+        value = r.get_json()["value"]
+        self.assertEqual(value["max_lifetime"], 60)
+        self.assertEqual(value["idle_timeout"], 10)
+
+    def test_open_rejects_out_of_range_limits(self):
+        bad_params = (
+            {"max_lifetime": 4},
+            {"max_lifetime": 1801},
+            {"idle_timeout": 4},
+            {"idle_timeout": 301},
+            {"max_lifetime": 60, "idle_timeout": 61},
+        )
+        for params in bad_params:
+            r = self._post("session_open", address=ADDR, **params)
+            self.assertEqual(r.status_code, 400, params)
+        self.assertEqual(_FakeBleakClient.instances, [])
+
+    def test_open_accepts_boundary_limits(self):
+        r = self._post("session_open", address=ADDR, max_lifetime=5, idle_timeout=5)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self._post("session_close", force=True)
+        r = self._post("session_open", address=ADDR, max_lifetime=1800)
+        self.assertEqual(r.status_code, 200, r.get_json())
 
     def test_second_open_is_409(self):
         sid = self._open()
@@ -278,6 +325,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         )
 
     def test_multi_char_notify_poll(self):
+        wall = self._fake_wall_clock()
         sid = self._open()
         device = self._device()
 
@@ -300,18 +348,19 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         self.assertEqual(
             messages,
             [
-                {"char": CHAR, "data": "01"},
-                {"char": CHAR2, "data": "02"},
-                {"char": CHAR, "data": "03"},
+                {"char": CHAR, "n": 1, "ts": wall[0], "data": "01"},
+                {"char": CHAR2, "n": 1, "ts": wall[0], "data": "02"},
+                {"char": CHAR, "n": 2, "ts": wall[0], "data": "03"},
             ],
         )
-        self.assertTrue(r.get_json()["value"]["timed_out"])
+        self.assertFalse(r.get_json()["value"]["timed_out"])
+        self.assertIsNone(r.get_json()["value"]["ended"])
 
         r = self._post(
             "session_notify_poll", session_id=sid, char=CHAR2, max_messages=5, wait=0
         )
-        # Nothing left for CHAR2.
         self.assertEqual(r.get_json()["value"]["messages"], [])
+        self.assertTrue(r.get_json()["value"]["timed_out"])
 
         self._post("session_notify_stop", session_id=sid, char=CHAR)
         self._post("session_notify_stop", session_id=sid, char=CHAR2)
@@ -346,17 +395,10 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         r = self._post("session_read", session_id="deadbeef", char=CHAR)
         self.assertEqual(r.status_code, 400)
 
-    def _fake_clock(self):
-        now = [1000.0]
-        patcher = patch.object(ble_handler, "_monotonic", lambda: now[0])
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return now
-
     def test_reaper_closes_expired_session_without_a_request(self):
         now = self._fake_clock()
-        sid = self._open()
-        now[0] += ble_handler.SESSION_MAX_LIFETIME_S - 1
+        sid = self._open(idle_timeout=300)
+        now[0] += ble_handler.SESSION_DEFAULT_MAX_LIFETIME_S - 1
         ble_handler.reap_expired_sessions()
         self.assertNotIn("disconnect", self._device().calls)
 
@@ -370,6 +412,161 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("ended: lifetime expired", r.get_json()["error"])
         self.assertEqual(self._post("session_open", address=ADDR).status_code, 200)
+
+    def test_reaper_ends_session_at_custom_max_lifetime(self):
+        now = self._fake_clock()
+        sid = self._open(max_lifetime=10, idle_timeout=10)
+        now[0] += 9.9
+        ble_handler.reap_expired_sessions()
+        self.assertNotIn(sid, ble_handler._ended)
+
+        now[0] += 0.1
+        ble_handler.reap_expired_sessions()
+        self.assertEqual(ble_handler._ended[sid], "lifetime expired")
+
+    def test_reaper_ends_idle_session_and_requests_reset_idle(self):
+        now = self._fake_clock()
+        sid = self._open(idle_timeout=5)
+        now[0] += 4.9
+        ble_handler.reap_expired_sessions()
+        self.assertNotIn(sid, ble_handler._ended)
+
+        self._post("session_read", session_id=sid, char=CHAR)
+        now[0] += 4.9
+        ble_handler.reap_expired_sessions()
+        self.assertNotIn(sid, ble_handler._ended)
+
+        now[0] += 0.1
+        ble_handler.reap_expired_sessions()
+        self.assertIn("disconnect", self._device().calls)
+        r = self._post("session_read", session_id=sid, char=CHAR)
+        self.assertIn("ended: idle timeout", r.get_json()["error"])
+        self.assertEqual(self._post("pair", address=ADDR).status_code, 200)
+
+    def test_notification_numbers_are_per_char_and_ts_is_wall_clock(self):
+        wall = self._fake_wall_clock()
+        sid = self._open()
+        device = self._device()
+        self._post("session_notify_start", session_id=sid, char=CHAR)
+        self._post("session_notify_start", session_id=sid, char=CHAR2)
+
+        device.push_notify(CHAR, b"\x01")
+        wall[0] += 1.5
+        device.push_notify(CHAR2, b"\x02")
+        device.push_notify(CHAR, b"\x03")
+
+        r = self._post("session_notify_poll", session_id=sid, max_messages=10, wait=0)
+        got = [(m["char"], m["n"], m["ts"]) for m in r.get_json()["value"]["messages"]]
+        self.assertEqual(
+            got,
+            [
+                (CHAR, 1, 1_700_000_000.0),
+                (CHAR2, 1, 1_700_000_001.5),
+                (CHAR, 2, 1_700_000_001.5),
+            ],
+        )
+
+    def test_buffer_overflow_shows_as_gap_in_numbers(self):
+        sid = self._open()
+        device = self._device()
+        with patch.object(ble_handler, "_NOTIFY_BUFFER_MAX", 3):
+            self._post("session_notify_start", session_id=sid, char=CHAR)
+            for i in range(5):
+                device.push_notify(CHAR, bytes([i]))
+
+        r = self._post("session_notify_poll", session_id=sid, max_messages=10, wait=0)
+        numbers = [m["n"] for m in r.get_json()["value"]["messages"]]
+        self.assertEqual(numbers, [3, 4, 5])
+
+    def _peer_drop_with_two_buffered(self):
+        sid = self._open()
+        device = self._device()
+        self._post("session_notify_start", session_id=sid, char=CHAR)
+        device.push_notify(CHAR, b"\x01")
+        device.push_notify(CHAR, b"\x02")
+        device.drop_link()
+        return sid
+
+    def test_peer_disconnect_keeps_buffered_notifications_pollable(self):
+        sid = self._peer_drop_with_two_buffered()
+        self.assertEqual(self._post("pair", address=ADDR).status_code, 200)
+
+        r = self._post("session_notify_poll", session_id=sid, max_messages=10, wait=0)
+        self.assertEqual(r.status_code, 200)
+        value = r.get_json()["value"]
+        self.assertEqual([m["data"] for m in value["messages"]], ["01", "02"])
+        self.assertEqual(value["ended"], "peer disconnected")
+
+        r = self._post("session_notify_poll", session_id=sid, max_messages=10, wait=0)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("ended: peer disconnected", r.get_json()["error"])
+
+    def test_other_ops_on_ended_session_are_400(self):
+        sid = self._peer_drop_with_two_buffered()
+        for action, params in (
+            ("session_read", {"char": CHAR}),
+            ("session_write", {"char": CHAR, "data": "01"}),
+            ("session_pair", {}),
+            ("session_notify_start", {"char": CHAR2}),
+            ("session_notify_stop", {"char": CHAR}),
+        ):
+            r = self._post(action, session_id=sid, **params)
+            self.assertEqual(r.status_code, 400, action)
+            self.assertIn("ended: peer disconnected", r.get_json()["error"])
+
+    def test_poll_filter_on_ended_session_uses_retained_chars(self):
+        sid = self._peer_drop_with_two_buffered()
+        r = self._post("session_notify_poll", session_id=sid, char=CHAR2, wait=0)
+        self.assertEqual(r.status_code, 400)
+        r = self._post(
+            "session_notify_poll", session_id=sid, char=CHAR, max_messages=1, wait=0
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.get_json()["value"]["messages"]), 1)
+
+    def test_session_close_on_ended_session_discards_retained_buffers(self):
+        sid = self._peer_drop_with_two_buffered()
+        self.assertEqual(self._post("session_close", session_id=sid).status_code, 200)
+        r = self._post("session_notify_poll", session_id=sid, wait=0)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("ended: peer disconnected", r.get_json()["error"])
+
+    def test_client_close_does_not_retain_buffers(self):
+        sid = self._open()
+        self._post("session_notify_start", session_id=sid, char=CHAR)
+        self._device().push_notify(CHAR, b"\x01")
+        self._post("session_close", session_id=sid)
+        r = self._post("session_notify_poll", session_id=sid, wait=0)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("ended: closed", r.get_json()["error"])
+
+    def test_lifetime_expiry_keeps_buffered_notifications(self):
+        now = self._fake_clock()
+        sid = self._open(max_lifetime=10, idle_timeout=10)
+        self._post("session_notify_start", session_id=sid, char=CHAR)
+        self._device().push_notify(CHAR, b"\x01")
+        now[0] += 10
+        ble_handler.reap_expired_sessions()
+        self.assertIn("disconnect", self._device().calls)
+
+        r = self._post("session_notify_poll", session_id=sid, wait=0)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["value"]["ended"], "lifetime expired")
+        self.assertEqual(len(r.get_json()["value"]["messages"]), 1)
+
+    def test_retained_buffers_expire_after_retention_window(self):
+        now = self._fake_clock()
+        sid = self._peer_drop_with_two_buffered()
+        now[0] += ble_handler._ENDED_RETENTION_S - 0.1
+        ble_handler.reap_expired_sessions()
+        r = self._post("session_notify_poll", session_id=sid, max_messages=1, wait=0)
+        self.assertEqual(r.status_code, 200)
+
+        now[0] += 0.1
+        ble_handler.reap_expired_sessions()
+        r = self._post("session_notify_poll", session_id=sid, wait=0)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("ended: peer disconnected", r.get_json()["error"])
 
     def test_ensure_reaper_starts_one_thread(self):
         release = threading.Event()
@@ -471,7 +668,7 @@ class TestBleSession(_SessionHarness, unittest.TestCase):
         now = self._fake_clock()
         sid = self._open()
         self._post("session_notify_start", session_id=sid, char=CHAR)
-        now[0] += ble_handler.SESSION_MAX_LIFETIME_S - 0.2
+        now[0] += ble_handler.SESSION_DEFAULT_MAX_LIFETIME_S - 0.2
         r = self._post("session_notify_poll", session_id=sid, wait=300)
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json()["value"]["timed_out"])
@@ -571,19 +768,51 @@ class TestBleSessionOnBleakLoop(_SessionHarness, unittest.TestCase):
         self.assertEqual(result["response"].status_code, 200)
         self.assertEqual(device.calls.count(("start_notify", CHAR)), 1)
 
-    def test_poll_returns_notification_pushed_from_another_thread(self):
+    def test_poll_returns_as_soon_as_one_notification_arrives(self):
+        wall = self._fake_wall_clock()
         sid = self._start_notifying_session()
         device = self._device()
         thread, result = self._poll_in_background(sid, wait=30)
 
+        started = time.monotonic()
         loop = ble_handler.get_bleak_loop()
         loop.call_soon_threadsafe(device.push_notify, CHAR, b"\x07")
 
         response = self._finish_poll(thread, result)
         value = response.get_json()["value"]
+        self.assertLess(time.monotonic() - started, self.FAST_S)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(value["messages"], [{"char": CHAR, "data": "07"}])
+        self.assertEqual(
+            value["messages"], [{"char": CHAR, "n": 1, "ts": wall[0], "data": "07"}]
+        )
         self.assertFalse(value["timed_out"])
+
+    def test_poll_with_nothing_arriving_times_out_empty(self):
+        sid = self._start_notifying_session()
+        r = self._post("session_notify_poll", session_id=sid, wait=0.05)
+        value = r.get_json()["value"]
+        self.assertEqual(value["messages"], [])
+        self.assertTrue(value["timed_out"])
+
+    def test_session_with_poll_in_flight_is_not_reaped_as_idle(self):
+        now = self._fake_clock()
+        sid = self._open(idle_timeout=5)
+        self._post("session_notify_start", session_id=sid, char=CHAR)
+        device = self._device()
+        thread, result = self._poll_in_background(sid, wait=30)
+
+        now[0] += 100
+        ble_handler.reap_expired_sessions()
+        with ble_handler._sessions_lock:
+            self.assertIn(sid, ble_handler._sessions)
+
+        loop = ble_handler.get_bleak_loop()
+        loop.call_soon_threadsafe(device.push_notify, CHAR, b"\x01")
+        self.assertEqual(self._finish_poll(thread, result).status_code, 200)
+
+        now[0] += 5
+        ble_handler.reap_expired_sessions()
+        self.assertEqual(ble_handler._ended[sid], "idle timeout")
 
     def test_one_shot_and_blufi_get_409_during_poll(self):
         sid = self._start_notifying_session()
