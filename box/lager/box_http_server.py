@@ -428,6 +428,7 @@ def status():
             # cannot show them, so a client checks these before sending one.
             'wifiDisconnect': _has_wifi,
             'bleGatt': _has_ble,
+            'bleSession': _has_ble,
             'blufiDeviceMode': _has_blufi,
             'blufiCustomData': _has_blufi,
             # /custom-devices/* (the `lager nets assign` backend) is served

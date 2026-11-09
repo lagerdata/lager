@@ -125,7 +125,7 @@ class StatusCapabilitiesTest(unittest.TestCase):
         # endpoint flag is also true on a box that predates the action.
         orig = (box_http_server._has_ble, box_http_server._has_wifi,
                 box_http_server._has_blufi)
-        flags = ('wifiDisconnect', 'bleGatt', 'blufiDeviceMode',
+        flags = ('wifiDisconnect', 'bleGatt', 'bleSession', 'blufiDeviceMode',
                  'blufiCustomData')
         try:
             for available in (True, False):
