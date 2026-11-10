@@ -241,6 +241,63 @@ class _SessionHarness:
         return _FakeBleakClient.instances[-1]
 
 
+class _FakeBLEDevice:
+    def __init__(self, address, name, details, rssi):
+        self.address = address
+        self.name = name
+        self.details = details
+
+
+def _fake_bluez(properties, lookup_error=None):
+    """sys.modules entries standing in for bleak's BlueZ manager internals."""
+
+    class Manager:
+        _properties = properties
+
+        def get_default_adapter(self):
+            return "/org/bluez/hci0"
+
+    async def get_global_bluez_manager():
+        if lookup_error is not None:
+            raise lookup_error
+        return Manager()
+
+    manager_mod = types.ModuleType("bleak.backends.bluezdbus.manager")
+    manager_mod.get_global_bluez_manager = get_global_bluez_manager
+    device_mod = types.ModuleType("bleak.backends.device")
+    device_mod.BLEDevice = _FakeBLEDevice
+    return {
+        "bleak.backends": types.ModuleType("bleak.backends"),
+        "bleak.backends.bluezdbus": types.ModuleType("bleak.backends.bluezdbus"),
+        "bleak.backends.bluezdbus.manager": manager_mod,
+        "bleak.backends.device": device_mod,
+    }
+
+
+class TestSessionOpenUsesBlueZRecord(_SessionHarness, unittest.TestCase):
+    PATH = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01"
+
+    def test_known_device_is_passed_to_bleak_so_it_skips_the_scan(self):
+        props = {"Address": ADDR, "Alias": "dut"}
+        properties = {self.PATH: {"org.bluez.Device1": props}}
+        with patch.dict(sys.modules, _fake_bluez(properties)):
+            self._open()
+        target = self._device().address
+        self.assertIsInstance(target, _FakeBLEDevice)
+        self.assertEqual(target.details, {"path": self.PATH, "props": props})
+
+    def test_unknown_device_falls_back_to_the_address(self):
+        with patch.dict(sys.modules, _fake_bluez({})):
+            self._open()
+        self.assertEqual(self._device().address, ADDR)
+
+    def test_failed_lookup_falls_back_to_the_address(self):
+        fake = _fake_bluez({}, lookup_error=RuntimeError("no dbus"))
+        with patch.dict(sys.modules, fake):
+            self._open()
+        self.assertEqual(self._device().address, ADDR)
+
+
 class TestBleSession(_SessionHarness, unittest.TestCase):
     def test_open_returns_id_without_services_and_holds_the_link(self):
         r = self._post("session_open", address=ADDR)
