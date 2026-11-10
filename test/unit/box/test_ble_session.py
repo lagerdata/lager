@@ -274,7 +274,7 @@ def _fake_bluez(properties, lookup_error=None):
     }
 
 
-class TestSessionOpenUsesBlueZRecord(_SessionHarness, unittest.TestCase):
+class TestConnectUsesBlueZRecord(_SessionHarness, unittest.TestCase):
     PATH = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01"
 
     def test_known_device_is_passed_to_bleak_so_it_skips_the_scan(self):
@@ -285,6 +285,14 @@ class TestSessionOpenUsesBlueZRecord(_SessionHarness, unittest.TestCase):
         target = self._device().address
         self.assertIsInstance(target, _FakeBLEDevice)
         self.assertEqual(target.details, {"path": self.PATH, "props": props})
+
+    def test_one_shot_actions_use_the_record_too(self):
+        props = {"Address": ADDR, "Alias": "dut"}
+        properties = {self.PATH: {"org.bluez.Device1": props}}
+        with patch.dict(sys.modules, _fake_bluez(properties)):
+            r = self._post("read", address=ADDR, char=CHAR)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertIsInstance(self._device().address, _FakeBLEDevice)
 
     def test_unknown_device_falls_back_to_the_address(self):
         with patch.dict(sys.modules, _fake_bluez({})):
