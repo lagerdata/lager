@@ -490,6 +490,32 @@ async def _pair_async(address, timeout):
         await client.pair()
 
 
+async def _bluez_known_device(address):
+    """BlueZ's existing record for `address` as a BLEDevice, else the address.
+
+    Given a bare address, bleak scans before connecting, and BlueZ does not
+    re-announce a device it already holds, so that scan often misses a device
+    sitting right next to the box. Uses bleak 0.22 internals (the box pins it).
+    """
+    try:
+        from bleak.backends.bluezdbus.manager import get_global_bluez_manager
+        from bleak.backends.device import BLEDevice
+
+        manager = await get_global_bluez_manager()
+        device_name = "dev_" + address.upper().replace(":", "_").replace("-", "_")
+        path = "%s/%s" % (manager.get_default_adapter(), device_name)
+        props = manager._properties.get(path, {}).get("org.bluez.Device1")
+    except Exception:
+        logger.debug("BlueZ device lookup failed; bleak will scan", exc_info=True)
+        return address
+    if not props:
+        return address
+    details = {"path": path, "props": props}
+    return BLEDevice(
+        props.get("Address", address), props.get("Alias"), details, props.get("RSSI", -127)
+    )
+
+
 async def _session_open_async(session, timeout):
     from bleak import BleakClient
 
@@ -498,9 +524,8 @@ async def _session_open_async(session, timeout):
 
     session.loop = asyncio.get_running_loop()
     session.activity = asyncio.Event()
-    client = BleakClient(
-        session.address, timeout=timeout, disconnected_callback=on_disconnect
-    )
+    target = await _bluez_known_device(session.address)
+    client = BleakClient(target, timeout=timeout, disconnected_callback=on_disconnect)
     try:
         await client.connect()
     except asyncio.CancelledError:
