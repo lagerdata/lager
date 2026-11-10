@@ -504,7 +504,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 345 files)
+### Local Unit Tests (`test/unit/` -- 346 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 186 files)
 
@@ -701,7 +701,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 135 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 136 files)
 
 | File | What it tests |
 |------|---------------|
