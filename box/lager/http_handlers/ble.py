@@ -395,101 +395,6 @@ async def _scan_async(timeout):
     return devices
 
 
-async def _device_info_async(address, timeout):
-    """Connect and enumerate services/characteristics (used by info+connect)."""
-    from bleak import BleakClient
-
-    async with BleakClient(address, timeout=timeout) as client:
-        services = []
-        for service in client.services:
-            services.append(
-                {
-                    "uuid": str(service.uuid),
-                    "description": service.description,
-                    "characteristics": [
-                        {
-                            "uuid": str(char.uuid),
-                            "description": char.description,
-                            "properties": list(char.properties),
-                        }
-                        for char in service.characteristics
-                    ],
-                }
-            )
-    return {"address": address, "connected": True, "services": services}
-
-
-async def _disconnect_async(address):
-    """Ensure a device is disconnected. BLE links via bleak are transient, so
-    this connects briefly and lets the context exit tear the link down —
-    mirroring the old impl script's explicit-user-intent semantics."""
-    from bleak import BleakClient
-
-    try:
-        async with BleakClient(address, timeout=5.0):
-            pass
-        return {"address": address, "disconnected": True}
-    except Exception as e:
-        # Unreachable means already disconnected — that's the desired state.
-        return {
-            "address": address,
-            "disconnected": True,
-            "note": bluez_unavailable_hint(e) or "Device not reachable: %s" % e,
-        }
-
-
-async def _read_async(address, char, timeout):
-    from bleak import BleakClient
-
-    async with BleakClient(address, timeout=timeout) as client:
-        data = await client.read_gatt_char(char)
-    return bytes(data)
-
-
-async def _write_async(address, char, data, response, timeout):
-    from bleak import BleakClient
-
-    async with BleakClient(address, timeout=timeout) as client:
-        await client.write_gatt_char(char, data, response=response)
-
-
-async def _notify_async(address, char, max_messages, duration, timeout):
-    """Subscribe, collect up to max_messages notifications or until duration
-    seconds pass, then unsubscribe. Returns (messages, timed_out)."""
-    from bleak import BleakClient
-
-    messages = []
-    done = asyncio.Event()
-
-    def on_notify(_char, data):
-        if len(messages) < max_messages:
-            messages.append(bytes(data))
-        if len(messages) >= max_messages:
-            done.set()
-
-    async with BleakClient(address, timeout=timeout) as client:
-        await client.start_notify(char, on_notify)
-        try:
-            await asyncio.wait_for(done.wait(), timeout=duration)
-            timed_out = False
-        except asyncio.TimeoutError:
-            timed_out = True
-        try:
-            await client.stop_notify(char)
-        except Exception:
-            # The link is torn down on exit anyway; the messages are what
-            # the caller asked for.
-            logger.debug("stop_notify failed", exc_info=True)
-    return messages, timed_out
-
-
-async def _pair_async(address, timeout):
-    from bleak import BleakClient
-
-    async with BleakClient(address, timeout=timeout) as client:
-        await client.pair()
-
-
 async def _bluez_known_device(address):
     """BlueZ's existing record for `address` as a BLEDevice, else the address.
 
@@ -516,16 +421,105 @@ async def _bluez_known_device(address):
     )
 
 
-async def _session_open_async(session, timeout):
+async def _bleak_client(address, **kwargs):
+    """A BleakClient for `address`, connecting via BlueZ's record when it has one."""
     from bleak import BleakClient
 
+    return BleakClient(await _bluez_known_device(address), **kwargs)
+
+
+async def _device_info_async(address, timeout):
+    """Connect and enumerate services/characteristics (used by info+connect)."""
+    async with await _bleak_client(address, timeout=timeout) as client:
+        services = []
+        for service in client.services:
+            services.append(
+                {
+                    "uuid": str(service.uuid),
+                    "description": service.description,
+                    "characteristics": [
+                        {
+                            "uuid": str(char.uuid),
+                            "description": char.description,
+                            "properties": list(char.properties),
+                        }
+                        for char in service.characteristics
+                    ],
+                }
+            )
+    return {"address": address, "connected": True, "services": services}
+
+
+async def _disconnect_async(address):
+    """Ensure a device is disconnected. BLE links via bleak are transient, so
+    this connects briefly and lets the context exit tear the link down —
+    mirroring the old impl script's explicit-user-intent semantics."""
+    try:
+        async with await _bleak_client(address, timeout=5.0):
+            pass
+        return {"address": address, "disconnected": True}
+    except Exception as e:
+        # Unreachable means already disconnected — that's the desired state.
+        return {
+            "address": address,
+            "disconnected": True,
+            "note": bluez_unavailable_hint(e) or "Device not reachable: %s" % e,
+        }
+
+
+async def _read_async(address, char, timeout):
+    async with await _bleak_client(address, timeout=timeout) as client:
+        data = await client.read_gatt_char(char)
+    return bytes(data)
+
+
+async def _write_async(address, char, data, response, timeout):
+    async with await _bleak_client(address, timeout=timeout) as client:
+        await client.write_gatt_char(char, data, response=response)
+
+
+async def _notify_async(address, char, max_messages, duration, timeout):
+    """Subscribe, collect up to max_messages notifications or until duration
+    seconds pass, then unsubscribe. Returns (messages, timed_out)."""
+    messages = []
+    done = asyncio.Event()
+
+    def on_notify(_char, data):
+        if len(messages) < max_messages:
+            messages.append(bytes(data))
+        if len(messages) >= max_messages:
+            done.set()
+
+    async with await _bleak_client(address, timeout=timeout) as client:
+        await client.start_notify(char, on_notify)
+        try:
+            await asyncio.wait_for(done.wait(), timeout=duration)
+            timed_out = False
+        except asyncio.TimeoutError:
+            timed_out = True
+        try:
+            await client.stop_notify(char)
+        except Exception:
+            # The link is torn down on exit anyway; the messages are what
+            # the caller asked for.
+            logger.debug("stop_notify failed", exc_info=True)
+    return messages, timed_out
+
+
+async def _pair_async(address, timeout):
+    async with await _bleak_client(address, timeout=timeout) as client:
+        await client.pair()
+
+
+async def _session_open_async(session, timeout):
     def on_disconnect(_client):
         _end_session(session, "peer disconnected")
 
     session.loop = asyncio.get_running_loop()
     session.activity = asyncio.Event()
-    target = await _bluez_known_device(session.address)
-    client = BleakClient(target, timeout=timeout, disconnected_callback=on_disconnect)
+    client = await _bleak_client(
+        session.address, timeout=timeout, disconnected_callback=on_disconnect
+    )
     try:
         await client.connect()
     except asyncio.CancelledError:
