@@ -77,6 +77,27 @@ def logout(auth_server_url):
     click.echo(f'Logged out of {target}.')
 
 
+def _session_line(url, pinned):
+    """What the user can act on, not the access token's expiry.
+
+    The access token lapses every few minutes by design and renews silently,
+    so a lapsed one is only news if the renewal fails. A stored refresh
+    cookie does not prove the renewal works: the server can end the session
+    at any time. So an expired token is checked by renewing it, through the
+    same single-flight refresh every command uses.
+    """
+    if pinned:
+        return (f'not used: {gateway_auth.PINNED_TOKEN_ENV} is set, '
+                'and commands send that token instead')
+    state = gateway_auth.check_session(url)
+    if state == gateway_auth.SESSION_ACTIVE:
+        return 'active'
+    if state == gateway_auth.SESSION_EXPIRED:
+        return f'expired. Run: lager login {url}'
+    return ('could not check: the auth server neither renewed it nor refused it. '
+            f'Try again later. If a box asks you to sign in, run: lager login {url}')
+
+
 @click.command(name='whoami')
 def whoami():
     """Show your access-gateway sign-in status.
@@ -93,19 +114,9 @@ def whoami():
         click.echo(f'Details: {ACCESS_DOCS_URL}')
         return
 
+    pinned = gateway_auth.pinned_token()
     for s in status:
         who = s['email'] or 'unknown user'
         click.secho(f'{s["url"]}', fg='cyan')
         click.echo(f'  Signed in as: {who}')
-        # Report what the user can act on, not the short-lived access token's
-        # expiry (which lapses every few minutes by design and refreshes
-        # silently). A stored refresh means you're good to go; without one, a
-        # lapsed token can't renew and you must sign in again.
-        exp = s['expires_in']
-        if exp is not None and exp >= 0:
-            state = 'active'
-        elif s['refreshable']:
-            state = 'active (renews automatically)'
-        else:
-            state = f'expired — run: lager login {s["url"]}'
-        click.echo(f'  Session: {state}')
+        click.echo(f'  Session: {_session_line(s["url"], pinned)}')

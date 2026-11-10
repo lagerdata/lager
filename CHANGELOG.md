@@ -21,6 +21,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   box when the command stops. It exits with the status of the command, or 75
   when no box is available.
 
+### Fixed
+
+- **`lager whoami` no longer calls a session active when it cannot renew.**
+  It used to report `active (renews automatically)` for any session with a
+  stored refresh cookie, even after the auth server had ended the session.
+  A gated box then asked for `lager login` while `whoami` said all was well.
+  Now, when the access token has expired, `whoami` tries the renewal that
+  every command uses. A renewal reads as `active`. A refusal reads as
+  `expired`, with the `lager login <url>` to run. When the auth server gives
+  no answer, `whoami` says that it could not check.
+
 ## [0.62.0] - 2026-11-02
 
 ### Added

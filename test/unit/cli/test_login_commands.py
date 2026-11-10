@@ -206,10 +206,22 @@ class LogoutTests(LoginCommandTestCase):
 
 
 class WhoamiTests(LoginCommandTestCase):
+    """The command's wording for each session state.
 
-    def invoke(self, status):
-        with mock.patch.object(login_mod.gateway_auth, 'auth_status', return_value=status):
-            return self.runner.invoke(login_mod.whoami, [])
+    `check_session` is mocked here; test_whoami_session_check.py drives the
+    real one against a fake auth server.
+    """
+
+    def invoke(self, status, state=None, pinned=None):
+        state = state or login_mod.gateway_auth.SESSION_ACTIVE
+        with mock.patch.object(login_mod.gateway_auth, 'auth_status', return_value=status), \
+                mock.patch.object(login_mod.gateway_auth, 'check_session',
+                                  return_value=state) as check, \
+                mock.patch.object(login_mod.gateway_auth, 'pinned_token',
+                                  return_value=pinned):
+            result = self.runner.invoke(login_mod.whoami, [])
+        self.check = check
+        return result
 
     def _entry(self, **over):
         base = {'url': URL, 'email': 'a@b.c', 'expires_in': 300,
@@ -227,37 +239,39 @@ class WhoamiTests(LoginCommandTestCase):
     def test_active_session(self):
         result = self.invoke([self._entry()])
         self.assertIn('a@b.c', result.output)
-        self.assertIn('active', result.output)
+        self.assertIn('Session: active', result.output)
+        self.check.assert_called_once_with(URL)
 
     def test_unknown_user_placeholder(self):
         result = self.invoke([self._entry(email=None)])
         self.assertIn('unknown user', result.output)
 
-    def test_lapsed_but_refreshable_reads_as_active(self):
-        """A stored refresh cookie means the user need do nothing.
+    def test_active_never_claims_more_than_it_checked(self):
+        """The old wording promised a renewal nobody had tried."""
+        result = self.invoke([self._entry(expires_in=-10)])
+        self.assertNotIn('renews automatically', result.output)
 
-        The command deliberately does not surface the short-lived access
-        token's expiry, which lapses every few minutes by design.
-        """
-        result = self.invoke([self._entry(expires_in=-10, refreshable=True)])
-        self.assertIn('renews automatically', result.output)
-        self.assertNotIn('expired', result.output)
-
-    def test_expired_without_refresh_tells_the_user_what_to_run(self):
-        result = self.invoke([self._entry(expires_in=-10, refreshable=False)])
+    def test_expired_session_tells_the_user_what_to_run(self):
+        result = self.invoke([self._entry(expires_in=-10)],
+                             state=login_mod.gateway_auth.SESSION_EXPIRED)
         self.assertIn('expired', result.output)
         self.assertIn(f'lager login {URL}', result.output)
+        self.assertNotIn('Session: active', result.output)
 
-    def test_expires_in_none_falls_back_to_the_refreshable_check(self):
-        """`expires_in` is None when no token is stored at all."""
-        result = self.invoke([self._entry(expires_in=None, refreshable=False)])
-        self.assertIn('expired', result.output)
+    def test_unchecked_session_says_so_instead_of_guessing(self):
+        result = self.invoke([self._entry(expires_in=-10)],
+                             state=login_mod.gateway_auth.SESSION_UNCHECKED)
+        self.assertIn('could not check', result.output)
+        self.assertIn(f'lager login {URL}', result.output)
+        self.assertNotIn('Session: active', result.output)
+        self.assertNotIn('Session: expired', result.output)
 
-    def test_zero_expiry_counts_as_active(self):
-        """Boundary: the check is `>= 0`, not `> 0`."""
-        result = self.invoke([self._entry(expires_in=0)])
-        self.assertIn('active', result.output)
-        self.assertNotIn('expired', result.output)
+    def test_pinned_token_skips_the_check(self):
+        """A pinned token replaces the stored session in every command."""
+        result = self.invoke([self._entry(expires_in=-10)], pinned='ci-token')
+        self.assertIn('LAGER_GATEWAY_TOKEN', result.output)
+        self.check.assert_not_called()
+        self.assertNotIn('ci-token', result.output)
 
     def test_multiple_servers_are_all_listed(self):
         other = 'https://auth2.example.com'

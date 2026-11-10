@@ -104,6 +104,9 @@ Cookie: <the cookies captured at login, plus any later rotations>
 - Any failure (non-200, network error, missing `accessToken`) → the refresh
   is simply unusable; clients fall back to "no credential" behavior. A
   failed refresh MUST NOT clear the stored session.
+- A server SHOULD answer `401` or `403` when it refuses the cookie, and
+  only then. Clients MAY report a `401` or `403` as an ended session and
+  any other failure as "could not check": `lager whoami` does.
 
 ### 3.4 Browser sign-in (optional)
 

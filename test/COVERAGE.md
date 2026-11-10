@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3884 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3899 (+3 xfailed) |
 | `unit (box)` | `test/unit/box/` | 5214 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9952** |
+| | **Total gated** | **9967** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -817,7 +817,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_instrument_role_tables.py` | The three instrument role tables -- the box's `SUPPORTED_USB` and `CHANNEL_MAPS`, the CLI's `INSTRUMENT_NET_MAP` -- agree for every instrument; a channel advertised for a role the CLI will not create a net for is a silently unusable capability. Also that every instrument the scanner detects has a `lager nets add` entry |
 | `test_logic_dispatch_actions.py` | Every action `lager logic` sends is one the impl script it targets actually handles -- the contract that broke in #261, which a file-existence check cannot see (the pulse-width pair named an existing file with an action it does not register) |
 | `test_lease.py` | `lager lease` and `lease_client.py` against an in-process fake lease server: server, credential and organization resolution; the 409 reasons as exit 75; the leased box and lock holder reaching a real child process; renewals, a lease ended mid-run, a failed release, and exit-status pass-through |
-| `test_login_commands.py` | `lager login`/`logout`/`whoami`: display-name fallback, MFA prompt wiring, logout URL rstrip, and the four `whoami` session states |
+| `test_login_commands.py` | `lager login`/`logout`/`whoami`: display-name fallback, MFA prompt wiring, logout URL rstrip, and the `whoami` wording for an active, expired, unchecked or pinned-token session |
+| `test_whoami_session_check.py` | `whoami` checks an expired session by renewing it through `access_token_for`, against a fake auth server: a renewal is active and saves the rotation, a 401 or 403 is expired, and no answer, a 5xx, a 429 or a 200 without a token is "could not check". The failure memo keeps its reason, so a second check makes no second round trip |
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths and `ByteSizeType` (`--erase-size`: decimal, `0x` hex, `K`/`M` suffixes, never zero) |
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |

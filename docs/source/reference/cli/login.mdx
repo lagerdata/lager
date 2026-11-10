@@ -149,11 +149,21 @@ It shows four things:
 
 - which servers you are signed in to
 - who you are signed in as
-- when each session expires
+- whether each session still works
 - which gated boxes the CLI saw
 
 That separates three problems at a glance: "not signed in", "signed in as the
 wrong account", and "signed in but no access".
+
+The access token lapses every few minutes and renews by itself. After it lapses,
+`lager whoami` renews it to check the session, and shows one of these:
+
+| Session | What it means | What to do |
+| --- | --- | --- |
+| `active` | The token is valid, or the renewal worked. | Nothing. |
+| `expired` | The auth server refused the renewal, so the session is over. | Run the `lager login <url>` it prints. |
+| `could not check` | The auth server did not answer, or answered with an error. | Try again later. If a box asks you to sign in, run `lager login <url>`. |
+| `not used` | `LAGER_GATEWAY_TOKEN` is set, so commands send that token instead. | Nothing, unless you meant to use your own sign-in. |
 
 ## Common messages and what they mean
 

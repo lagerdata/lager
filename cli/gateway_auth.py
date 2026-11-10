@@ -128,7 +128,21 @@ _refresh_locks_guard = threading.Lock()
 # one. That also stops the memo outliving a test, which is the only way a
 # process here ever changes stores -- without it, one test's dead server
 # silently suppressed the next test's refresh.
-_refresh_failed = set()
+#
+# The value says why it failed, REFRESH_REJECTED or REFRESH_UNAVAILABLE, so
+# `lager whoami` can tell a session the server refused from one it could not
+# check. Every caller that only needs "did it fail" reads membership.
+_refresh_failed = {}
+
+# The auth server answered and refused the refresh cookie: the session is
+# over, and only `lager login` starts a new one. The reference auth server
+# answers 401 for every refusal (missing, expired, revoked, reused, past its
+# maximum age); 403 is a CSRF or policy refusal of the same cookie.
+REFRESH_REJECTED = 'rejected'
+# No verdict on the session: the server did not answer, answered with an
+# error of its own (5xx, rate limit), or answered 200 without a token.
+REFRESH_UNAVAILABLE = 'unavailable'
+_REJECTED_STATUSES = (401, 403)
 
 
 def _failed_key(url):
@@ -448,7 +462,11 @@ def clear_login(url=None):
 
 
 def _refresh_access_token(url, entry):
-    """Ask the auth server for a fresh access token, or return None.
+    """Ask the auth server for a fresh access token.
+
+    Returns ``(token, None)`` on success, else ``(None, reason)`` with
+    reason REFRESH_REJECTED (the server refused the cookie) or
+    REFRESH_UNAVAILABLE (no verdict). Only a 401 or 403 is a refusal.
 
     Retries once, but ONLY when the request never reached the server and
     failed fast: the server rotates the refresh token on every successful
@@ -464,7 +482,8 @@ def _refresh_access_token(url, entry):
     """
     cookies = entry.get('cookies') or {}
     if not cookies:
-        return None
+        # Nothing to renew with: as final as a refusal.
+        return None, REFRESH_REJECTED
     resp = None
     for _ in range(2):
         try:
@@ -475,23 +494,27 @@ def _refresh_access_token(url, entry):
             )
             break
         except requests.ConnectTimeout:
-            return None
+            return None, REFRESH_UNAVAILABLE
         except requests.ConnectionError:
             continue
         except requests.RequestException:
-            return None
-    if resp is None or resp.status_code != 200:
-        return None
+            return None, REFRESH_UNAVAILABLE
+    if resp is None:
+        return None, REFRESH_UNAVAILABLE
+    if resp.status_code in _REJECTED_STATUSES:
+        return None, REFRESH_REJECTED
+    if resp.status_code != 200:
+        return None, REFRESH_UNAVAILABLE
     try:
         access_token = resp.json().get('accessToken')
-    except ValueError:
-        return None
+    except (ValueError, AttributeError):
+        return None, REFRESH_UNAVAILABLE
     if not access_token:
-        return None
+        return None, REFRESH_UNAVAILABLE
     # Replay-safe: merge any rotated cookies the server handed back.
     rotated = {**cookies, **requests.utils.dict_from_cookiejar(resp.cookies)}
     save_login(url, access_token, rotated)
-    return access_token
+    return access_token, None
 
 
 def access_token_for(url, *, allow_refresh=True, min_remaining_fraction=None):
@@ -569,10 +592,10 @@ def access_token_for(url, *, allow_refresh=True, min_remaining_fraction=None):
             return fresh
         if _failed_key(url) in _refresh_failed:
             return _usable(entry, margin=False)
-        refreshed = _refresh_access_token(url, entry)
+        refreshed, reason = _refresh_access_token(url, entry)
         if refreshed:
             return refreshed
-        _refresh_failed.add(_failed_key(url))
+        _refresh_failed[_failed_key(url)] = reason
         return _usable(entry, margin=False)
 
 
@@ -671,6 +694,43 @@ def auth_status():
             'boxes': sorted(ip for ip, u in box_map.items() if u == url),
         })
     return out
+
+
+SESSION_ACTIVE = 'active'
+SESSION_EXPIRED = 'expired'
+SESSION_UNCHECKED = 'unchecked'
+
+
+def check_session(url):
+    """Whether the stored session for `url` can still get a token.
+
+    Returns SESSION_ACTIVE, SESSION_EXPIRED (the server refused the refresh,
+    or there is nothing to refresh with: only `lager login` helps), or
+    SESSION_UNCHECKED (the server gave no verdict). Contacts the server only
+    when the stored access token has expired, and then only through
+    `access_token_for`, so the refresh stays single-flight and its rotation
+    is saved: a second refresh path would spend the cookie on its own.
+
+    A stored refresh cookie alone proves nothing. The server can end the
+    session at any time, and the cookie carries no expiry the CLI can read,
+    so `auth_status`'s ``refreshable`` cannot answer this.
+
+    With a pinned token every command sends that instead of the stored
+    session, and `access_token_for` returns it without looking at the
+    store, so the answer is SESSION_UNCHECKED.
+    """
+    if pinned_token():
+        return SESSION_UNCHECKED
+    entry = _load_store().get('authServers', {}).get(url)
+    token = (entry or {}).get('accessToken')
+    if token and _token_expires_at(token) > time.time():
+        return SESSION_ACTIVE
+    if not (entry or {}).get('cookies'):
+        return SESSION_EXPIRED
+    if access_token_for(url):
+        return SESSION_ACTIVE
+    reason = _refresh_failed.get(_failed_key(url))
+    return SESSION_EXPIRED if reason == REFRESH_REJECTED else SESSION_UNCHECKED
 
 
 # ---------------------------------------------------------------------------
