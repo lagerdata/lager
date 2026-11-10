@@ -1,0 +1,73 @@
+---
+title: "Version 0.63.0"
+description: "November 10, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** BLE sessions and the BLE and DA1469x fixes run on the box. Run
+  `lager update --box <box-name>` after you upgrade the CLI.
+
+## <u>Features</u>
+
+- **`lager lease` runs a command on any available box from a pool.**
+  `lager lease --pool <name> -- <command>` asks a lease server for a box that agrees with the
+  requirements of the pool.
+  - The command runs with `LAGER_BOX` set to that box.
+  - The CLI renews the lease while the command runs, and releases the box when the command
+    stops.
+  - It exits with the status of the command, or 75 when no box is available.
+- **The box HTTP API can hold one BLE GATT connection open across many requests.** Before,
+  each `read`, `write` or `notify` on `/ble/command` connected and disconnected on its own.
+  - `session_open` connects and returns a `session_id`. `session_read`, `session_write`,
+    `session_pair`, `session_notify_start`, `session_notify_poll` and `session_notify_stop`
+    use the same link. `session_close` ends it.
+  - A box holds one session at a time. While it is open, other BLE and BluFi requests get a
+    409. `session_close` with `force` closes a session whose `session_id` was lost.
+  - The box closes a session after `idle_timeout` with no requests (60 s by default), or at
+    `max_lifetime` (300 s by default, at most 1800 s).
+  - Each notification has a sequence number and a timestamp. Notifications that were not read
+    stay readable for 60 s after a session ends, for example when the device disconnects.
+  - `/status` reports the `bleSession` capability. The Rust crate `lager-net` wraps the
+    session as `BleSession` and `AsyncBleSession`, from its next release.
+
+## <u>Bug Fixes</u>
+
+- **BLE connects to a device that the box already knows.** A second `info`, `read`, `write`,
+  `notify` or `pair` to the same device could fail with "Device … was not found". BlueZ does
+  not announce a device that it already holds, so the scan before the connection missed it.
+  The box now connects through BlueZ's record of the device.
+- **DA1469x flashing no longer resets the chip while the flash loader starts.** A halt that
+  came while the bootloader ran on its PLL clock left the loader on a clock it does not set
+  up, and the chip reset. The box now switches the chip back to its crystal clock first. It
+  retries the start if the chip resets during it.
+- **`lager whoami` no longer calls a session active when it cannot renew.** It used to report
+  `active (renews automatically)` for any session with a stored refresh cookie.
+  - When the access token has expired, `whoami` now tries the renewal that every command uses.
+  - A renewal reads as `active`. A refusal reads as `expired`, with the `lager login <url>` to
+    run.
+  - When the auth server gives no answer, `whoami` says that it could not check.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.63.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.63.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.63.0/)

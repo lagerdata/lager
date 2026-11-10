@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.63.0] - 2026-11-10
+
 ### Added
 
 - **`lager lease` runs a command on any available box from a pool.**
@@ -21,7 +23,26 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   box when the command stops. It exits with the status of the command, or 75
   when no box is available.
 
+- **The box HTTP API can hold one BLE GATT connection open across many
+  requests.** New `session_*` actions on `/ble/command` open a session, then
+  read, write, pair and collect notifications on the same link, and close it.
+  A box holds one session at a time. While it is open, other BLE and BluFi
+  requests get a 409. The box closes a session after 60 s with no requests or
+  at its lifetime limit (300 s by default), and `/status` reports
+  `bleSession`. The Rust crate `lager-net` wraps it as `BleSession`.
+
 ### Fixed
+
+- **BLE connects to a device that the box already knows.** A second `info`,
+  `read`, `write`, `notify` or `pair` to the same device could fail with
+  "Device … was not found", because BlueZ does not announce a device that it
+  already holds. The box now connects through BlueZ's record of the device.
+
+- **DA1469x flashing no longer resets the chip while the flash loader
+  starts.** A halt that came while the bootloader ran on its PLL clock left the
+  loader on a clock it does not set up. The box now switches the chip back to
+  its crystal clock first, and retries the start if the chip resets during
+  it.
 
 - **`lager whoami` no longer calls a session active when it cannot renew.**
   It used to report `active (renews automatically)` for any session with a
