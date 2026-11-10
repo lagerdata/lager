@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3899 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5214 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5222 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **9967** |
+| | **Total gated** | **9975** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -539,7 +539,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress. Each child says when it is ready, so that no test depends on how fast an interpreter starts; a child that is slow on purpose keeps a fixed sleep from coming back |
 | `test_custom_devices_assign.py` | `lager.devices.assign` and the `/custom-devices/*` handlers behind `lager nets assign` |
 | `test_custom_store.py` | Custom-device JSON persistence: USB cable to catalog instrument mapping |
-| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths. Also the poll helper every loader step waits on: a dropped `mdw` reply is retried to the deadline like any non-matching value, since these reads go through the debug AP while the CPU runs and a marginal SWD link drops one now and then; a link that never answers still fails, naming the read error rather than a value it never read, and a non-RPC error is not swallowed. Plus the bring-up retry underneath that fix: a loader that reads back successfully but never reports ready has its whole preparation re-run up to three times, naming the attempt that failed, while a failed image load, a missing loader symbol or an OpenOCD error still reaches the caller on the first attempt, and a spent budget names the attempt count |
+| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths. Also the poll helper every loader step waits on: a dropped `mdw` reply is retried to the deadline like any non-matching value, since these reads go through the debug AP while the CPU runs and a marginal SWD link drops one now and then; a link that never answers still fails, naming the read error rather than a value it never read, and a non-RPC error is not swallowed. Plus the bring-up retry underneath that fix: a loader that reads back successfully but never reports ready has its whole preparation re-run up to three times, naming the attempt that failed, while a failed image load, a missing loader symbol or an OpenOCD error still reaches the caller on the first attempt, and a spent budget names the attempt count. Plus the system clock after the reset halt: CLK_CTRL caught on PLL96M is switched back to XTAL32M and confirmed before the loader is loaded, XTAL32M and RC32M are left alone, and a switch that never confirms raises naming the step. And the halt after the `mynewt_main` breakpoint: a core still running logs a warning with the FPB state and the flash carries on, while a halt anywhere else is retried as a failed bring-up |
 | `test_da1469x_predicate.py` | `lager.debug.probes.is_da1469x` is the one DA1469x-family predicate on the box. An AST scan of `box/lager` fails on an inline `'DA1469' in ...` test anywhere except that function, the standalone copy in `debug/jlink.py` (which must agree with it), and the CPU-architecture table in `gdb.get_arch`. `flash_device`, the GDB reset and `JLink._is_da1469` must call a predicate rather than spell the test out |
 | `test_debug_bin_address.py` | Both debug service clients send a `--bin` load address of 0 as 0, and use `0x08000000` only when no address was given; both send `erase_start` / `erase_size` on `/debug/erase` only when given, with a timeout that grows per MiB |
 | `test_debug_connect_ports.py` | `/debug/connect` port overrides are coerced and range-checked at the boundary, because they are used to build the debug backend's command line: a non-integer is refused rather than forwarded. A quoted number still works |

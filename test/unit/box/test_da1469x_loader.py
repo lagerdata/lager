@@ -207,12 +207,21 @@ class FakeRpc:
       target"), which is what the probe in ``_force_thumb_state`` walks.
     * ``locked_up`` — set ``DHCSR.S_LOCKUP`` so the core reads as halted
       *and* locked up, the way a core that faulted into LOCKUP does.
+    * ``halted`` — whether ``DHCSR.S_HALT`` reads set. ``False`` models the
+      DA14695 bench, where the ``mynewt_main`` breakpoint never fires and the
+      core is still running after ``wait_halt``.
+    * ``halt_pc`` — what ``reg_read('pc')`` returns. Defaults to the
+      ``mynewt_main`` breakpoint address, i.e. the breakpoint was hit.
+    * ``clk_ctrl`` — what ``CLK_CTRL_REG`` reads after ``reset halt``.
+      Default ``0x4040`` (XTAL32M). ``clk_switch_confirms=False`` makes a
+      write to it read back unchanged, so ``RUNNING_AT_XTAL32M`` never sets.
     """
 
     def __init__(self, syms, *, ping_rc=1, erase_rc=1, program_rc=1,
                  boot_state=1, buf_sz=0x40, stale_bps=(),
                  fl_cmd_data_base=0x20010000, xpsr=0xF8000000,
-                 locked_up=False, psr_reg_name='xPSR'):
+                 locked_up=False, psr_reg_name='xPSR', halted=True,
+                 halt_pc=None, clk_ctrl=0x4040, clk_switch_confirms=True):
         self.syms = syms
         self.calls = []
         self.mem = {}
@@ -227,6 +236,10 @@ class FakeRpc:
         self.xpsr = xpsr
         self.psr_reg_name = psr_reg_name
         self.locked_up = locked_up
+        self.halted = halted
+        self.halt_pc = (syms['mynewt_main'] & ~1) if halt_pc is None else halt_pc
+        self.clk_switch_confirms = clk_switch_confirms
+        self.mem[loader.REG_CLK_CTRL] = clk_ctrl
         # Pre-existing breakpoints — drains via ``bp_list``+``rbp``; tests
         # that exercise the defensive cleanup pass populate this.
         self.bps = list(stale_bps)
@@ -281,6 +294,12 @@ class FakeRpc:
         value = int(value) & 0xFFFFFFFF
         self._record(f'mww {hex(addr)} {hex(value)}')
         self.mem[addr] = value
+        if addr == loader.REG_CLK_CTRL and self.clk_switch_confirms:
+            # SYS_CLK_SEL=0 selects XTAL32M; the status bits follow at once.
+            if value & loader.CLK_CTRL_SYS_CLK_SEL_MASK == 0:
+                value &= ~loader.CLK_CTRL_RUNNING_AT_PLL96M
+                value |= loader.CLK_CTRL_RUNNING_AT_XTAL32M
+                self.mem[addr] = value
         # Trigger the protocol transitions the real loader would make:
         if addr == self.syms['fl_cmd']:
             if value == loader.FL_CMD_PING:
@@ -320,9 +339,15 @@ class FakeRpc:
         # Always record the read so tests can assert on poll order.
         self._record(f'mdw {hex(addr)} {count}')
         if addr == loader.REG_DHCSR and count == 1:
-            # S_HALT always set (this fake only ever answers a halted or
-            # a locked-up core); S_LOCKUP only when the test asks for it.
-            return (1 << 17) | (loader.DHCSR_S_LOCKUP if self.locked_up else 0)
+            # S_RETIRE_ST is always set, as on hardware. S_HALT follows
+            # ``halted`` (a locked-up core also reads halted); S_LOCKUP only
+            # when the test asks for it.
+            value = 1 << 24
+            if self.halted or self.locked_up:
+                value |= loader.DHCSR_S_HALT
+            if self.locked_up:
+                value |= loader.DHCSR_S_LOCKUP
+            return value
         if count == 1:
             return self.mem.get(addr, 0)
         return [self.mem.get(addr + 4 * i, 0) for i in range(count)]
@@ -339,6 +364,8 @@ class FakeRpc:
         self._record(f'reg-read {name}')
         if name == self.psr_reg_name:
             return self.xpsr
+        if name == 'pc':
+            return self.halt_pc
         raise openocd.OpenOcdRpcError(
             f'OpenOCD reg {name} failed:\n'
             f'Error: register {name} not found in current target'
@@ -754,41 +781,47 @@ class FlashImageTests(unittest.TestCase):
                          f'mww {hex(loader.REG_POR_PIN_DEBUG_ENABLE)} '
                          f'{hex(loader.REG_POR_PIN_DEBUG_ENABLE_VALUE)}')
         self.assertEqual(c[1], 'reset halt')
-        self.assertEqual(c[2], 'sleep 1000')
-        self.assertEqual(c[3],
+        # CLK_CTRL is read right after the halt (XTAL32M here, so no write).
+        self.assertEqual(c[2], f'mdw {hex(loader.REG_CLK_CTRL)} 1')
+        self.assertEqual(c[3], 'sleep 1000')
+        self.assertEqual(c[4],
                          f'load_image /fake/bin {hex(loader.LOADER_RAM_BASE)} bin')
-        self.assertEqual(c[4], 'sleep 1000')
-        self.assertEqual(c[5], f'mdw {hex(loader.LOADER_RAM_BASE)} 1')
-        self.assertEqual(c[6], f'mdw {hex(loader.LOADER_RAM_BASE + 4)} 1')
-        self.assertEqual(c[7], 'reg msp 0x20040000')
+        self.assertEqual(c[5], 'sleep 1000')
+        self.assertEqual(c[6], f'mdw {hex(loader.LOADER_RAM_BASE)} 1')
+        self.assertEqual(c[7], f'mdw {hex(loader.LOADER_RAM_BASE + 4)} 1')
+        self.assertEqual(c[8], 'reg msp 0x20040000')
         # The vector-table PC is odd (0x20000401, Thumb convention). It
         # goes to the PC with bit 0 masked off — OpenOCD drops it there
         # anyway — and the Thumb bit is applied where the architecture
         # keeps it, in xPSR, before the core is allowed to run.
-        self.assertEqual(c[8], 'reg pc 0x20000400')
-        self.assertEqual(c[9], 'reg-read xPSR')
-        self.assertEqual(c[10],
+        self.assertEqual(c[9], 'reg pc 0x20000400')
+        self.assertEqual(c[10], 'reg-read xPSR')
+        self.assertEqual(c[11],
                          f'reg xPSR {hex(0xF8000000 | loader.XPSR_THUMB_BIT)}')
         # QSPIC / MTB writes (4 of them, in the same order as the GDB script).
-        self.assertEqual(c[11], f'mww {hex(loader.REG_QSPIC_DUMMYBYTES)} 0x0')
-        self.assertEqual(c[12], f'mww {hex(loader.REG_MTB_POSITION)} 0x0')
-        self.assertEqual(c[13], f'mww {hex(loader.REG_MTB_MASTER)} 0x0')
-        self.assertEqual(c[14], f'mww {hex(loader.REG_MTB_FLOW)} 0x0')
+        self.assertEqual(c[12], f'mww {hex(loader.REG_QSPIC_DUMMYBYTES)} 0x0')
+        self.assertEqual(c[13], f'mww {hex(loader.REG_MTB_POSITION)} 0x0')
+        self.assertEqual(c[14], f'mww {hex(loader.REG_MTB_MASTER)} 0x0')
+        self.assertEqual(c[15], f'mww {hex(loader.REG_MTB_FLOW)} 0x0')
         # Defensive bp list (no stale bps in this test) precedes our own
         # bp set — same address space, but the list is read-only and
         # short-circuits when empty.
-        self.assertEqual(c[15], 'bp')
+        self.assertEqual(c[16], 'bp')
         # Breakpoint dance, at the halfword-aligned form of the symbol.
         bp_addr = _DEFAULT_SYM_ADDRS['mynewt_main'] & ~1
-        self.assertEqual(c[16], f'bp {hex(bp_addr)} 4 hw')
-        self.assertEqual(c[17], 'resume')
-        self.assertEqual(c[18], 'wait_halt 5000')
-        self.assertEqual(c[19], f'rbp {hex(bp_addr)}')
+        self.assertEqual(c[17], f'bp {hex(bp_addr)} 4 hw')
+        self.assertEqual(c[18], 'resume')
+        self.assertEqual(c[19], 'wait_halt 5000')
+        self.assertEqual(c[20], f'rbp {hex(bp_addr)}')
         # ``wait_halt`` reports a locked-up core as halted, so the state
         # is checked before we hand the core the loader's main loop.
-        self.assertEqual(c[20], f'mdw {hex(loader.REG_DHCSR)} 1')
-        self.assertEqual(c[21], 'resume')
-        self.assertEqual(c[22], f'mww {hex(loader.REG_MPU_CTRL)} 0x0')
+        self.assertEqual(c[21], f'mdw {hex(loader.REG_DHCSR)} 1')
+        # Then again to confirm the breakpoint really halted the core, and
+        # where.
+        self.assertEqual(c[22], f'mdw {hex(loader.REG_DHCSR)} 1')
+        self.assertEqual(c[23], 'reg-read pc')
+        self.assertEqual(c[24], 'resume')
+        self.assertEqual(c[25], f'mww {hex(loader.REG_MPU_CTRL)} 0x0')
 
         # SYS_CTRL_REG SW reset is the very last command issued by flash_image.
         self.assertEqual(c[-1], f'mww {hex(loader.REG_SYS_CTRL_REG)} 0x1')
@@ -1479,6 +1512,135 @@ class LockupDetectionTests(_LoaderEntryRunner, unittest.TestCase):
         self.assertEqual(fake.failures_raised, 1,
                          msg='the fake must actually have dropped the read')
         self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+
+
+@contextlib.contextmanager
+def _fast_clock_switch_timeout(timeout_s=0.01):
+    """Shrink ``_CLK_SWITCH_TIMEOUT_S`` so the never-confirms test is quick."""
+    orig = loader._CLK_SWITCH_TIMEOUT_S
+    loader._CLK_SWITCH_TIMEOUT_S = timeout_s
+    try:
+        yield
+    finally:
+        loader._CLK_SWITCH_TIMEOUT_S = orig
+
+
+_CLK = hex(0x50000014)
+
+
+class SystemClockTests(_LoaderEntryRunner, unittest.TestCase):
+    """A reset halt that caught the bootloader on PLL96M is moved back to
+    XTAL32M before the loader is loaded.
+
+    ``reset halt`` resets the core, not CRG_TOP. On a DA14695 bench every
+    halt that read ``CLK_CTRL=0x8043`` (RUNNING_AT_PLL96M, SYS_CLK_SEL=3)
+    ended with the chip resetting after ``resume`` and a ping timeout, and
+    every one that was switched back to XTAL32M first passed.
+    """
+
+    def test_constants_match_the_datasheet(self):
+        self.assertEqual(loader.REG_CLK_CTRL, 0x50000014)
+        self.assertEqual(loader.CLK_CTRL_SYS_CLK_SEL_MASK, 0x3)
+        self.assertEqual(loader.CLK_CTRL_RUNNING_AT_XTAL32M, 1 << 14)
+        self.assertEqual(loader.CLK_CTRL_RUNNING_AT_PLL96M, 1 << 15)
+
+    def test_pll_is_switched_to_xtal32m_and_confirmed(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, clk_ctrl=0x8043)
+        out = self._run(fake)
+        c = fake.calls
+        write = f'mww {_CLK} 0x8040'
+        self.assertIn(write, c, msg=f'no CLK_CTRL write in trace: {c}')
+        # Right after the reset halt, before the loader image goes in.
+        self.assertLess(c.index('reset halt'), c.index(write))
+        self.assertLess(c.index(write), c.index('sleep 1000'))
+        self.assertLess(c.index(write),
+                        c.index(next(x for x in c if x.startswith('load_image'))))
+        # Polled after the write, and the poll saw XTAL32M running.
+        self.assertIn(f'mdw {_CLK} 1', c[c.index(write) + 1:])
+        self.assertEqual(fake.mem[loader.REG_CLK_CTRL], 0x4040)
+        lines = [line for line in out if 'XTAL32M' in line]
+        self.assertEqual(len(lines), 1, msg=f'expected one notice, got: {out}')
+        self.assertIn('CLK_CTRL=0x8043', lines[0])
+        self.assertIn('switched back to XTAL32M', lines[0])
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_xtal32m_is_left_alone(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, clk_ctrl=0x4040)
+        out = self._run(fake)
+        self.assertIn(f'mdw {_CLK} 1', fake.calls)
+        self.assertEqual(
+            [x for x in fake.calls if x.startswith(f'mww {_CLK} ')], [],
+            msg='CLK_CTRL must not be written when not on the PLL',
+        )
+        self.assertNotIn('XTAL32M', '\n'.join(out))
+
+    def test_rc32m_is_left_alone(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, clk_ctrl=0x2041)
+        self._run(fake)
+        self.assertEqual(
+            [x for x in fake.calls if x.startswith(f'mww {_CLK} ')], [])
+
+    def test_switch_that_never_confirms_raises_naming_the_step(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, clk_ctrl=0x8043,
+                       clk_switch_confirms=False)
+        with _fast_clock_switch_timeout():
+            with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+                self._run(fake)
+        self.assertIn('system clock back to XTAL32M', str(ctx.exception))
+        # Not a readiness timeout, so not retried, and the loader was never
+        # loaded onto a clock it cannot run on.
+        self.assertNotIsInstance(ctx.exception, loader._LoaderBootTimeout)
+        self.assertEqual(fake.calls.count('reset halt'), 1)
+        self.assertFalse(any(x.startswith('load_image') for x in fake.calls))
+
+
+class EntryHaltTests(_LoaderEntryRunner, unittest.TestCase):
+    """``wait_halt`` after the ``mynewt_main`` breakpoint is checked against
+    DHCSR and the PC instead of being taken as success.
+
+    OpenOCD's TCL port returns an empty reply when ``wait_halt`` times out,
+    so the call looks successful either way. On that bench the breakpoint
+    never fires (core running, S_HALT clear), and the only halt seen there
+    is a chip reset caught by reset vector catch.
+    """
+
+    _LOGGER = f'{_pkg_name}.da1469x_loader'
+
+    def test_core_still_running_warns_with_fpb_state_and_continues(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, halted=False)
+        with self.assertLogs(self._LOGGER, level='WARNING') as logs:
+            out = self._run(fake)
+        msg = '\n'.join(logs.output)
+        self.assertIn('never halted the core', msg)
+        self.assertIn('S_HALT clear', msg)
+        self.assertIn('FP_CTRL=', msg)
+        self.assertIn(f'mdw {hex(loader.REG_FP_CTRL)} 1', fake.calls)
+        # The flow that works today must keep working.
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+        self.assertEqual(fake.calls.count('reset halt'), 1)
+
+    def test_halt_at_mynewt_main_is_silent(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        with self.assertNoLogs(self._LOGGER, level='WARNING'):
+            out = self._run(fake)
+        self.assertIn('reg-read pc', fake.calls)
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_halt_elsewhere_is_retried_as_a_failed_bring_up(self):
+        # A halt at the reset vector means the chip reset after resume; the
+        # app is about to overwrite the loader, so start over.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, halt_pc=0x00000ad0)
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._run(fake)
+        msg = str(ctx.exception)
+        self.assertIn('pc=0xad0', msg)
+        self.assertIn('instead of the mynewt_main breakpoint', msg)
+        self.assertEqual(fake.calls.count('reset halt'),
+                         loader._LOADER_BOOT_ATTEMPTS)
+        # Caught before the loader was resumed into and polled.
+        self.assertNotIn(
+            f'mdw {hex(_DEFAULT_SYM_ADDRS["fl_state"])} 1', fake.calls)
 
 
 class EraseRangeTests(unittest.TestCase):

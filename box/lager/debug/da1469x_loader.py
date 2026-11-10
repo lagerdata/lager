@@ -112,7 +112,25 @@ REG_MTB_FLOW = 0xE0043008
 REG_MPU_CTRL = 0xE000ED94
 REG_SYS_CTRL_REG = 0x100C0050  # write 1 -> bootrom re-runs (software reset)
 REG_DHCSR = 0xE000EDF0  # Debug Halting Control and Status Register
+DHCSR_S_HALT = 1 << 17  # core is halted in debug state
 DHCSR_S_LOCKUP = 1 << 19  # core is in LOCKUP: a fault escalated past HardFault
+REG_FP_CTRL = 0xE0002000  # FPB control: bit 0 ENABLE
+REG_FP_COMP0 = 0xE0002008  # FPB comparator 0
+
+#: CRG_TOP ``CLK_CTRL_REG``. ``reset halt`` (SYSRESETREQ) resets the core,
+#: not CRG_TOP, so the clock tree keeps whatever the code running before
+#: the reset chose. The bootloader runs the system clock from PLL96M for a
+#: window early in boot (roughly 40-60 ms after a reset) and moves it off
+#: the PLL again before the app starts. A halt that lands inside that
+#: window leaves the RAM loader starting on a clock it does not set up,
+#: and the chip resets shortly after ``resume``. XTAL32M is always running
+#: while the PLL is (the PLL is derived from it), so switching
+#: ``SYS_CLK_SEL`` back to it is safe and takes effect at once.
+REG_CLK_CTRL = 0x50000014
+CLK_CTRL_SYS_CLK_SEL_MASK = 0x3  # [1:0], 0 = XTAL32M
+CLK_CTRL_RUNNING_AT_XTAL32M = 1 << 14
+CLK_CTRL_RUNNING_AT_PLL96M = 1 << 15
+_CLK_SWITCH_TIMEOUT_S = 0.5
 
 #: ``EPSR.T`` inside ``xPSR``. On Cortex-M the Thumb bit is NOT carried in
 #: the PC — writing an odd PC through the debug AP does not set it, because
@@ -564,6 +582,79 @@ def _raise_if_locked_up(rpc: OpenOcdRpc, when: str) -> None:
         )
 
 
+def _leave_pll96m(rpc: OpenOcdRpc) -> Iterator[str]:
+    """Move the system clock back to XTAL32M if the reset halt caught it on
+    PLL96M. See :data:`REG_CLK_CTRL` for why.
+
+    On a DA14695 bench (FT4232H + OpenOCD) the CLK_CTRL value read here
+    predicted every outcome: halts that read ``0x8043`` (PLL96M) always
+    ended in a chip reset after ``resume`` and a ping timeout; ``0x4040``
+    (XTAL32M) and ``0x2041`` (RC32M) always brought the loader up. Yields a line only
+    when it switches, so a normal bring-up's log is unchanged.
+    """
+    clk = rpc.mdw(REG_CLK_CTRL)
+    if not clk & CLK_CTRL_RUNNING_AT_PLL96M:
+        return
+    rpc.mww(REG_CLK_CTRL, clk & ~CLK_CTRL_SYS_CLK_SEL_MASK)
+    _poll_word(rpc, REG_CLK_CTRL,
+               lambda v: v & CLK_CTRL_RUNNING_AT_XTAL32M,
+               timeout_s=_CLK_SWITCH_TIMEOUT_S,
+               label='system clock back to XTAL32M')
+    yield (f'System clock was on PLL96M (CLK_CTRL={hex(clk)}); '
+           f'switched back to XTAL32M')
+
+
+def _check_entry_halt(rpc: OpenOcdRpc, mynewt_main: int) -> None:
+    """Check what ``wait_halt`` after the ``mynewt_main`` breakpoint really did.
+
+    ``wait_halt`` cannot be trusted on its own. When it times out, OpenOCD's
+    TCL port returns an empty reply with no ``Error:`` line, so
+    ``cmd_checked`` lets it pass. On the DA14695 bench that is the normal
+    case: the breakpoint never fires, the core runs straight into the
+    loader, and the bring-up works only because nothing depends on the
+    halt.
+
+    * Core still running: log a warning with the FPB state, and carry on.
+      Raising here would break the only flow that works today.
+    * Core halted somewhere other than ``mynewt_main``: the chip reset under
+      us and reset vector catch stopped it. The loader in RAM is about to be
+      overwritten by the app, so raise :class:`_LoaderBootTimeout` and let
+      :func:`_prepare_loader` start over instead of reporting success.
+
+    Failed reads are not evidence of anything; they are logged and ignored.
+    """
+    try:
+        dhcsr = rpc.mdw(REG_DHCSR)
+    except OpenOcdRpcError as exc:
+        logger.info('DHCSR read after wait_halt failed (%s)', exc)
+        return
+    if not dhcsr & DHCSR_S_HALT:
+        fpb = {}
+        for name, addr in (('FP_CTRL', REG_FP_CTRL), ('FP_COMP0', REG_FP_COMP0)):
+            try:
+                fpb[name] = hex(rpc.mdw(addr))
+            except OpenOcdRpcError as exc:
+                fpb[name] = f'read failed ({exc})'
+        logger.warning(
+            'mynewt_main breakpoint at %s never halted the core: DHCSR=%s '
+            '(S_HALT clear) after wait_halt; FP_CTRL=%s FP_COMP0=%s. '
+            'Continuing, the loader is running.',
+            hex(mynewt_main), hex(dhcsr), fpb['FP_CTRL'], fpb['FP_COMP0'],
+        )
+        return
+    try:
+        pc = rpc.reg_read('pc')
+    except OpenOcdRpcError as exc:
+        logger.info('pc read after wait_halt failed (%s)', exc)
+        return
+    if (pc & ~1) != mynewt_main:
+        raise _LoaderBootTimeout(
+            f'core halted at pc={hex(pc)} instead of the mynewt_main '
+            f'breakpoint at {hex(mynewt_main)} (DHCSR={hex(dhcsr)}): the chip '
+            f'reset after resume, so the loader in RAM will not run'
+        )
+
+
 def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
                          syms: Dict[str, int]) -> Iterator[str]:
     """Run the bring-up sequence once: reset, load into RAM, jump, wait ready.
@@ -588,6 +679,7 @@ def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     # settle matches the GDB script — gives QSPI / clocks time to come up
     # via the bootrom before we override them.
     rpc.reset(halt=True)
+    yield from _leave_pll96m(rpc)
     rpc.sleep_ms(1000)
 
     # Load the loader image into RAM at 0x20000000 (the linked base).
@@ -659,6 +751,7 @@ def _prepare_loader_once(rpc: OpenOcdRpc, elf_path: str, bin_path: str,
     # ``wait_halt`` says "halted" for a locked-up core too, so a success
     # here is not yet evidence the breakpoint was reached.
     _raise_if_locked_up(rpc, 'after entering the loader')
+    _check_entry_halt(rpc, mynewt_main)
 
     # Resume into the loader's main, then disable the MPU on the fly. The
     # MPU write happens through the debug AP while the CPU runs — Cortex-M
