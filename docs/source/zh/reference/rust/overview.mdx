@@ -28,7 +28,7 @@ Lager Rust crate 让嵌入式开发者以一等公民的方式访问 Lager Net�
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.12" }
+lager = { package = "lager-net", version = "0.13" }
 ```
 
 该 crate 需要 Rust **1.75** 或更高版本，基于 2021 edition 构建。
@@ -78,7 +78,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 两种客户端执行的是完全相同的请求构造器和响应解析器，因此这两条传输路径不会各自跑偏。
 
 ```toml
-lager = { package = "lager-net", version = "0.12", features = ["async"] }
+lager = { package = "lager-net", version = "0.13", features = ["async"] }
 ```
 
 ## 错误
