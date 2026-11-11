@@ -57,7 +57,7 @@ class UpstreamUnavailable(unittest.TestCase):
         with self.assertRaises(LagerError) as ctx:
             gateway_auth.handle_gateway_upstream_error(_response(502, self.HEADERS), "10.0.0.1")
         err = ctx.exception
-        self.assertIn("restarting", err.cause)
+        self.assertIn("restarts itself", err.cause)
         self.assertIn("Retry in a few seconds", err.fixes[0])
         update = next(f for f in err.fixes if "lager update" in f)
         self.assertIn("If it keeps failing", update)
