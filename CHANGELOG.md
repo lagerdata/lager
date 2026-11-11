@@ -12,6 +12,21 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **A gateway's "lager does not answer" now says to retry first.** When a
+  gateway answers `502` with `X-Gateway-Error: upstream_unavailable`, the CLI
+  now says the box service may be restarting and suggests retrying in a few
+  seconds. It suggests `lager update` or `lager install` only if the failure
+  persists. A box service restarts itself in about 4 s to recover a USB
+  device, and the old message sent people to rebuild a box that would have
+  answered the next request.
+
+- **A `/usb/command` that restarts the service keeps the reason why.** When a
+  hub that would not open triggers the self-restart, the `503 restarting`
+  answer now carries the same `reason_code` and `reason_detail` as the `404`
+  answer, so a client can still report why the hub would not open.
+
 ## [0.63.0] - 2026-11-10
 
 ### Added

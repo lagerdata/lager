@@ -1099,11 +1099,19 @@ def handle_gateway_upstream_error(response, box_ip):
     if headers.get(UPSTREAM_ERROR_HEADER) != UPSTREAM_UNAVAILABLE:
         return
     upstream = headers.get(UPSTREAM_HEADER) or 'the lager container'
+    # Retry comes first because the common cause is brief. A box service
+    # exits on purpose to recover a wedged USB device, and its supervisor has
+    # it listening again within seconds (lager.util.self_restart). Leading
+    # with "update or reinstall" sent people to rebuild a box that would
+    # have answered the next request.
     raise GatewayUpstreamUnavailable(
         f'The lager service behind box {box_ip}\'s gateway does not answer.',
-        cause=f'The gateway is up, but {upstream} did not accept its connection: '
-              'the lager container is stopped, still starting, or failed to start.',
-        fixes=[f'Update the box: lager update --box {box_ip}',
+        cause=f'The gateway is up, but {upstream} did not accept its connection. '
+              'The service may be restarting (it restarts itself to recover a '
+              'USB device, which takes a few seconds), or the lager container '
+              'is stopped or failed to start.',
+        fixes=['Retry in a few seconds.',
+               f'If it keeps failing, update the box: lager update --box {box_ip}',
                f'If it has no lager container at all, reinstall: lager install --ip {box_ip}',
                'Or update Lager from the control plane that manages the box.'],
     )
