@@ -37,7 +37,7 @@ from lager.automation.usb_hub import usb_net
 from lager.automation.usb_hub import acroname as acroname_mod
 from lager.automation.usb_hub import dispatcher as dispatcher_mod
 from lager.automation.usb_hub import ykush as ykush_mod
-from lager.automation.usb_hub.usb_net import HubOperationTimeout
+from lager.automation.usb_hub.usb_net import DeviceNotFoundError, HubOperationTimeout
 from lager.http_handlers import usb as usb_handler
 from lager.util import watchdog
 from lager.util.device_lock import DeviceLockError
@@ -485,6 +485,44 @@ class UsbCommandFailFastTests(_HangHookIsolated):
         self.assertEqual(resp.status_code, 500)
         self.assertEqual(resp.get_json()["error"], "YKUSH device not found")
 
+    def _unreachable_acroname(self, scheduled):
+        """The Acroname driver's own error for a hub that is on the bus but
+        will not open: lager's DeviceNotFoundError,
+        classified, which reaches the handler's dedicated branch."""
+        def _raise(netname):
+            raise DeviceNotFoundError(
+                "hub would not open", classification=usb_net.HUB_UNREACHABLE,
+                detail="connectFromSpec rc=25; discoverAndConnect rc=3")
+        self._install_hub(_raise)
+        self.restart.self_restart_after_reply.return_value = scheduled
+        holds = patch.object(usb_handler, "_driver_holds_usb_context",
+                             lambda netname: True)
+        holds.start()
+        self.addCleanup(holds.stop)
+
+    def test_unreachable_acroname_without_restart_answers_404_with_reason(self):
+        self._unreachable_acroname(scheduled=False)
+        resp = self.client.post("/usb/command",
+                                json={"netname": "usb1", "action": "enable"})
+        self.assertEqual(resp.status_code, 404)
+        body = resp.get_json()
+        self.assertTrue(body["error"].startswith("device-not-found:"), body)
+        self.assertEqual(body["reason_code"], usb_net.HUB_UNREACHABLE)
+        self.assertIn("rc=25", body["reason_detail"])
+
+    def test_unreachable_acroname_restart_keeps_the_reason(self):
+        """The restarting answer still says why the hub would not open: that
+        is the diagnosis if the respawn does not fix it."""
+        self._unreachable_acroname(scheduled=True)
+        resp = self.client.post("/usb/command",
+                                json={"netname": "usb1", "action": "enable"})
+        self.assertEqual(resp.status_code, 503)
+        body = resp.get_json()
+        self.assertTrue(body["error"].startswith("restarting:"), body)
+        self.assertEqual(body["reason_code"], usb_net.HUB_UNREACHABLE)
+        self.assertIn("rc=25", body["reason_detail"])
+        self.restart.maybe_self_restart.assert_not_called()
+
 
 class ScheduleSelfRestartForHangTests(_HangHookIsolated):
     """``self_restart``'s new no-exception entry point."""
@@ -525,6 +563,151 @@ class ScheduleSelfRestartForHangTests(_HangHookIsolated):
         finally:
             timer.cancel()
 
+
+
+class UnreachableRestartAnswersFirstTests(_HangHookIsolated):
+    """End to end through the REAL self_restart module, with only the edges
+    faked: sysfs, the cooldown stamp's directory, the timer and os._exit.
+
+    An Acroname hub that was on the bus but would not open sent box_http_server
+    into os._exit(70) inside the /usb/command request, so the gateway in
+    front of it answered 502 upstream_unavailable instead of the box's own
+    answer. These pin the order: the response is complete before the exit
+    can run, and the exit only runs when the gates allow it."""
+
+    ADDRESS = "USB0::0x24FF::0x0011::1A2B3C4D::INSTR"
+
+    def setUp(self):
+        super().setUp()
+        import os
+        import tempfile
+        from lager.util import self_restart
+        self.self_restart = self_restart
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.stamp = os.path.join(tmp.name, "stamp")
+
+        self.exits = []
+        self.timers = []
+        test = self
+
+        class _CapturedTimer:
+            """Holds the deferred call instead of running it, so a test can
+            look at the response first and then fire the exit by hand."""
+            def __init__(self, delay, fn, args=(), kwargs=None):
+                self.delay, self.fn = delay, fn
+                self.args, self.kwargs = args, kwargs or {}
+                self.daemon, self.name = False, None
+                test.timers.append(self)
+            def start(self):
+                pass
+            def cancel(self):
+                pass
+            def fire(self):
+                self.fn(*self.args, **self.kwargs)
+
+        for target, attr, value in (
+                (self_restart.threading, "Timer", _CapturedTimer),
+                (self_restart.os, "_exit", lambda code: self.exits.append(code)),
+                (self_restart.time, "sleep", lambda _s: None),
+                (self_restart.logging, "shutdown", lambda: None),
+                (usb_handler, "_BHS_SELF_RESTART_STAMP", self.stamp),
+                (usb_handler, "_usb_net_address", lambda netname: self.ADDRESS),
+                (usb_handler, "_driver_holds_usb_context", lambda netname: True)):
+            p = patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.enumerated = True
+        p = patch.object(self_restart, "usb_device_enumerated",
+                         lambda address: self.enumerated)
+        p.start()
+        self.addCleanup(p.stop)
+
+        app = Flask(__name__)
+        usb_handler.register_usb_routes(app)
+        self.client = app.test_client()
+
+        def _raise(netname):
+            raise DeviceNotFoundError("hub would not open",
+                                      classification=usb_net.HUB_UNREACHABLE)
+        fake = _FakeHubModule(_raise)
+        p = patch.object(usb_handler, "usb_hub", fake)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _post(self):
+        return self.client.post("/usb/command",
+                                json={"netname": "usb1", "action": "enable"})
+
+    def test_response_is_written_before_the_exit_fires(self):
+        resp = self._post()
+        # The whole response exists, and nothing has exited yet.
+        self.assertEqual(resp.status_code, 503)
+        body = resp.get_json()
+        self.assertTrue(body["error"].startswith("restarting:"), body)
+        self.assertEqual(body["reason_code"], usb_net.HUB_UNREACHABLE)
+        self.assertEqual(self.exits, [])
+        # The exit is deferred, on a daemon timer, and fires when it runs.
+        self.assertEqual(len(self.timers), 1)
+        self.assertTrue(self.timers[0].daemon)
+        self.assertGreater(self.timers[0].delay, 0)
+        self.timers[0].fire()
+        self.assertEqual(self.exits, [70])
+
+    def test_a_restart_inside_the_cooldown_answers_404_and_never_exits(self):
+        with open(self.stamp, "w") as fh:
+            fh.write("recent")
+        resp = self._post()
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.get_json()["reason_code"], usb_net.HUB_UNREACHABLE)
+        self.assertEqual(self.timers, [])
+        self.assertEqual(self.exits, [])
+
+    def test_a_scheduled_restart_writes_the_cooldown_stamp(self):
+        import os
+        self._post()
+        self.assertTrue(os.path.exists(self.stamp))
+        # So a second wedge right after the respawn does not loop.
+        resp = self._post()
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(len(self.timers), 1)
+
+    def test_a_hub_missing_from_sysfs_answers_404_and_never_exits(self):
+        self.enumerated = False
+        resp = self._post()
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.timers, [])
+        self.assertEqual(self.exits, [])
+
+    def test_unknown_enumeration_answers_404_and_never_exits(self):
+        self.enumerated = None
+        resp = self._post()
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.timers, [])
+
+    def test_a_driver_without_a_held_context_never_restarts(self):
+        with patch.object(usb_handler, "_driver_holds_usb_context",
+                          lambda netname: False):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.timers, [])
+
+    def test_the_hang_path_still_defers_and_gates_the_same_way(self):
+        """The hang path runs its gates on the timer, not before it."""
+        self.self_restart.schedule_self_restart_for_hang(
+            self.ADDRESS, "usb hub operation", service="box_http_server",
+            stamp_path=self.stamp)
+        self.assertEqual(len(self.timers), 1)
+        self.assertEqual(self.timers[0].kwargs["wedge"], "hung")
+        self.assertEqual(self.exits, [])
+        self.timers[0].fire()
+        self.assertEqual(self.exits, [70])
+        # Same stamp: a second hang inside the cooldown does not exit again.
+        self.self_restart.schedule_self_restart_for_hang(
+            self.ADDRESS, "usb hub operation", service="box_http_server",
+            stamp_path=self.stamp)
+        self.timers[1].fire()
+        self.assertEqual(self.exits, [70])
 
 
 class SelfRestartAfterReplyTests(unittest.TestCase):

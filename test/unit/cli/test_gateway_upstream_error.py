@@ -50,6 +50,18 @@ class UpstreamUnavailable(unittest.TestCase):
         self.assertIn("lager:5000", err.cause)
         self.assertTrue(any("lager update --box 10.0.0.1" in f for f in err.fixes))
 
+    def test_retry_comes_before_update_or_reinstall(self):
+        # The usual cause is a box service that restarted itself to recover a
+        # wedged USB device and is listening again within seconds. Leading
+        # with "update or reinstall" sent people to rebuild a healthy box.
+        with self.assertRaises(LagerError) as ctx:
+            gateway_auth.handle_gateway_upstream_error(_response(502, self.HEADERS), "10.0.0.1")
+        err = ctx.exception
+        self.assertIn("restarting", err.cause)
+        self.assertIn("Retry in a few seconds", err.fixes[0])
+        update = next(f for f in err.fixes if "lager update" in f)
+        self.assertIn("If it keeps failing", update)
+
     def test_callers_that_tolerate_an_unreachable_box_still_do(self):
         # `lager install` onto a box whose lager was uninstalled checks and
         # takes the box lock on :9000 first. The gateway answers 502 there,

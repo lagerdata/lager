@@ -412,21 +412,22 @@ def register_usb_routes(app: Flask) -> None:
             except DeviceNotFoundError as e:
                 logger.warning("[HTTP] /usb/command device not found: %s", e)
                 # "device not found" + still in sysfs = wedged USB context.
-                if _self_restart_if_wedged(netname, action, e):
-                    return jsonify({
-                        'success': False,
-                        'error': restarting_message(e),
-                    }), 503
-                body = {'success': False, 'error': f'device-not-found: {e}'}
+                restarting = _self_restart_if_wedged(netname, action, e)
+                if restarting:
+                    body = {'success': False, 'error': restarting_message(e)}
+                else:
+                    body = {'success': False, 'error': f'device-not-found: {e}'}
                 # Same optional fields as /nets/state, same rule: the error
                 # string above is complete on its own and these only let a
                 # client present it better. Absent when the driver did not
                 # classify, so an older CLI sees exactly what it saw before.
+                # Kept on the restarting answer too: why the hub would not
+                # open is still the diagnosis if the respawn does not fix it.
                 if getattr(e, 'classification', None):
                     body['reason_code'] = e.classification
                 if getattr(e, 'detail', None):
                     body['reason_detail'] = e.detail
-                return jsonify(body), 404
+                return jsonify(body), (503 if restarting else 404)
             except PortStateError as e:
                 logger.warning("[HTTP] /usb/command port-state error: %s", e)
                 return jsonify({'success': False, 'error': f'port-state: {e}'}), 409

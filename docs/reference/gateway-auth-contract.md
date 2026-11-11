@@ -361,7 +361,12 @@ A conforming gateway:
   same `code` and `upstream` and an `error` message MAY accompany it. This is
   not a denial: it carries no discovery header, and the credential is not in
   question. Clients MAY report it as the box's service being down behind the
-  gateway, and otherwise treat it as any failed request.
+  gateway, and otherwise treat it as any failed request. The `error` message
+  SHOULD NOT tell the user to update or reinstall lager as the first step. A
+  box service exits on purpose to recover a wedged USB device, and its
+  supervisor has it listening again within a few seconds, so the message
+  SHOULD say to retry shortly and keep update or reinstall as the advice for
+  a failure that persists.
 
 ## 8. Environment variables (client side)
 
