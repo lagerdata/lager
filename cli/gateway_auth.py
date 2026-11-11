@@ -1107,8 +1107,8 @@ def handle_gateway_upstream_error(response, box_ip):
     raise GatewayUpstreamUnavailable(
         f'The lager service behind box {box_ip}\'s gateway does not answer.',
         cause=f'The gateway is up, but {upstream} did not accept its connection. '
-              'The service may be restarting (it restarts itself to recover a '
-              'USB device, which takes a few seconds), or the lager container '
+              'Usually the service restarts itself to recover a USB device and '
+              'answers again in a few seconds. Otherwise, the lager container '
               'is stopped or failed to start.',
         fixes=['Retry in a few seconds.',
                f'If it keeps failing, update the box: lager update --box {box_ip}',
