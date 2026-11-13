@@ -23,7 +23,7 @@ Hardware:
 
 FT232H GPIO capabilities:
 - 16 GPIO pins (AD0-AD7, AC0-AC7) -- AD0-AD2 reserved for I2C
-- File-based state caching for cross-process toggle support
+- Output levels hold across processes (no channel reset on open or close)
 - USB disconnect recovery with exponential backoff
 - Cannot use GPIO and I2C simultaneously (each claims FTDI interface)
 """
@@ -37,8 +37,8 @@ import traceback
 GPIO_OUT_NET = os.environ.get("GPIO_OUT_NET", "gpio1")
 GPIO_IN_NET = os.environ.get("GPIO_IN_NET", "gpio2")
 
-# Cache file path must match driver constant
-FT232H_CACHE_FILE = "/tmp/ft232h_gpio_cache.json"
+# Fallback only: test_cache_file reads the path from the driver itself.
+FT232H_CACHE_FILE = "/etc/lager/ftdi_gpio_cache.json"
 
 # Loopback detection flag (set in Group 13)
 LOOPBACK_AVAILABLE = None  # None = not yet tested, True/False after detection
@@ -1041,6 +1041,7 @@ def test_cache_file():
 
     from lager import Net, NetType
     gpio = Net.get(GPIO_OUT_NET, type=NetType.GPIO)
+    cache_file = getattr(gpio, "_CACHE_FILE", FT232H_CACHE_FILE)
     ok = True
 
     # Write a known value to populate cache
@@ -1052,9 +1053,9 @@ def test_cache_file():
 
     # 16a. Cache file exists
     try:
-        passed = os.path.exists(FT232H_CACHE_FILE)
+        passed = os.path.exists(cache_file)
         _record("cache file exists", passed,
-                f"path={FT232H_CACHE_FILE}")
+                f"path={cache_file}")
         if not passed:
             ok = False
     except Exception as e:
@@ -1063,7 +1064,7 @@ def test_cache_file():
 
     # 16b. Valid JSON
     try:
-        with open(FT232H_CACHE_FILE, "r") as f:
+        with open(cache_file, "r") as f:
             data = json.load(f)
         passed = isinstance(data, dict)
         _record("cache file valid JSON", passed,
@@ -1076,9 +1077,9 @@ def test_cache_file():
 
     # 16c. Contains entry for this pin
     try:
-        with open(FT232H_CACHE_FILE, "r") as f:
+        with open(cache_file, "r") as f:
             data = json.load(f)
-        # Key format: "{serial_or_default}:{pin_num}"
+        # Key format: "{serial_or_default}:{channel}:{pin_num}"
         found = False
         for key, entry in data.items():
             if str(gpio._pin_num) in key:
@@ -1098,12 +1099,89 @@ def test_cache_file():
 
 
 # ---------------------------------------------------------------------------
-# 17. Cleanup
+# 17. Cross-process hold
+# ---------------------------------------------------------------------------
+def _read_pins_raw(url):
+    """Read a channel's pin register with SIO_READ_PINS, changing nothing.
+
+    The ground truth: it neither claims the interface nor touches the bit
+    mode, so it reads what the pins are, not what any cache says.
+    """
+    from pyftdi.ftdi import Ftdi
+    from pyftdi.usbtools import UsbTools
+
+    devdesc, interface = Ftdi.get_identifiers(url)
+    dev = UsbTools.get_device(devdesc)
+    try:
+        data = dev.ctrl_transfer(Ftdi.REQ_IN, Ftdi.SIO_REQ_READ_PINS, 0,
+                                 max(int(interface), 1), 1, 1000)
+        return int(data[0])
+    finally:
+        UsbTools.release_device(dev)
+
+
+def _drive_in_child(level):
+    """Set GPIO_OUT_NET from a separate Python process that then exits."""
+    import subprocess
+    code = ("from lager import Net, NetType; "
+            f"Net.get({GPIO_OUT_NET!r}, type=NetType.GPIO).output({level})")
+    return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, timeout=60)
+
+
+def test_cross_process_hold():
+    """A level set by a process that has exited is still on the pin."""
+    print("\n" + "=" * 60)
+    print("TEST GROUP 17: Cross-process Hold")
+    print("=" * 60)
+
+    from lager import Net, NetType
+    gpio = Net.get(GPIO_OUT_NET, type=NetType.GPIO)
+    if not getattr(type(gpio), "HOLD_SAFE", False):
+        _skip("cross-process hold", "driver predates the hold-safe fix")
+        return True
+
+    url = gpio._build_url()
+    mask = 1 << gpio._pin_num
+    ok = True
+
+    for level in (0, 1, 0):
+        # Release this process's claim so the child can open the channel.
+        gpio._close()
+        name = f"level {level} holds after the setting process exits"
+        try:
+            result = _drive_in_child(level)
+            if result.returncode != 0:
+                _record(name, False, result.stderr.strip()[-300:])
+                ok = False
+                continue
+            raw = _read_pins_raw(url)
+            passed = bool(raw & mask) == bool(level)
+            _record(name, passed, f"raw=0x{raw:02x}, pin mask=0x{mask:02x}")
+            ok = ok and passed
+
+            # Reopening in this process must not move the pin, and input()
+            # must report the register.
+            value = gpio.input()
+            raw_after = _read_pins_raw(url)
+            passed = value == level and bool(raw_after & mask) == bool(level)
+            _record(f"reopen keeps level {level}; input() agrees", passed,
+                    f"input()={value}, raw 0x{raw:02x} -> 0x{raw_after:02x}")
+            ok = ok and passed
+        except Exception as e:
+            _record(name, False, str(e))
+            ok = False
+
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 18. Cleanup
 # ---------------------------------------------------------------------------
 def test_cleanup():
     """Set output low (motor off)."""
     print("\n" + "=" * 60)
-    print("TEST GROUP 17: Cleanup")
+    print("TEST GROUP 18: Cleanup")
     print("=" * 60)
 
     from lager import Net, NetType
@@ -1146,7 +1224,8 @@ def main():
         ("14. Dispatcher Direct",         test_dispatcher_direct),
         ("15. Module-level Aliases",      test_module_aliases),
         ("16. Cache File Behavior",       test_cache_file),
-        ("17. Cleanup",                   test_cleanup),
+        ("17. Cross-process Hold",        test_cross_process_hold),
+        ("18. Cleanup",                   test_cleanup),
     ]
 
     test_results = []

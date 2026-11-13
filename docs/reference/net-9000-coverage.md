@@ -147,8 +147,10 @@ to the exec subprocess's lifetime: on exit the process released its USB claim
 and (on FT232H) the pins tristated, so holding the process alive was the only
 way to sustain the level. On the `:9000` warm path the coupling is gone —
 hardware_service keeps the driver cached and its USB handle open after the
-request returns, LabJack outputs latch in hardware, and `FT232HGPIO` persists
-pin state to `/tmp/ft232h_gpio_cache.json` and restores it on every reopen.
+request returns, LabJack outputs latch in hardware, and `FT232HGPIO` releases
+an FTDI channel without resetting it, so the pins stay driven when
+hardware_service hands the channel to a `lager python` run. It also keeps
+`/etc/lager/ftdi_gpio_cache.json` to restore the outputs after a power cycle.
 The level therefore persists without any process being held alive; the flag is
 kept CLI-side (printing an explanatory note) so existing scripts don't break.
 There is no hold-then-release-on-exit semantic anymore. See the matching
