@@ -1101,6 +1101,17 @@ def _release_direct_usb_claims():
         except Exception as e:
             logger.warning(f"release: failed for {module_path}: {e}")
 
+    # FTDI GPIO controllers are shared per channel and outlive any one
+    # driver object, so release them at class level too: a driver evicted
+    # from a cache without _close() would otherwise keep its channel claimed.
+    # Releasing leaves the pins driven (see ft232h_gpio.py).
+    try:
+        from lager.io.gpio.ft232h_gpio import FT232HGPIO
+        if FT232HGPIO.release_all_channels():
+            released.append('ftdi_gpio')
+    except Exception as e:
+        logger.warning(f"Failed to release FTDI GPIO channels: {e}")
+
     # Purge driver-class singleton caches (see _SINGLETON_DRIVER_CLASSES).
     # sys.modules lookup instead of import: if the module was never imported,
     # no singleton exists and there is nothing to close.

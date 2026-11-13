@@ -246,8 +246,9 @@ def _gpio(netname, role, action, params):
     # released its USB claim and (on FT232H) the pins tristated. It is
     # deliberately NOT ported here — hardware_service keeps the driver cached
     # and its USB handle open after this request returns, LabJack outputs
-    # latch in hardware, and FT232HGPIO persists pin state to
-    # /tmp/ft232h_gpio_cache.json and restores it on every reopen. The level
+    # latch in hardware, and FT232HGPIO leaves the channel driven when it
+    # releases it (and keeps a cache in /etc/lager/ftdi_gpio_cache.json for
+    # the reopen after a power cycle). The level
     # therefore persists without any process being held alive; `lager gpo
     # --hold` is a documented no-op on the CLI side (cli/commands/measurement/
     # gpo.py). There is no hold-then-release-on-exit semantic anymore.

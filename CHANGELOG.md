@@ -27,6 +27,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   answer now carries the same `reason_code` and `reason_detail` as the `404`
   answer, so a client can still report why the hub would not open.
 
+- **FTDI GPIO outputs hold their level after the process that set them
+  exits.** A level set from a `lager python` script, or by `lager gpo` before
+  the next script started, used to fall back to HIGH on every pin of the
+  channel, because each open and close reset the channel. The driver no
+  longer resets a GPIO channel, `lager gpi`, `lager nets state` and
+  `Net.input()` read output pins from the pin register, and two nets on one
+  channel no longer change each other's direction. The output cache moved to
+  `/etc/lager/ftdi_gpio_cache.json` so levels survive a box reboot, and the
+  serial tty of an FTDI channel used for GPIO stays detached until the part is
+  re-plugged.
+
 ## [0.63.0] - 2026-11-10
 
 ### Added
