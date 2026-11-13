@@ -1,0 +1,68 @@
+---
+title: "Version 0.64.0"
+description: "November 13, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes.** All of this release's fixes run on the box, except the gateway retry
+  hint. Run `lager update --box <box-name>` after you upgrade the CLI.
+- **FTDI GPIO channels behave differently.** These changes affect every FTDI GPIO user:
+  - A GPIO channel is never reset now, so a level stays set after the process that set it
+    exits.
+  - The serial tty of an FTDI channel used for GPIO disappears on first use and stays gone
+    until the part is re-plugged. The ttys of other channels are not touched.
+  - The output cache moved from `/tmp/ft232h_gpio_cache.json` to
+    `/etc/lager/ftdi_gpio_cache.json`. The box moves the old file once.
+  - After a power-up (a box reboot or a re-plug) the pins sit at the chip's idle level, all
+    HIGH, until something opens the channel. The saved levels come back on first use, not at
+    boot.
+
+## <u>Bug Fixes</u>
+
+- **A gateway's "lager does not answer" now says to retry first.** When a gateway answers
+  `502` with `X-Gateway-Error: upstream_unavailable`, the CLI now says the box service may be
+  restarting and suggests retrying in a few seconds. It suggests `lager update` or
+  `lager install` only if the failure persists. A box service restarts itself in about 4 s to
+  recover a USB device.
+- **A `/usb/command` that restarts the service keeps the reason why.** When a hub that would
+  not open triggers the self-restart, the `503 restarting` answer now carries the same
+  `reason_code` and `reason_detail` as the `404` answer.
+- **FTDI GPIO outputs hold their level after the process that set them exits.** A level set
+  from a `lager python` script, or by `lager gpo` before the next script started, used to fall
+  back to HIGH on every pin of the channel, because each open and close reset the channel.
+  - The driver no longer resets a GPIO channel.
+  - `lager gpi`, `lager nets state` and `Net.input()` read output pins from the pin register,
+    not a cached value.
+  - Two nets on one channel no longer change each other's direction.
+  - Levels survive a box restart and a box reboot.
+- **FTDI GPIO, I2C and SPI nets work again after the part is re-plugged.** After an FTDI part
+  re-enumerated (a `lager usb <net> cycle`, a power cut, a cable pull), `lager gpo`,
+  `lager gpi`, `lager i2c`, `lager spi` and `lager nets state` failed with
+  `[Errno 19] No such device` or `No USB device with S/N ...` until
+  `lager box-config restart`. When an open fails because the box service's USB device list is
+  out of date, the drivers now refresh the list and open once more.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.64.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.64.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.64.0/)

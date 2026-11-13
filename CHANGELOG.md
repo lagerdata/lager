@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.64.0] - 2026-11-13
+
 ### Fixed
 
 - **A gateway's "lager does not answer" now says to retry first.** When a
