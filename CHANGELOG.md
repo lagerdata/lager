@@ -38,6 +38,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   serial tty of an FTDI channel used for GPIO stays detached until the part is
   re-plugged.
 
+- **FTDI GPIO, I2C and SPI nets work again after the part is re-plugged.**
+  After an FTDI part re-enumerated (a `lager usb <net> cycle`, a power cut, a
+  cable pull), `lager gpo`, `lager gpi`, `lager i2c`, `lager spi` and
+  `lager nets state` failed (`[Errno 19] No such device`, `No USB device with
+  S/N ...`) until `lager box-config restart`, because the box service's USB
+  device list never saw the part come back. When an open fails and that list
+  is out of date, the drivers now refresh it and open once more.
+
 ## [0.63.0] - 2026-11-10
 
 ### Added

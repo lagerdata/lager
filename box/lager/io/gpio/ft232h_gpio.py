@@ -46,7 +46,7 @@ from typing import Optional, Tuple
 
 from .gpio_net import GPIOBase
 from lager.exceptions import GPIOBackendError
-from lager.util import ftdi_url
+from lager.util import ftdi_url, ftdi_usb
 
 DEBUG = bool(os.environ.get("LAGER_GPIO_DEBUG"))
 
@@ -344,6 +344,11 @@ class FT232HGPIO(GPIOBase):
           latch, then turn the cached outputs on.
 
         Either way the latency timer is set to ``HOLD_LATENCY`` last.
+
+        If the part was re-plugged while this process held a stale entry in
+        pyftdi's device table, the whole open -- probe included, since the
+        probe's lookup was stale too -- runs once more after a flush (see
+        ``lager.util.ftdi_usb``).
         """
         url = self._build_url()
         cls = type(self)
@@ -351,7 +356,8 @@ class FT232HGPIO(GPIOBase):
             ctrl = cls._controllers.get(url)
             if ctrl is not None:
                 return ctrl
-            ctrl = self._open_channel(url)
+            ctrl = ftdi_usb.open_fresh(lambda: self._open_channel(url),
+                                       log=_debug)
             cls._controllers[url] = ctrl
             if url not in cls._atexit_urls:
                 cls._atexit_urls.add(url)

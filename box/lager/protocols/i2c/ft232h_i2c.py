@@ -26,7 +26,7 @@ from typing import List, Optional
 
 from .i2c_base import I2CBase
 from lager.exceptions import I2CBackendError
-from lager.util import ftdi_url
+from lager.util import ftdi_url, ftdi_usb
 
 DEBUG = bool(os.environ.get("LAGER_I2C_DEBUG"))
 
@@ -123,9 +123,14 @@ class FT232HI2C(I2CBase):
         url = self._build_url()
         _debug(f"Opening FT232H at URL: {url}")
 
+        def _open():
+            c = I2cController()
+            c.configure(url, frequency=self._frequency_hz)
+            return c
+
         try:
-            ctrl = I2cController()
-            ctrl.configure(url, frequency=self._frequency_hz)
+            # A re-plug leaves pyftdi's device table stale; flush and retry.
+            ctrl = ftdi_usb.open_fresh(_open, log=_debug)
         except Exception as exc:
             raise I2CBackendError(
                 f"Failed to open FT232H I2C at {url}: {exc}"

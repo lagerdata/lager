@@ -31,7 +31,7 @@ from typing import List, Optional
 
 from .spi_base import SPIBase
 from lager.exceptions import SPIBackendError
-from lager.util import ftdi_url
+from lager.util import ftdi_url, ftdi_usb
 
 DEBUG = bool(os.environ.get("LAGER_SPI_DEBUG"))
 
@@ -157,9 +157,14 @@ class FT232HSPI(SPIBase):
         url = self._build_url()
         _debug(f"Opening FT232H SPI at URL: {url}")
 
+        def _open():
+            c = SpiController()
+            c.configure(url)
+            return c
+
         try:
-            ctrl = SpiController()
-            ctrl.configure(url)
+            # A re-plug leaves pyftdi's device table stale; flush and retry.
+            ctrl = ftdi_usb.open_fresh(_open, log=_debug)
         except Exception as exc:
             raise SPIBackendError(
                 f"Failed to open FT232H SPI at {url}: {exc}"
