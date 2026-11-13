@@ -77,6 +77,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: GNU timeout, as on the box
+        uses: ./.github/actions/gnu-timeout
+
       - name: Install CLI + test deps
         run: |
           pip install -e cli/
@@ -133,6 +136,9 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: ${{ matrix.python }}
+
+      - name: GNU timeout, as on the box
+        uses: ./.github/actions/gnu-timeout
 
       - name: Install CLI + test deps
         run: |

@@ -1,0 +1,39 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Put GNU coreutils' timeout at /usr/bin/timeout, the path the box executor
+# runs every non-detached job under (box/lager/python/executor.py). Called by
+# every job that runs the box unit suite.
+#
+# WHY. The box image is Debian bookworm, which ships GNU coreutils. The
+# ubuntu-26.04 runner image (ubuntu-latest from 2026-11-13) ships uutils
+# coreutils instead, and the two disagree on what a SIGKILL'd job looks like to
+# the parent: GNU timeout kills itself with the same signal, so Python sees a
+# returncode of -9; uutils timeout exits with 137. test_python_timeout.py pins
+# -9 because that is what the box produces, so on uutils it fails.
+#
+# Ubuntu 26.04's gnu-coreutils package installs GNU's binaries with a "gnu"
+# prefix (/usr/bin/gnutimeout). This links it into place. On an image that
+# already has GNU timeout (ubuntu-24.04) it does nothing.
+name: GNU timeout at /usr/bin/timeout
+description: Make /usr/bin/timeout GNU coreutils, matching the box image.
+runs:
+  using: composite
+  steps:
+    - name: Install GNU timeout
+      shell: bash
+      run: |
+        set -euo pipefail
+        if /usr/bin/timeout --version 2>/dev/null | head -1 | grep -q 'GNU coreutils'; then
+          echo "/usr/bin/timeout is already GNU coreutils"
+          exit 0
+        fi
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends gnu-coreutils
+        sudo ln -sf /usr/bin/gnutimeout /usr/bin/timeout
+        version=$(/usr/bin/timeout --version | head -1)
+        echo "$version"
+        case "$version" in
+          *'GNU coreutils'*) ;;
+          *) echo "::error::/usr/bin/timeout is still not GNU coreutils: $version"; exit 1 ;;
+        esac

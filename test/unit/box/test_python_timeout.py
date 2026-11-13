@@ -40,10 +40,27 @@ from lager.python.executor import MAX_TIMEOUT, _wrap_with_timeout
 
 TIMEOUT_BIN = '/usr/bin/timeout'
 
+def _is_gnu_timeout(path):
+    """True when ``path`` is GNU coreutils' timeout.
+
+    Existence is not enough. uutils coreutils (Ubuntu 26.04's default) exits
+    137 after its SIGKILL where GNU kills itself with the signal (-9 to
+    Python), and the box image is Debian with GNU, so these tests describe
+    nothing on uutils. CI links GNU into place: .github/actions/gnu-timeout.
+    """
+    try:
+        out = subprocess.run(
+            [path, '--version'], capture_output=True, text=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return 'GNU coreutils' in out.splitlines()[0] if out else False
+
+
 # The real-process tests need GNU coreutils at the path the box uses. The box is
 # Linux; a dev machine may not be, and macOS has no /usr/bin/timeout at all.
 needs_real_timeout = pytest.mark.skipif(
-    platform.system() != 'Linux' or not os.path.exists(TIMEOUT_BIN),
+    platform.system() != 'Linux' or not _is_gnu_timeout(TIMEOUT_BIN),
     reason=f'needs GNU coreutils at {TIMEOUT_BIN} (the box path)',
 )
 
