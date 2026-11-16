@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3949 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5435 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 3900 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5344 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10241** |
+| | **Total gated** | **10098** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,7 +504,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 351 files)
+### Local Unit Tests (`test/unit/` -- 349 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 189 files)
 
@@ -577,6 +577,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gdb_controller_leak.py` | GdbController close on failed attempts to prevent fd leak |
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
 | `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, a hung driver call expires into `invoke-timeout` plus a supervised restart, and a USB-202 net (sent with a `device_id`, no `address`) whose uldaq inventory lost the unit restarts the service, gated on the unit's USB address, and answers `restarting:` with a retry hint before the exit instead of dropping the connection |
+| `test_hardware_service_network_reconnect.py` | `/invoke` recovery for a network-attached instrument whose TCP connection dropped: the dead driver is evicted and reopened within the same call, the instrument works again once it is back instead of failing with "Broken pipe" until the service restarts, and the error while it is gone comes from a fresh attempt. Run against a simulated supply on a loopback socket with a minimal socket driver. Pins the scope: only TCPIP addresses take the path, a USB address never does (libusb's `[Errno 32] Pipe error` included), and the USB stale-session keywords are unchanged. Not covered: a write-only command sent as the first call after a drop is lost without an error |
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions; a driver's not-ready sentence (a PicoScope still opening) returned bare with 503 and `error_type: not-ready`, outside the retry |
 | `test_hardware_service_redaction.py` | The `/invoke` log line masks secret keyword arguments (`password`, `pin`, `private_key_pem`, ...) while the driver still receives them |
 | `test_hsm_net_command.py` | `/net/command` for `hsm` nets: each action reaches its `hsm_hs` method with the login kwargs, a missing password and unknown algorithm, mechanism or object type answer 400 before the device is reached, the password never appears in a reply, and hardware_service's wrapper text is dropped from errors |
