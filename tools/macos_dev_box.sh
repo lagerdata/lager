@@ -26,6 +26,7 @@
 #   LAGER_DEV_PLATFORM image platform    (default linux/amd64, the only one published today)
 #   LAGER_DEV_PYTHON   Python for the agent (default <repo>/.venv/bin/python)
 #   LAGER_DEV_NAME     container name    (default lager-macos-dev)
+#   LAGER_HOST_SCOPE_DAEMON  natively built oscilloscope daemon to run (default none)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -95,6 +96,8 @@ cmd_up() {
         -p 127.0.0.1:9000:9000 \
         -p "127.0.0.1:${PYTHON_SERVICE_HOST_PORT}:5000" \
         -p 127.0.0.1:8100:8100 \
+        -p 127.0.0.1:8765:8765 \
+        -p 127.0.0.1:8085:8085 \
         "$IMAGE" /app/lager/lager/docker/start-services-hostlink.sh >/dev/null
     echo "Started container $NAME from $IMAGE"
     echo "Box API: http://127.0.0.1:9000   script service: http://127.0.0.1:${PYTHON_SERVICE_HOST_PORT}"

@@ -105,6 +105,16 @@ def create_app(endpoint: config.Endpoint) -> Flask:
         from . import darwin_usb
 
         darwin_usb.install()
+        # The debug net runs in this process for the container's stand-in.
+        try:
+            from . import darwin_debug
+
+            darwin_debug.install()
+        except Exception:
+            logger.exception("debug support is unavailable")
+    from . import debug_rpc
+
+    debug_rpc.install(hardware_service.app)
     return install(hardware_service.app, endpoint)
 
 
