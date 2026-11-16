@@ -125,6 +125,10 @@ class DroppedNetworkInstrumentTests(unittest.TestCase):
 
     def test_a_dropped_connection_is_reopened_within_the_same_call(self):
         self.assertEqual(self._invoke("set_channel_voltage", 3.3).status_code, 200)
+        # A query, so the simulator has applied the set and registered the
+        # connection before it is cut; the set alone is a bare write and
+        # returns before the simulator has necessarily seen it.
+        self.assertEqual(self._invoke("get_channel_voltage").get_json(), 3.3)
         self.assertEqual(self.server.drop_connections(), 1)
 
         resp = self._invoke("get_channel_voltage")
