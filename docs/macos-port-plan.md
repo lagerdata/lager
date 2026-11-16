@@ -542,7 +542,7 @@ Exit criteria:
 | Same net from a script using the Net API | Pass when run inside the container. **Not run through `lager python`**: the CLI hardcodes port 5000, which AirPlay holds; that is the Phase 2 port work |
 | Container has no hardware access | Pass: not privileged, no devices, no `/dev` or `/sys` mounts |
 | Container reaches an agent bound to loopback | Pass on Docker Desktop via `host.docker.internal` |
-| Same on OrbStack | **Not done**: OrbStack is not installed on the test machine |
+| Same on OrbStack | Pass on OrbStack 29.8.2 (2026-11-16): CLI set, enable and state, a Net API script in the container, recovery from a worker crash and a container restart |
 | Token and version handshake | Pass: no token gives 401, mismatch gives a "run `lager update`" error |
 | Worker crash, agent stop, container restart | Pass: each recovers without manual steps; while the agent is down the CLI reports one clear error |
 | Instrument-loss error text equals the Linux code path | Pass: the same sequence against the unwrapped hardware service gives identical text |
@@ -557,6 +557,14 @@ Limits of this result:
   instruments found by the USB scan. The net was added with `lager nets add-batch`.
 
 Findings to carry forward:
+
+0. **Installer must not depend on the keychain.** With `"credsStore": "osxkeychain"` in
+   `~/.docker/config.json`, an anonymous `docker pull` on OrbStack failed with "error
+   getting credentials ... User canceled the operation". Pulling with an empty Docker
+   config worked. The installer has to pull the public image without the credential
+   helper, above all over SSH, where nobody can answer a keychain prompt. Installing
+   OrbStack also switched the active Docker context to it, so the installer must choose
+   its runtime explicitly rather than trust the current context.
 
 1. **Fixed (Linux-affecting, in the ledger):** after a socket-connected instrument
    dropped and returned, the hardware service kept failing with "Broken pipe" until it
