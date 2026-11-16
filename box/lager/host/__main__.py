@@ -24,8 +24,6 @@ import time
 
 from lager.hostlink import config
 
-from . import paths
-
 logger = logging.getLogger("lager.host")
 
 RESTART_DELAY_S = 2.0
@@ -66,12 +64,10 @@ def cmd_run(args) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    env = dict(os.environ)
-    env[paths.CONFIG_DIR_ENV] = args.config_dir
     command = [sys.executable, "-m", "lager.host", "worker", "--config-dir", args.config_dir]
     while not stopping:
         logger.info("Starting hardware worker")
-        child = subprocess.Popen(command, env=env)
+        child = subprocess.Popen(command)
         code = child.wait()
         if stopping:
             break
@@ -94,7 +90,9 @@ def cmd_run(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="lager-host", description=__doc__.split("\n\n")[0])
     parser.add_argument("--config-dir", default=None,
-                        help="Box configuration directory on this machine")
+                        help="directory holding the endpoint record "
+                             f"(default {config.CONTAINER_CONFIG_DIR}); the Box's other "
+                             "configuration is always read from the default")
     sub = parser.add_subparsers(dest="command", required=True)
     for name, fn in (("run", cmd_run), ("init", cmd_init), ("worker", cmd_worker)):
         p = sub.add_parser(name)
@@ -105,7 +103,7 @@ def main(argv=None) -> int:
         p.set_defaults(fn=fn)
     args = parser.parse_args(argv)
     if getattr(args, "config_dir", None) is None:
-        args.config_dir = paths.default_config_dir()
+        args.config_dir = config.CONTAINER_CONFIG_DIR
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
