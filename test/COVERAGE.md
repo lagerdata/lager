@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3900 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5406 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5399 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10160** |
+| | **Total gated** | **10153** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 351 files)
+### Local Unit Tests (`test/unit/` -- 350 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 191 files)
+#### Box Unit Tests (`test/unit/box/` -- 190 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -622,7 +622,6 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_state_stream.py` | `GET /nets/state?stream=1` line format (typed lines, `done` last, deadline cut-offs) checked on arrival over a real socket, client-disconnect cleanup, and the fail-fast paths of both modes: absent-instrument check, per-instrument budget, cooldown, `device-busy` reasons, and the one-call supply batch |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_openocd_flash.py` | `openocd_flash`, the one flash/erase dispatch for OpenOCD targets: a DA1469x goes to the RAM-resident flash_loader with absolute XIP addresses translated to flash-relative offsets (out-of-window addresses refused before any I/O), everything else to `program` / bank erase; a requested erase range reaches the loader as a flash offset (named first in the output) or `flash erase_address` elsewhere, and an out-of-window range touches nothing; loader failures name the failed step and a flash dying after its erase warns the board may be blank. Also `OpenOcdRpc(device=...)` refusing `program` / erase for a DA1469x by name before sending anything, and the shared `is_da1469x` predicate |
-| `test_pigpio_addr_fallback.py` | The pigpio address block in `box/start_box.sh`: the fallback actually fires when no pigpio container exists (`||` used to test the pipeline, whose `tr` always exits 0, so it never did), plus the `<no value>` a container off `lagernet` renders, and whitespace or garbage -- the result is always a usable address |
 | `test_prebuilt_image.py` | The pre-built-image block in `box/start_box.sh`: a mutable tag refused before any docker call, the OCI version label asserted and an unlabelled image rejected, `--platform` pinned, the pull sent through a throwaway docker config, and every miss falling back to the local build rather than failing the deploy |
 | `test_probes_paths.py` | Per-probe pid/log paths are built from a serial read from a permissive field of a client-supplied VISA address: whatever that field carries, the path stays inside `/tmp`, while an ordinary serial keeps the byte-identical filename it had before so an upgrade cannot orphan a running gdbserver; slot assignment still matches on the raw serial, and the unused `/pip` endpoint stays removed |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |

@@ -18,3 +18,8 @@
 # default until someone runs it on a bench.
 #
 box/lager/hardware_service.py | Instruments with a TCPIP address only: a dropped connection (reset, aborted, broken pipe) now takes the existing evict-reopen-retry path instead of failing until the service restarts. USB, serial and addressless devices do not take the new path; the stale-session keywords are unchanged | low | unit suites and a simulated network supply; not run on Linux hardware
+box/start_box.sh | Stops detecting a pigpio container's address and no longer passes PIGPIO_ADDR to the Box container; the startup summary loses its "PIGPIO Address" line. Nothing else in the boot sequence changes | medium | unit suites and bash -n; not run on Linux hardware. This is the script every Linux Box boots with, so start one real Box before release
+box/lager/python/executor.py | User scripts no longer get a PIGPIO_ADDR environment variable from the Box. A value the caller passes itself (--passenv / --env) still reaches the script. The project owner confirmed no customer script reads it | low | unit suites; not run on Linux hardware
+box/lager/exec/docker.py | Removes the unused PIGPIO_CONTAINER_NAME constant | low | unit suites; nothing imports it
+box/lager/exec/README.md | Documentation only: drops the removed constant | low | not applicable
+box/lager/python/README.md | Documentation only: drops PIGPIO_ADDR from the script environment list | low | not applicable

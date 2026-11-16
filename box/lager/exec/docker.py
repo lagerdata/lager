@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 # Container constants
 CONTAINER_NAME = 'lager'
-PIGPIO_CONTAINER_NAME = 'pigpio'
 LAGER_NETWORK_NAME = 'lagernet'
 
 
