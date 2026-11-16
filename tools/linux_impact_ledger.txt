@@ -23,3 +23,4 @@ box/lager/python/executor.py | User scripts no longer get a PIGPIO_ADDR environm
 box/lager/exec/docker.py | Removes the unused PIGPIO_CONTAINER_NAME constant | low | unit suites; nothing imports it
 box/lager/exec/README.md | Documentation only: drops the removed constant | low | not applicable
 box/lager/python/README.md | Documentation only: drops PIGPIO_ADDR from the script environment list | low | not applicable
+box/oscilloscope-daemon/daemon/src/oscilloscope/pico/loader.rs | None at run time: adds a macOS-only driver search (two constants and one block, all under cfg(target_os = "macos")) that is compiled out of a Linux build. The Linux search directories and candidate names are untouched | low | loader tests pass on macOS; not built on Linux, so build the daemon on one Box before release

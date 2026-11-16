@@ -603,6 +603,42 @@ Findings to carry forward:
    running there can read the link token. This matches the trust the container already
    has on Linux, where it holds the hardware directly.
 
+#### Hardware results (2026-11-16)
+
+First runs on real instruments, macOS 15 arm64, OrbStack. Bench: Keysight E36312A,
+PicoScope 2000 (USB id 0ce9:1016) and LabJack U3 direct to the Mac; J-Link + nRF52840
+behind port 0 of an Acroname USBHub3p.
+
+| Path | Result |
+|---|---|
+| Keysight E36312A over USBTMC, CLI -> container -> agent | Works: state read and setpoint change. Output not yet enabled (load unknown) |
+| `lager instruments` | Reports nothing: the scan still runs in the container and reads the VM's sysfs. Nets had to be added by hand |
+| `lager debug flash` (J-Link, nRF52840) | Works with the debug service run natively on the Mac |
+| `lager debug status` / `disconnect` | Work |
+| `lager debug memrd` / `reset` | Fail: the service looks for the GDB server in `/proc/<pid>/cmdline`, which macOS lacks |
+| Scope daemon build | Builds natively, unmodified, with Rust 1.97 (needs >= 1.89) |
+| PicoScope open | Not working yet, see below |
+
+What the debug service needs on macOS, all found here:
+- J-Link Commander stalls at "Connecting to J-Link via USB" unless started with
+  `-NoGui 1`: it waits on a dialog. A wrapper script placed first in the tool search
+  path fixes it without editing `jlink.py`.
+- The tool paths are Linux ones; macOS has `/Applications/SEGGER/JLink/`.
+- `pygdbmi` and `pexpect` must be in the agent's Python environment.
+- About seven places read `/proc/<pid>/cmdline` or `/proc/<pid>/stat`.
+- The service did not stop on SIGTERM while a J-Link call was stalled.
+
+What the scope daemon needs on macOS:
+- PicoTech's macOS headers keep the shared headers (`PicoStatus.h`) in a separate
+  `shared/` directory; the build expects them beside each family's header.
+- The standalone PicoSDK framework is x86_64 only. The PicoScope 7 application carries
+  arm64 drivers, and the loader now looks there first on Apple silicon (macOS-only code,
+  compiled out on Linux). What the installer should require is undecided.
+- With the drivers loaded, every family still answers "not found", and so does the
+  vendor driver called directly, outside Lager. The scope's I/O Registry entry is
+  `!registered, !matched`, so macOS has not finished attaching it. Unresolved; the next
+  step is a physical replug.
+
 ### Phase 2 — hardware in the loop, then installer
 
 First, repeat the Phase 1 exit criteria on a physical USBTMC supply, including unplug and

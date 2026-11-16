@@ -38,6 +38,13 @@ const SEARCH_DIRS: &[&str] = &[
     "/usr/lib",
 ];
 
+/// Where PicoTech's macOS installer puts the drivers, one directory each.
+#[cfg(target_os = "macos")]
+const MACOS_SDK_LIBRARIES: &str = "/Library/Frameworks/PicoSDK.framework/Libraries";
+/// The drivers inside the PicoScope 7 application.
+#[cfg(target_os = "macos")]
+const MACOS_APP_RESOURCES: &str = "/Applications/PicoScope 7 T&M.app/Contents/Resources";
+
 /// Locate a driver by soname, returning the first existing candidate.
 ///
 /// Both the bare soname and the `.1` suffixed form are tried: the PicoTech
@@ -45,6 +52,25 @@ const SEARCH_DIRS: &[&str] = &[
 /// their `-dev` package, which boxes do not necessarily have.
 pub fn find_library(soname: &str) -> Option<PathBuf> {
     let stem = soname.trim_end_matches(".so");
+    // macOS only, compiled out everywhere else: PicoTech's installer puts
+    // each driver in its own directory of a framework, as a .dylib.
+    #[cfg(target_os = "macos")]
+    {
+        // The PicoScope 7 application carries arm64 drivers; the standalone
+        // SDK framework is x86_64 only (as of 2026-11), which an arm64
+        // daemon cannot load. So on Apple silicon the application's copy
+        // goes first.
+        let app = PathBuf::from(MACOS_APP_RESOURCES).join(format!("{stem}.dylib"));
+        let sdk = PathBuf::from(MACOS_SDK_LIBRARIES)
+            .join(stem)
+            .join(format!("{stem}.dylib"));
+        let order = if cfg!(target_arch = "aarch64") { [app, sdk] } else { [sdk, app] };
+        for path in order {
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
     let candidates = [
         soname.to_string(),
         format!("{stem}.so.2"),
