@@ -11,19 +11,22 @@ The hardware service module is imported and wrapped, not modified. Its own
 ``run_service`` binds every interface on a fixed port for use inside a
 container; here the application is bound to loopback on the provisioned
 port instead.
+
+The Box code names its configuration directory by the literal path
+``/etc/lager``. The agent uses that same directory on the host, which the
+installer creates and shares into the container, so nothing is translated.
 """
 from __future__ import annotations
 
 import logging
 import platform
 import sys
-from typing import Set
 
 from flask import Flask, jsonify, request
 
 from lager.hostlink import auth, config, protocol
 
-from . import AGENT_VERSION, paths
+from . import AGENT_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,7 @@ def _platform_name() -> str:
     return f"{platform.system().lower()}-{platform.machine().lower()}"
 
 
-def install(app: Flask, endpoint: config.Endpoint, config_dir: str) -> Flask:
+def install(app: Flask, endpoint: config.Endpoint) -> Flask:
     """Put authentication and the handshake in front of ``app``.
 
     Safe to call again with a new endpoint: the hooks are registered once and
@@ -43,17 +46,12 @@ def install(app: Flask, endpoint: config.Endpoint, config_dir: str) -> Flask:
     state = app.extensions.get(_STATE_KEY)
     if state is not None:
         state["endpoint"] = endpoint
-        state["config_dir"] = config_dir
         return app
 
-    seen: Set[str] = set()
-    state = {"endpoint": endpoint, "config_dir": config_dir}
+    state = {"endpoint": endpoint}
     app.extensions[_STATE_KEY] = state
 
     def _guard():
-        # Drivers import lazily, so new modules can appear between requests.
-        paths.remap_loaded_modules(state["config_dir"], seen)
-
         if not auth.is_authorized(request.headers, state["endpoint"].token):
             return jsonify(protocol.error_body(
                 protocol.ERR_UNAUTHORIZED,
@@ -97,7 +95,7 @@ def install(app: Flask, endpoint: config.Endpoint, config_dir: str) -> Flask:
     return app
 
 
-def create_app(endpoint: config.Endpoint, config_dir: str) -> Flask:
+def create_app(endpoint: config.Endpoint) -> Flask:
     """The hardware service application, wrapped for use as the agent."""
     # Imported here, not at module import, so that importing this module
     # (for its tests, or for --help) does not pull in every driver.
@@ -107,14 +105,13 @@ def create_app(endpoint: config.Endpoint, config_dir: str) -> Flask:
         from . import darwin_usb
 
         darwin_usb.install()
-    paths.remap_singletons(config_dir)
-    return install(hardware_service.app, endpoint, config_dir)
+    return install(hardware_service.app, endpoint)
 
 
 def serve(config_dir: str) -> None:
     """Run the worker until it exits or the hardware service restarts it."""
     endpoint = config.load_endpoint(config.endpoint_path(config_dir))
-    app = create_app(endpoint, config_dir)
+    app = create_app(endpoint)
     logger.info("Lager host agent %s (%s) serving hardware on %s:%s, config %s",
                 AGENT_VERSION, _platform_name(), endpoint.bind, endpoint.port, config_dir)
     app.run(host=endpoint.bind, port=endpoint.port, debug=False, threaded=True)
