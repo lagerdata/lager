@@ -639,6 +639,47 @@ What the scope daemon needs on macOS:
   `!registered, !matched`, so macOS has not finished attaching it. Unresolved; the next
   step is a physical replug.
 
+#### Hardware results, second pass (2026-11-16)
+
+The debug service and scope daemon now run under the agent and are reached through the
+container, not directly.
+
+| Path | Result |
+|---|---|
+| Keysight E36312A: voltage, current limit, enable | Works (3.3 V / 0.1 A read back as 3.299 V) |
+| `lager debug` flash, memrd, reset, status, disconnect | Work through container -> host |
+| PicoScope 2405A: enable, scale, timebase, start, measure | Work. 958 Hz on A and 247 Hz on D from the test firmware |
+| `lager debug gdbserver --rtt --interactive \| defmt-print` | Attaches, no data yet (see below) |
+
+How it is wired:
+- The agent supervises three children: hardware worker, debug service (port 48765) and,
+  when given a binary, the scope daemon (48085). All loopback.
+- The container forwards 8765 and 8085 to them as plain TCP
+  (`box/lager/hostlink/tcp_forward.py`). These two are not token-protected, unlike the
+  hardware service.
+- Debug-net calls made inside the container (the `/rtt` Socket.IO handler, and scripts
+  using `Net.get(..., NetType.Debug)`) go to the agent through
+  `box/lager/hostlink/debug_proxy.py`; RTT is bridged over a loopback TCP port. This is
+  switched on by `LAGER_HOSTLINK=1`, set only by the macOS start script. The switch is
+  one block in `box/lager/nets/debug_net.py`, in the ledger.
+
+Found on the way:
+- The PicoScope "not found" was macOS waiting for the user to allow the accessory.
+- The debug service's SIGTERM handler deadlocks (it calls `server.shutdown()` from the
+  serving thread). Docker hides this with its kill after ten seconds. The agent replaces
+  the handler and kills any child that outlives a stop request.
+- RTT detection starts `gdb-multiarch`, which macOS does not have; `arm-none-eabi-gdb`
+  is substituted.
+- GDB 18 takes about six seconds to refuse non-stop mode against J-Link, so the Box
+  code's fallback missed the refusal. The agent waits for the verdict. The first RTT
+  attach therefore exceeds the CLI's wait and fails; the second succeeds.
+- **Open:** after the RTT block is found, no data flows, and the target's RTT write
+  position does not advance, while the same firmware logs when run free of the
+  debugger. The core is being left halted after the all-stop RAM scan with GDB 18.
+- The GDB port (2331) is only reachable on the Mac itself, not through the container.
+- Port 5000 was not needed by any command above.
+- None of the new files has unit tests yet.
+
 ### Phase 2 — hardware in the loop, then installer
 
 First, repeat the Phase 1 exit criteria on a physical USBTMC supply, including unplug and

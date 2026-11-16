@@ -118,6 +118,10 @@ trap '' PIPE
 
 # Start Python execution service (port 5000)
 echo "Starting Lager Python Execution Service on port 5000..."
+# Every service below, and every script they run, sees this: it is what
+# switches the debug net to the host (lager/nets/debug_net.py).
+export LAGER_HOSTLINK=1
+
 start_service "python execution" "python3 -m lager.python.service" "/tmp/lager-python-service.log"
 
 # Hostlink relay (port 8080), in place of the hardware invocation service.
@@ -125,6 +129,12 @@ start_service "python execution" "python3 -m lager.python.service" "/tmp/lager-p
 # agent through it.
 echo "Starting Lager hostlink relay on port 8080..."
 start_service "hostlink relay" "python3 -m lager.hostlink.relay --port 8080" "/tmp/lager-hardware-service.log"
+
+# The debug service and the oscilloscope daemon also run on the host. They
+# carry streams, so they are forwarded as TCP on the ports they hold on a
+# Linux Box (the host-side numbers are in lager/hostlink/config.py).
+start_service "debug forward" "python3 -m lager.hostlink.tcp_forward --listen 8765 --to 48765" "/tmp/lager-debug-service.log"
+start_service "scope forward" "python3 -m lager.hostlink.tcp_forward --listen 8085 --to 48085" "/tmp/lager-scope-forward.log"
 
 LAGER_DISABLE_UART_SERVICE_LOWER=$(echo "${LAGER_DISABLE_UART_SERVICE:-}" | tr '[:upper:]' '[:lower:]')
 case "$LAGER_DISABLE_UART_SERVICE_LOWER" in

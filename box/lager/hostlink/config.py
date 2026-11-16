@@ -168,3 +168,10 @@ def ensure_endpoint(path: str, *, port: Optional[int] = None,
     )
     save_endpoint(endpoint, path)
     return endpoint
+
+
+# Where the host runs the services a Linux Box runs inside its container on
+# 8765 and 8085. They cannot use those numbers on the host: the container
+# publishes them there. Loopback only, like the agent.
+HOST_DEBUG_PORT = 48765
+HOST_SCOPE_PORT = 48085
