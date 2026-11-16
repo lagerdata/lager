@@ -86,8 +86,9 @@ entries first planned for Phase 1 (`nets/device.py`, `constants.py`,
 | `cli/deployment/scripts/setup_and_deploy_box.sh` | Needed only for Linux **local** install: route its ~99 inline `ssh` calls through one runner | **Highest Linux risk in the plan.** It rewrites the remote Linux install path | High | Last; see below |
 | `box/oscilloscope-daemon` (`pico/loader.rs`, `pico/usb.rs`) | macOS library names and presence check | Linux code paths kept under `cfg(target_os = "linux")`, unchanged | Low | 3 |
 
-Not touched at all: `box/start_box.sh`, `box/udev_rules/`, `box/modprobe_d/`,
-`box/lager/docker/start-services.sh`, and every existing driver module.
+Not touched by the port: `box/udev_rules/`, `box/modprobe_d/`,
+`box/lager/docker/start-services.sh`, and every existing driver module. `box/start_box.sh`
+is changed once, by the pigpio removal (Q5), which is separate from the port.
 
 **Linux local install is sequenced last and on its own.** It is the one requirement that
 cannot be met additively without duplicating the 2,600-line deploy script. It is done as
@@ -639,7 +640,7 @@ Signing, notarisation, upgrade and rollback, uninstall, documentation
 | Q2 | Which instruments are physically available? | **Answered:** J-Link, Acroname hubs, power supplies, PicoScopes, YKUSH, LabJacks. Phase 1 uses a USBTMC power supply; these also cover the debug, hub, scope-daemon, and script-side driver paths in Phase 3 |
 | Q3 | Port 5000 conflicts with AirPlay on macOS | **Decided:** macOS boxes use the existing `8301` alias. `lager install` saves the port in the box's `~/.lager` record; the CLI reads it from there and never probes per command. A Mac box added by hand without the field is probed once, on first failure, and the result is saved |
 | Q4 | Agent language | **Decided:** Python-first, Rust scope daemon alongside. Constraint: installing `lager-host` is invisible. `lager install` fetches, installs, and starts it with no separate command, download, or prompt beyond what a Linux install already asks (a `sudo` password where a vendor tool needs it) |
-| Q5 | Out of scope on macOS: WiFi control, pigpio, `network-mode: host` | **Decided:** return a clear "not supported on macOS" error. pigpio looks vestigial: nothing in this repository starts a `pigpio` container or imports the library; the code only passes `PIGPIO_ADDR` through and removes a container of that name [V]. Removing it from Linux is a separate cleanup |
+| Q5 | Out of scope on macOS: WiFi control, pigpio, `network-mode: host` | **Decided:** WiFi control and `network-mode: host` return a clear "not supported on macOS" error. pigpio was vestigial and its live plumbing is removed on every platform (Linux-affecting, in the ledger): `box/start_box.sh` no longer passes `PIGPIO_ADDR` to the container and scripts no longer receive it. `lager update`, `lager uninstall` and the deploy script still remove a container named `pigpio`, so boxes installed long ago are cleaned up |
 | Q10 | Windows local install | **Decided:** recognised, reports "not yet supported" |
 | Q6 | Scripts that touch hardware directly | **Decided:** pyserial, pyvisa, and custom driver bundles are made to work (section 3.6). Raw USB libraries and direct `bleak` are not; a script that imports them on a macOS box gets an immediate error naming the Lager API to use |
 | Q7 | Bench hardware | In progress on the owner's side. Hardware-in-the-loop starts in Phase 2. Re-enabling automated bench runs is a separate workstream (decided). Still needed before Phase 4 and before any instrument is advertised as supported |
