@@ -152,7 +152,6 @@ The CLI sends multipart form data with the script and all parameters. The servic
 The executor automatically injects these environment variables into every Python script:
 
 ### Standard Lager Variables
-- `PIGPIO_ADDR`: IP of pigpio container
 - `LAGER_HOST`: Docker host IP
 - `LAGER_HOST_MODULE_FOLDER`: Path to script/module on host
 - `LAGER_OUTPUT_CHANNEL`: Path to output channel file
