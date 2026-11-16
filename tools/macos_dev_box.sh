@@ -15,8 +15,13 @@
 # Published ports are bound to 127.0.0.1: the Box API is unauthenticated by
 # design, and a development laptop should not offer it to the network.
 #
+# The Box's configuration directory is /etc/lager on the Mac, the same path a
+# Linux Box uses, shared into the container. `lager install` will create it;
+# until then create it once by hand:
+#   sudo mkdir -p /etc/lager && sudo chown "$(id -un)" /etc/lager && chmod 700 /etc/lager
+#
 # Environment:
-#   LAGER_DEV_DIR      state directory   (default ~/Library/Application Support/Lager-dev)
+#   LAGER_DEV_DIR      logs and pid file (default ~/Library/Application Support/Lager-dev)
 #   LAGER_DEV_IMAGE    Box image         (default ghcr.io/lagerdata/lager-box:v<cli version>)
 #   LAGER_DEV_PLATFORM image platform    (default linux/amd64, the only one published today)
 #   LAGER_DEV_PYTHON   Python for the agent (default <repo>/.venv/bin/python)
@@ -25,7 +30,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_DIR="${LAGER_DEV_DIR:-$HOME/Library/Application Support/Lager-dev}"
-ETC_DIR="$DEV_DIR/etc"
+ETC_DIR=/etc/lager
 LOG_DIR="$DEV_DIR/logs"
 PID_FILE="$DEV_DIR/agent.pid"
 NAME="${LAGER_DEV_NAME:-lager-macos-dev}"
@@ -57,13 +62,19 @@ cmd_up() {
     docker info >/dev/null 2>&1 || die "Docker is not running"
 
     mkdir -p "$LOG_DIR"
-    mkdir -p -m 700 "$ETC_DIR"
+    [ -d "$ETC_DIR" ] && [ -w "$ETC_DIR" ] || die "$ETC_DIR is missing or not writable; run:
+  sudo mkdir -p $ETC_DIR && sudo chown \"\$(id -un)\" $ETC_DIR && chmod 700 $ETC_DIR"
+    # /etc is a symlink to /private/etc on macOS. OrbStack does not follow it
+    # for a bind mount (the container silently gets an empty directory), so
+    # mount the resolved path. Docker Desktop accepts either.
+    local etc_real
+    etc_real="$(cd "$ETC_DIR" && pwd -P)"
     [ -f "$ETC_DIR/saved_nets.json" ] || echo '[]' > "$ETC_DIR/saved_nets.json"
 
     if agent_pid >/dev/null; then
         echo "Host agent already running (pid $(agent_pid))"
     else
-        PYTHONPATH="$REPO/box" nohup "$PYTHON" -m lager.host run --config-dir "$ETC_DIR" \
+        PYTHONPATH="$REPO/box" nohup "$PYTHON" -m lager.host run \
             >> "$LOG_DIR/agent.log" 2>&1 &
         echo $! > "$PID_FILE"
         echo "Started host agent (pid $(cat "$PID_FILE"), log $LOG_DIR/agent.log)"
@@ -80,7 +91,7 @@ cmd_up() {
     # to hardware except the host agent.
     docker run -d --name "$NAME" --platform "$PLATFORM" \
         -v "$REPO/box/lager:/app/lager/lager:ro" \
-        -v "$ETC_DIR:/etc/lager" \
+        -v "$etc_real:/etc/lager" \
         -p 127.0.0.1:9000:9000 \
         -p "127.0.0.1:${PYTHON_SERVICE_HOST_PORT}:5000" \
         -p 127.0.0.1:8100:8100 \

@@ -19,7 +19,6 @@ says the link is sound and nothing about hardware.
 import json
 import os
 import stat
-import sys
 import tempfile
 import threading
 import unittest
@@ -29,7 +28,7 @@ import requests
 from flask import Flask, jsonify, request
 from werkzeug.serving import make_server
 
-from lager.host import paths, worker
+from lager.host import worker
 from lager.hostlink import auth, config, protocol, relay
 
 
@@ -211,7 +210,7 @@ class AgentGuardTests(unittest.TestCase):
 
     def setUp(self):
         self.endpoint = config.Endpoint(token=config.new_token(), port=1, connect_host="127.0.0.1")
-        self.app = worker.install(_stand_in_app(), self.endpoint, paths.CONTAINER_CONFIG_DIR)
+        self.app = worker.install(_stand_in_app(), self.endpoint)
         self.client = self.app.test_client()
         self.auth = {"Authorization": auth.bearer_header(self.endpoint.token)}
         self.version = {protocol.PROTOCOL_HEADER: str(protocol.PROTOCOL_VERSION)}
@@ -263,7 +262,7 @@ class AgentGuardTests(unittest.TestCase):
 
     def test_installing_again_swaps_the_token_without_stacking_hooks(self):
         rotated = config.Endpoint(token=config.new_token(), port=1)
-        worker.install(self.app, rotated, paths.CONTAINER_CONFIG_DIR)
+        worker.install(self.app, rotated)
         self.assertEqual(len(self.app.before_request_funcs[None]), 1)
         old = self.client.get("/health", headers={**self.auth, **self.version})
         self.assertEqual(old.status_code, 401)
@@ -295,7 +294,7 @@ class RelayTests(unittest.TestCase):
         server = make_server("127.0.0.1", 0, self.agent_app, threaded=True)
         endpoint = config.Endpoint(token=token or config.new_token(), port=server.port,
                                    connect_host="127.0.0.1")
-        worker.install(self.agent_app, endpoint, paths.CONTAINER_CONFIG_DIR)
+        worker.install(self.agent_app, endpoint)
         config.save_endpoint(endpoint, self.endpoint_file)
         # mtime granularity can hide a rewrite made within the same tick.
         os.utime(self.endpoint_file, (server.port, server.port))
@@ -355,7 +354,7 @@ class RelayTests(unittest.TestCase):
         requests.post(self.url + "/invoke", json={"function": "f"}, timeout=10)
         rotated = config.Endpoint(token=config.new_token(), port=self.endpoint.port,
                                   connect_host="127.0.0.1")
-        worker.install(self.agent_app, rotated, paths.CONTAINER_CONFIG_DIR)
+        worker.install(self.agent_app, rotated)
         config.save_endpoint(rotated, self.endpoint_file)
         os.utime(self.endpoint_file, (1, 1))
         resp = requests.post(self.url + "/invoke", json={"function": "f"}, timeout=10)
@@ -417,64 +416,6 @@ class RelayTests(unittest.TestCase):
             for n in range(5):
                 resp = session.post(self.url + "/invoke", json={"function": "f", "n": n}, timeout=10)
                 self.assertEqual(resp.json()["echo"]["n"], n)
-
-
-class ConfigDirRemapTests(unittest.TestCase):
-    """The agent repoints config paths in Box modules instead of editing them.
-
-    That only works while those modules keep naming the directory the way
-    they do today, so the names it depends on are pinned here. If one of
-    these fails, a Box module changed and ``lager.host.paths`` must follow.
-    """
-
-    def test_module_constants_are_repointed_once(self):
-        module = type(sys)("lager._remap_probe")
-        module.A_FILE = "/etc/lager/saved_nets.json"
-        module.THE_DIR = "/etc/lager"
-        module.A_PATH = Path("/etc/lager/webcam_streams.json")
-        module.LOOKALIKE = "/etc/lager-other/x"
-        module.UNRELATED = "/tmp/x"
-        sys.modules[module.__name__] = module
-        self.addCleanup(sys.modules.pop, module.__name__, None)
-
-        seen = set()
-        paths.remap_loaded_modules("/host/cfg", seen)
-        self.assertEqual(module.A_FILE, "/host/cfg/saved_nets.json")
-        self.assertEqual(module.THE_DIR, "/host/cfg")
-        self.assertEqual(module.A_PATH, Path("/host/cfg/webcam_streams.json"))
-        self.assertEqual(module.LOOKALIKE, "/etc/lager-other/x")
-        self.assertEqual(module.UNRELATED, "/tmp/x")
-
-        module.A_FILE = "/etc/lager/again.json"
-        self.assertEqual(paths.remap_loaded_modules("/host/cfg", seen), 0)
-
-    def test_nothing_changes_when_the_directory_is_the_containers(self):
-        module = type(sys)("lager._remap_probe2")
-        module.A_FILE = "/etc/lager/saved_nets.json"
-        sys.modules[module.__name__] = module
-        self.addCleanup(sys.modules.pop, module.__name__, None)
-        self.assertEqual(paths.remap_loaded_modules(paths.CONTAINER_CONFIG_DIR, set()), 0)
-        self.assertEqual(module.A_FILE, "/etc/lager/saved_nets.json")
-
-    def test_the_links_own_view_of_the_container_is_left_alone(self):
-        paths.remap_loaded_modules("/host/cfg", set())
-        self.assertEqual(config.CONTAINER_CONFIG_DIR, "/etc/lager")
-        self.assertEqual(paths.CONTAINER_CONFIG_DIR, "/etc/lager")
-
-    def test_box_modules_still_name_the_directory_as_the_agent_expects(self):
-        import lager.cache
-        import lager.constants
-        import lager.nets.net
-
-        self.assertEqual(lager.constants.LAGER_CONFIG_DIR, "/etc/lager")
-        self.assertEqual(lager.constants.SAVED_NETS_PATH, "/etc/lager/saved_nets.json")
-        self.assertEqual(lager.nets.net.LOCAL_NETS_PATH, "/etc/lager/saved_nets.json")
-        self.assertEqual(lager.cache.NetsCache()._path, "/etc/lager/saved_nets.json")
-
-    def test_explicit_environment_wins_for_the_default_directory(self):
-        os.environ[paths.CONFIG_DIR_ENV] = "/explicit"
-        self.addCleanup(os.environ.pop, paths.CONFIG_DIR_ENV, None)
-        self.assertEqual(paths.default_config_dir(), "/explicit")
 
 
 if __name__ == "__main__":

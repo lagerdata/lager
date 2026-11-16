@@ -522,12 +522,13 @@ Built and run on macOS 15.7.4 arm64 with Docker Desktop 28.1.1.
 the `Device` proxy at the agent, the macOS container runs a relay on `localhost:8080`, the
 port the hardware service normally holds. Every existing caller keeps working unchanged
 and the relay forwards to the agent. The agent imports the existing hardware service and
-wraps it, and repoints `/etc/lager` paths after import instead of editing them.
+wraps it. (It first repointed `/etc/lager` paths after import; that was replaced by using
+`/etc/lager` itself on the Mac, see finding 3.)
 
 | Piece | Files (all new) |
 |---|---|
 | Link core: protocol, token, endpoint record, relay | `box/lager/hostlink/` |
-| Native agent: supervisor, worker, config paths | `box/lager/host/` |
+| Native agent: supervisor, worker, macOS USB listing | `box/lager/host/` |
 | Container start script without hardware services | `box/lager/docker/start-services-hostlink.sh` |
 | Simulated SPD1168X supply over TCP | `test/framework/fake_scpi_supply.py` |
 | Dev launcher | `tools/macos_dev_box.sh` |
@@ -585,10 +586,19 @@ Findings to carry forward:
 3. **Config directory (decided):** `lager install` on macOS creates `/etc/lager` once with
    `sudo`, owned by the installing user, so the agent and the container use the same
    path a Linux Box does. This replaces the Phase 1 approach of repointing `/etc/lager`
-   paths in Box modules after import, which missed paths written inside functions. The
-   repointing code (`box/lager/host/paths.py`) is removed once sharing `/etc/lager` into
-   the container is confirmed on Docker Desktop and OrbStack. It costs one password
-   prompt, which a Linux install already has.
+   paths in Box modules after import, which missed paths written inside functions. It
+   costs one password prompt, which a Linux install already has.
+   **Done 2026-11-16:** the repointing code is deleted and the supply slice was re-run on
+   Docker Desktop 28.1.1 and OrbStack 29.8.2 with `/etc/lager` shared into the container
+   (read, write and atomic rename as uid 33, directory mode 0700 on the Mac). Two things
+   the installer must do, both found here:
+   - Mount `/private/etc/lager`, not `/etc/lager`. `/etc` is a symlink on macOS and
+     OrbStack does not follow it for a bind mount: the container silently gets an empty
+     directory. Docker Desktop accepts either.
+   - `chmod 700` the directory. The endpoint record is mode 0644 so the container user
+     can read it, and the directory is what keeps the token from other local users.
+     Neither runtime enforces file ownership across the share, so 0700 on the Mac does
+     not lock the container out.
 4. **Token visibility:** the endpoint record is mounted into the container, so scripts
    running there can read the link token. This matches the trust the container already
    has on Linux, where it holds the hardware directly.
