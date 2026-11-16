@@ -1,0 +1,20 @@
+# Linux impact ledger for the macOS port.
+#
+# Rule (docs/macos-port-plan.md, section 0.1): the working Linux Box must not
+# regress. Every file that already exists on main under box/ or cli/ and is
+# changed, renamed, or deleted by this work must be listed here BEFORE the
+# change is committed. tools/check_linux_impact.py enforces it.
+#
+# New files need no entry: a Linux Box does not run them unless an existing
+# file is changed to call them, and that change is what gets listed.
+#
+# One entry per line, four fields separated by " | ":
+#
+#   path | effect on a Linux Box | risk (low/medium/high) | how it was verified
+#
+# "path" is repo-relative and matched exactly. The last field must say plainly
+# whether the change was run on real Linux hardware. Automated hardware runs
+# are disabled, so "unit suites only; not run on Linux hardware" is the honest
+# default until someone runs it on a bench.
+#
+box/lager/hardware_service.py | Instruments with a TCPIP address only: a dropped connection (reset, aborted, broken pipe) now takes the existing evict-reopen-retry path instead of failing until the service restarts. USB, serial and addressless devices do not take the new path; the stale-session keywords are unchanged | low | unit suites and a simulated network supply; not run on Linux hardware
