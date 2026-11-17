@@ -718,6 +718,18 @@ Found on the way:
   that check reads sysfs inside the container.
 - **Open:** YKUSH and Plugable hubs go through the same stand-in but were not on the bench.
 
+#### `lager python` on the Mac box (2026-11-16)
+
+- The CLI built `http://<ip>:5000` for `lager python`. It now asks
+  `cli/box_storage.get_python_service_port(ip)`, which is 5000 unless the saved Box
+  records `"python_port"`. Both files are in the ledger. Nothing writes the key yet: the
+  macOS installer will record 8301. `lager boxes add` does not preserve it.
+- With a Box record `{"ip": "127.0.0.1", "python_port": 8301}`, a script run by
+  `lager python` read the Keysight, the Acroname port and target memory, read raw RTT,
+  and read decoded lines with `rtt_defmt` (defmt-print runs in the container, as on Linux).
+- A debug error now crosses the link as its own class: a second `connect()` raises
+  `lager.debug.api.JLinkAlreadyRunningError` in the script, as on a Linux Box.
+
 ### Phase 2 — hardware in the loop, then installer
 
 First, repeat the Phase 1 exit criteria on a physical USBTMC supply, including unplug and

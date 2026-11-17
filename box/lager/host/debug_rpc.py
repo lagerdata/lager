@@ -143,7 +143,8 @@ def install(app: Flask) -> Flask:
                     protocol.ERR_BAD_REQUEST, f"Unknown debug method {method!r}.")), 400
         except Exception as exc:  # the caller re-raises this in the script
             logger.info("debug %s failed: %s", method, exc)
-            return jsonify({"error": str(exc), "type": type(exc).__name__}), 500
+            return jsonify({"error": str(exc), "type": type(exc).__name__,
+                            "module": type(exc).__module__}), 500
         if isinstance(result, (bytes, bytearray)):
             return jsonify({"result_b64": base64.b64encode(bytes(result)).decode()})
         return app.response_class(
