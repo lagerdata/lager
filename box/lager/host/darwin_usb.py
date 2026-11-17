@@ -82,6 +82,77 @@ def enumerated_usb_ids() -> Optional[UsbIds]:
         return None
 
 
+def parse_devices(plist_bytes: bytes) -> List[Dict[str, Optional[str]]]:
+    """One entry per USB device, in the shape ``lager.util.usb_sysfs`` returns.
+
+    ``sysfs_name`` is the device's location ID: like a sysfs name it follows
+    the port a device is plugged into, so it is the same before and after a
+    power cycle. That is what the hub drivers compare to tell that a cycled
+    device came back.
+    """
+    devices: List[Dict[str, Optional[str]]] = []
+    if not plist_bytes.strip():
+        return devices
+
+    def text(value) -> Optional[str]:
+        return value if isinstance(value, str) and value else None
+
+    def number(value) -> Optional[int]:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def walk(node) -> None:
+        if isinstance(node, list):
+            for child in node:
+                walk(child)
+            return
+        if not isinstance(node, dict):
+            return
+        vid, pid = number(node.get("idVendor")), number(node.get("idProduct"))
+        location = number(node.get("locationID"))
+        if vid is not None and pid is not None and location is not None:
+            address = number(node.get("USB Address"))
+            device_class = number(node.get("bDeviceClass"))
+            devices.append({
+                "sysfs_name": f"{location:08x}",
+                "vid": f"{vid:04x}",
+                "pid": f"{pid:04x}",
+                "serial": next((node[k] for k in _SERIAL_KEYS if text(node.get(k))), None),
+                "product": text(node.get("USB Product Name")),
+                "manufacturer": text(node.get("USB Vendor Name")),
+                "busnum": None,
+                "devnum": None if address is None else str(address),
+                "devpath": None,
+                "device_class": None if device_class is None else f"{device_class:02x}",
+                "speed": None,
+            })
+        walk(node.get("IORegistryEntryChildren"))
+
+    walk(plistlib.loads(plist_bytes))
+    return devices
+
+
+def enumerate_usb_devices(sysfs_root=None, vid=None, pid=None, serial=None):
+    """``lager.util.usb_sysfs.enumerate_usb_devices``, from the I/O Registry.
+
+    Same filters and the same meaning of an empty result: the bus could not
+    be read. ``sysfs_root`` is accepted and ignored.
+    """
+    from lager.util.usb_sysfs import _norm_hex_id
+
+    try:
+        out = subprocess.run(IOREG_COMMAND, capture_output=True, check=True,
+                             timeout=IOREG_TIMEOUT_S).stdout
+        devices = parse_devices(out)
+    except Exception as exc:  # noqa: BLE001 - any failure means "unknown"
+        logger.warning("Could not read the USB device list from ioreg: %s", exc)
+        return []
+    want_vid, want_pid = _norm_hex_id(vid), _norm_hex_id(pid)
+    return [d for d in devices
+            if (not want_vid or _norm_hex_id(d["vid"]) == want_vid)
+            and (not want_pid or _norm_hex_id(d["pid"]) == want_pid)
+            and (not serial or d["serial"] == serial)]
+
+
 def install() -> None:
     """Make the hardware service's self-restart gate use this enumeration.
 
@@ -93,3 +164,11 @@ def install() -> None:
 
     self_restart.enumerated_usb_ids = enumerated_usb_ids
     logger.info("USB enumeration for self-restart: I/O Registry (macOS)")
+
+    # The hub drivers confirm a power cycle from the bus. Each of these bound
+    # the sysfs reader by name at import, so each is given the replacement.
+    from lager.automation.usb_hub import acroname, usb_net
+    from lager.util import usb_sysfs
+
+    for module in (usb_sysfs, usb_net, acroname):
+        module.enumerate_usb_devices = enumerate_usb_devices

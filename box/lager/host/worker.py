@@ -19,6 +19,7 @@ installer creates and shares into the container, so nothing is translated.
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import sys
 
@@ -101,6 +102,10 @@ def create_app(endpoint: config.Endpoint) -> Flask:
     # (for its tests, or for --help) does not pull in every driver.
     from lager import hardware_service
 
+    # The agent is where the hardware is. If the container's switch leaked
+    # into this environment, the stand-ins would call the agent from itself.
+    os.environ.pop("LAGER_HOSTLINK", None)
+
     if sys.platform == "darwin":
         from . import darwin_usb
 
@@ -112,9 +117,10 @@ def create_app(endpoint: config.Endpoint) -> Flask:
             darwin_debug.install()
         except Exception:
             logger.exception("debug support is unavailable")
-    from . import debug_rpc
+    from . import debug_rpc, usb_rpc
 
     debug_rpc.install(hardware_service.app)
+    usb_rpc.install(hardware_service.app)
     return install(hardware_service.app, endpoint)
 
 

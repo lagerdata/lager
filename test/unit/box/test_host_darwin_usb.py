@@ -167,5 +167,83 @@ class GateWiringTests(unittest.TestCase):
         self.assertIsNone(self_restart.usb_device_enumerated("TCPIP0::10.0.0.5::5025::SOCKET"))
 
 
+class DevicesInSysfsShapeTests(unittest.TestCase):
+    """The enumeration the hub drivers use to confirm a power cycle.
+
+    Unlike the IDs above, this shape was checked against real hardware: an
+    Acroname USBHub3p with a J-Link behind it. The entries below are
+    constructed to match what that bench reported.
+    """
+
+    def _plane(self):
+        jlink = {"IORegistryEntryName": "J-Link", "idVendor": 0x1366, "idProduct": 0x1025,
+                 "USB Serial Number": "000683935549", "USB Product Name": "J-Link",
+                 "USB Vendor Name": "SEGGER", "locationID": 0x01114400,
+                 "USB Address": 9, "bDeviceClass": 0xEF}
+        stem = {"IORegistryEntryName": "USBHub3p-Stem", "idVendor": 0x24FF,
+                "idProduct": 0x0013, "USB Serial Number": "EC077668",
+                "locationID": 0x01112000, "USB Address": 4, "bDeviceClass": 0}
+        scope = {"IORegistryEntryName": "PicoScope 2000", "idVendor": 0x0CE9,
+                 "idProduct": 0x1016, "locationID": 0x02100000, "USB Address": 1}
+        return _registry(stem, jlink, scope)
+
+    def test_entry_has_the_keys_and_formats_sysfs_gives(self):
+        by_serial = {d["serial"]: d for d in darwin_usb.parse_devices(self._plane())}
+        jlink = by_serial["000683935549"]
+        self.assertEqual(jlink["sysfs_name"], "01114400")
+        self.assertEqual((jlink["vid"], jlink["pid"]), ("1366", "1025"))
+        self.assertEqual(jlink["devnum"], "9")
+        self.assertEqual(jlink["product"], "J-Link")
+        self.assertEqual(jlink["manufacturer"], "SEGGER")
+        self.assertEqual(jlink["device_class"], "ef")
+        from lager.util import usb_sysfs
+        self.assertEqual(set(jlink), {"sysfs_name"} | {key for _, key in usb_sysfs._SYSFS_DEVICE_ATTRS})
+
+    def test_missing_serial_and_names_are_none_not_absent(self):
+        scope = [d for d in darwin_usb.parse_devices(self._plane()) if d["vid"] == "0ce9"][0]
+        self.assertIsNone(scope["serial"])
+        self.assertIsNone(scope["manufacturer"])
+        self.assertEqual(scope["product"], None)
+
+    def test_name_follows_the_port_not_the_bus_address(self):
+        before = darwin_usb.parse_devices(_registry(
+            {"idVendor": 0x1366, "idProduct": 0x1025, "locationID": 0x01114400, "USB Address": 9}))
+        after = darwin_usb.parse_devices(_registry(
+            {"idVendor": 0x1366, "idProduct": 0x1025, "locationID": 0x01114400, "USB Address": 12}))
+        self.assertEqual(before[0]["sysfs_name"], after[0]["sysfs_name"])
+        self.assertNotEqual(before[0]["devnum"], after[0]["devnum"])
+
+    def test_filters_match_the_sysfs_readers(self):
+        ok = subprocess.CompletedProcess([], 0, stdout=self._plane(), stderr=b"")
+        with patch.object(darwin_usb.subprocess, "run", return_value=ok):
+            self.assertEqual(len(darwin_usb.enumerate_usb_devices()), 3)  # the fixture hub has no location
+            self.assertEqual(len(darwin_usb.enumerate_usb_devices(vid="0x24FF")), 1)
+            self.assertEqual(len(darwin_usb.enumerate_usb_devices(vid="24ff", pid="13")), 1)
+            self.assertEqual(len(darwin_usb.enumerate_usb_devices(serial="000683935549")), 1)
+            self.assertEqual(darwin_usb.enumerate_usb_devices(serial="nope"), [])
+
+    def test_unreadable_bus_is_empty_which_the_drivers_read_as_unknown(self):
+        with patch.object(darwin_usb.subprocess, "run", side_effect=OSError("no ioreg")):
+            self.assertEqual(darwin_usb.enumerate_usb_devices(), [])
+        self.assertEqual(darwin_usb.parse_devices(b""), [])
+
+    def test_install_replaces_the_reader_where_the_hub_drivers_look(self):
+        from lager.automation.usb_hub import acroname, usb_net
+        from lager.util import self_restart, usb_sysfs
+        saved = [(m, m.enumerate_usb_devices) for m in (usb_sysfs, usb_net, acroname)]
+        saved_ids = self_restart.enumerated_usb_ids
+        try:
+            darwin_usb.install()
+            for module, _ in saved:
+                self.assertIs(module.enumerate_usb_devices, darwin_usb.enumerate_usb_devices)
+            ok = subprocess.CompletedProcess([], 0, stdout=self._plane(), stderr=b"")
+            with patch.object(darwin_usb.subprocess, "run", return_value=ok):
+                self.assertEqual(usb_net._bus_snapshot()["01114400"], "9")
+        finally:
+            for module, original in saved:
+                module.enumerate_usb_devices = original
+            self_restart.enumerated_usb_ids = saved_ids
+
+
 if __name__ == "__main__":
     unittest.main()
