@@ -27,6 +27,8 @@
 #   LAGER_DEV_PYTHON   Python for the agent (default <repo>/.venv/bin/python)
 #   LAGER_DEV_NAME     container name    (default lager-macos-dev)
 #   LAGER_HOST_SCOPE_DAEMON  natively built oscilloscope daemon to run (default none)
+#   LAGER_HOST_LIBRARY_PATH  extra directories of vendor libraries for the agent,
+#                            e.g. where liblabjackusb.dylib was built (default none)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -75,7 +77,12 @@ cmd_up() {
     if agent_pid >/dev/null; then
         echo "Host agent already running (pid $(agent_pid))"
     else
-        PYTHONPATH="$REPO/box" nohup "$PYTHON" -m lager.host run \
+        # Set by `env`, as the last step before Python: macOS drops DYLD_*
+        # variables whenever it starts a system binary, which the shell
+        # running this script and nohup both are.
+        PYTHONPATH="$REPO/box" nohup /usr/bin/env \
+            DYLD_FALLBACK_LIBRARY_PATH="${LAGER_HOST_LIBRARY_PATH:+$LAGER_HOST_LIBRARY_PATH:}/opt/homebrew/lib:/usr/local/lib:/usr/lib" \
+            "$PYTHON" -m lager.host run \
             >> "$LOG_DIR/agent.log" 2>&1 &
         echo $! > "$PID_FILE"
         echo "Started host agent (pid $(cat "$PID_FILE"), log $LOG_DIR/agent.log)"
