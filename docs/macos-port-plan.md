@@ -896,3 +896,30 @@ the adapter off and on through the hub behave as described above.
 - Multi-interface chips (FT2232H, FT4232H) are covered by tests only.
 - A Prolific PL2303G adapter (067b:23a3, in Lager's catalog) gets no port on
   macOS without Prolific's driver; the installer should say so.
+
+#### LabJack U3 on the Mac box (2026-11-17)
+
+- **Libraries.** The agent needs LabJackPython (pip) and LabJack's Exodriver
+  (`liblabjackusb.dylib`), built from LabJack's GitHub source against
+  Homebrew's libusb. Decision: the installer builds it from that source, as it
+  fetches the Pico drivers from Pico. The agent finds it through
+  `DYLD_FALLBACK_LIBRARY_PATH`, which must be set by `env` immediately before
+  Python: macOS drops `DYLD_*` variables when it starts any system binary
+  (the shell, `nohup`). The launchd job will need the same.
+- **CLI.** `lager adc`, `lager dac`, `lager gpi`/`gpo` and `lager nets state`
+  work, and the port-pinned address (`port-1-1.3`) resolves on macOS.
+- **Scripts.** `Net.get` for a gpio, adc or dac net opened the device over USB
+  from the script. With `LAGER_HOSTLINK=1` it now returns a stand-in
+  (`lager.hostlink.io_proxy`) that calls the hardware service's adapter for
+  the role, the route the CLI takes. **Linux-affecting:** one default-off
+  check in `box/lager/nets/net.py` (in the ledger). Not run on Linux hardware.
+- **Difference from Linux:** a failure in a script is a `DeviceError` with the
+  driver's message, not the driver's own exception class.
+
+Verified on the bench with a U3-HV, nothing wired: ADC read, DAC set and read
+back, GPIO high/low read back, and `wait_for_level`, from the CLI and from a
+`lager python` script.
+
+**Open:** other roles whose script-side net opens USB in the script (SPI, I2C,
+thermocouple, and the FT232H, Aardvark, USB-202 and YKUSH3 adapters) are not
+handed off yet.
