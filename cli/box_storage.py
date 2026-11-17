@@ -126,7 +126,7 @@ def save_boxes(boxes: Dict[str, str]) -> None:
 
 
 def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[str] = None,
-            python_port: Optional[int] = None) -> None:
+            python_port: Optional[int] = None, platform: Optional[str] = None) -> None:
     """Add a box to the local storage.
 
     Args:
@@ -138,6 +138,8 @@ def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[st
             that does not publish it on the default (a Box on macOS). When
             not given, a port already recorded for a Box at ``ip`` is kept,
             so editing or re-adding that Box does not lose it.
+        platform: Optional operating system of the Box, recorded only when it
+            is not Linux ("macos"). Kept across a re-add like ``python_port``.
     """
     boxes = _load_global_boxes()
     if python_port is None:
@@ -146,7 +148,13 @@ def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[st
                     and "python_port" in existing:
                 python_port = existing["python_port"]
                 break
-    if user or version or python_port is not None:
+    if platform is None:
+        for existing in boxes.values():
+            if isinstance(existing, dict) and existing.get("ip") == ip \
+                    and "platform" in existing:
+                platform = existing["platform"]
+                break
+    if user or version or python_port is not None or platform:
         # New format with user and/or version
         box_dict = {"ip": ip}
         if user:
@@ -155,6 +163,8 @@ def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[st
             box_dict["version"] = version
         if python_port is not None:
             box_dict["python_port"] = python_port
+        if platform:
+            box_dict["platform"] = platform
         boxes[name] = box_dict
     else:
         # Legacy format (just IP string)
