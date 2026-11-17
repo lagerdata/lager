@@ -87,7 +87,7 @@ lager spi NETNAME transfer NUM_WORDS [OPTIONS]
 |--------|-------------|---------|
 | `--box BOX` | Lager Box name or IP address | |
 | `--data DATA` | Hex data to transmit (e.g., `"9f 01"`) | |
-| `--data-file PATH` | File containing data to transmit. If `--data` is also given, `--data` is sent and the file is ignored ([#840](https://github.com/lagerdata/lager/issues/840)) | |
+| `--data-file PATH` | File containing data to transmit. Giving both `--data` and `--data-file` is a usage error | |
 | `--fill VALUE` | Fill value for padding | `0xFF` |
 | `--mode 0\|1\|2\|3` | SPI mode override | |
 | `--frequency FREQ` | Clock frequency override | |
@@ -203,16 +203,16 @@ Data arguments accept multiple hex formats. Parsing behavior depends on word siz
 | Space-separated | `9f 01 02` | `[0x9f, 0x01, 0x02]` |
 | Comma-separated | `9f,01,02` | `[0x9f, 0x01, 0x02]` |
 
-**Continuous hex with `--word-size 8`:**
+**Continuous hex on an 8-bit net:**
 
 | Format | Example | Parsed As |
 |--------|---------|-----------|
 | Prefixed continuous | `0x9f01` | `[0x9f, 0x01]` |
 | Unprefixed continuous | `9f01` | `[0x9f, 0x01]` |
 
-The CLI splits continuous hex into bytes only when you give `--word-size 8`. Without
-`--word-size`, `0x9f01` is one value, and an 8-bit net refuses it as out of range. On an
-8-bit net, separate the bytes or add `--word-size 8`.
+The word size used for parsing is `--word-size` when given, otherwise the net's saved word
+size (set with `lager spi NET config --word-size`, 8 when never set). The saved size is used
+only to parse the data; it is not sent as a per-call override.
 
 **16-bit or 32-bit word size:**
 
@@ -227,16 +227,15 @@ Values are validated against the configured word size range.
 
 ## Fill Value Format
 
-The `--fill` option accepts hex or decimal values:
+The `--fill` option takes hex with a `0x` prefix, or decimal:
 
 | Format | Example | Value |
 |--------|---------|-------|
-| Hex prefixed | `0xff` | 255 |
-| Hex unprefixed | `ff` | 255 |
-| Decimal, three digits | `255` | 255 |
+| Hex | `0xff` | 255 |
+| Decimal | `255` | 255 |
+| Decimal | `10` | 10 |
 
-One or two digits are always read as hex: `10` is 16, not 10. Write a small decimal value
-in hex, such as `0x0a` for 10.
+Bare hex digits such as `ff` are refused; write `0xff`.
 
 ---
 

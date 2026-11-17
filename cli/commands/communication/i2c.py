@@ -171,27 +171,32 @@ def _parse_hex_data(data_str: str) -> List[int]:
         return result
 
 
+def _parse_int_0x_hex(text: str) -> int:
+    """Parse an integer: hex with a ``0x`` prefix, decimal otherwise."""
+    if text.startswith('0x'):
+        return int(text[2:], 16)
+    if not text.isdigit():
+        raise ValueError(text)
+    return int(text, 10)
+
+
 def _parse_address(addr_str: str) -> int:
     """
     Parse I2C device address string.
 
     Validates 7-bit range (0x00-0x7F).
 
-    Supports: "0x48", "48", "72" (decimal)
+    A ``0x`` prefix means hex; anything else is decimal. So "0x48" and "72"
+    are the same address, and "48" is decimal 48 (0x30), not 0x48.
     """
     addr_str = addr_str.strip().lower()
 
     try:
-        if addr_str.startswith('0x'):
-            value = int(addr_str, 16)
-        elif all(c in '0123456789abcdef' for c in addr_str) and len(addr_str) <= 2:
-            value = int(addr_str, 16)
-        else:
-            value = int(addr_str)
+        value = _parse_int_0x_hex(addr_str)
     except ValueError:
         raise click.BadParameter(
             f"Invalid I2C address '{addr_str}'. "
-            f"Use hex (0x48) or decimal (72)"
+            f"Use hex with a 0x prefix (0x48) or decimal (72)"
         )
 
     if value < 0x00 or value > 0x7F:
@@ -381,9 +386,9 @@ def config(ctx, box, frequency, pull_ups):
 @click.pass_context
 @click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--start', default="0x08",
-              help='Start address in hex (default: 0x08)')
+              help='Start address: 0x-prefixed hex or decimal (default: 0x08)')
 @click.option('--end', default="0x77",
-              help='End address in hex (default: 0x77)')
+              help='End address: 0x-prefixed hex or decimal (default: 0x77)')
 def scan(ctx, box, start, end):
     """
     Scan I2C bus for connected devices
@@ -422,7 +427,7 @@ def scan(ctx, box, start, end):
 @click.pass_context
 @click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--address', required=True,
-              help='Device address in hex (e.g., 0x48)')
+              help='Device address: 0x-prefixed hex (0x48) or decimal (72)')
 @click.option('--frequency', default=None,
               help='Clock frequency override (e.g., 100k, 400k)')
 @click.option('--format', 'output_format', type=click.Choice(["hex", "bytes", "json"]), default="hex",
@@ -461,7 +466,7 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
 @click.pass_context
 @click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--address', required=True,
-              help='Device address in hex (e.g., 0x48)')
+              help='Device address: 0x-prefixed hex (0x48) or decimal (72)')
 @click.option('--data-file', type=click.Path(exists=True), default=None,
               help='File containing data to write')
 @click.option('--frequency', default=None,
@@ -483,6 +488,9 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
         net_not_specified_error('I2C', 'i2c').die()
 
     addr = _parse_address(address)
+
+    if data and data_file:
+        raise click.UsageError("Give DATA or --data-file, not both.")
 
     # Parse data from argument or file
     data_bytes = []
@@ -511,7 +519,7 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
 @click.pass_context
 @click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--address', required=True,
-              help='Device address in hex (e.g., 0x48)')
+              help='Device address: 0x-prefixed hex (0x48) or decimal (72)')
 @click.option('--data', 'data_str', default=None,
               help='Data to write before reading (hex)')
 @click.option('--data-file', type=click.Path(exists=True), default=None,
@@ -537,6 +545,9 @@ def transfer(ctx, num_bytes, box, address, data_str, data_file, frequency, outpu
         net_not_specified_error('I2C', 'i2c').die()
 
     addr = _parse_address(address)
+
+    if data_str and data_file:
+        raise click.UsageError("Give --data or --data-file, not both.")
 
     # Parse data from option or file
     data_bytes = []

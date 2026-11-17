@@ -67,8 +67,8 @@ lager i2c NETNAME scan [OPTIONS]
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box 名称或 IP 地址 | |
-| `--start ADDR` | 起始地址，十六进制 | `0x08` |
-| `--end ADDR` | 结束地址，十六进制 | `0x77` |
+| `--start ADDR` | 起始地址（见下文“地址格式”） | `0x08` |
+| `--end ADDR` | 结束地址（见下文“地址格式”） | `0x77` |
 
 默认范围 `0x08`-`0x77` 排除了 I2C 的保留地址。
 
@@ -99,7 +99,7 @@ lager i2c NETNAME read NUM_BYTES [OPTIONS]
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box 名称或 IP 地址 | |
-| `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
+| `--address ADDR` | 设备地址：`0x48`（十六进制）或 `72`（十进制） | **必填** |
 | `--frequency FREQ` | 覆盖时钟频率（例如 `100k`、`400k`） | |
 | `--format FORMAT` | 输出格式：`hex`、`bytes`、`json` | `hex` |
 
@@ -133,12 +133,12 @@ lager i2c NETNAME write DATA [OPTIONS]
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box 名称或 IP 地址 | |
-| `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
+| `--address ADDR` | 设备地址：`0x48`（十六进制）或 `72`（十进制） | **必填** |
 | `--data-file PATH` | 含有要写入二进制数据的文件 | |
 | `--frequency FREQ` | 覆盖时钟频率 | |
 | `--format FORMAT` | 可以接受，但 `write` 不打印数据，因此没有效果（[#840](https://github.com/lagerdata/lager/issues/840)） | `hex` |
 
-数据可以作为 `DATA` 参数提供，也可以通过 `--data-file` 提供。如果两者都给出，会写入 `DATA` 并忽略该文件（[#840](https://github.com/lagerdata/lager/issues/840)）。
+数据可以作为 `DATA` 参数提供，也可以通过 `--data-file` 提供，但不能同时给出。两者都给出时会报用法错误。
 
 **示例：**
 
@@ -170,7 +170,7 @@ lager i2c NETNAME transfer NUM_BYTES [OPTIONS]
 | 选项 | 说明 | 默认值 |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box 名称或 IP 地址 | |
-| `--address ADDR` | 设备地址，十六进制（例如 `0x48`） | **必填** |
+| `--address ADDR` | 设备地址：`0x48`（十六进制）或 `72`（十进制） | **必填** |
 | `--data DATA` | 读取之前要写入的十六进制数据（例如寄存器地址） | |
 | `--data-file PATH` | 含有读取前要写入数据的文件 | |
 | `--frequency FREQ` | 覆盖时钟频率 | |
@@ -209,15 +209,15 @@ lager i2c MY_I2C transfer 4 --address 0x48 --data 0x0A --format json
 
 ## 地址格式
 
-I2C 地址是 7 位值（`0x00`-`0x7F`）。您可以用十六进制指定地址，也可以用三位数的十进制指定：
+I2C 地址是 7 位值（`0x00`-`0x7F`）。带 `0x` 前缀表示十六进制，其他数字都按十进制读取：
 
 | 格式 | 示例 | 数值 |
 |--------|---------|-------|
-| 十六进制带前缀 | `0x48` | 72 |
-| 十六进制不带前缀 | `48` | 72 |
-| 十进制，三位数 | `100` | 100 |
+| 十六进制 | `0x48` | 72 |
+| 十进制 | `72` | 72 |
+| 十进制 | `48` | 48（`0x30`） |
 
-一位或两位数字总是按十六进制读取：`72` 是 `0x72`（114），而不是 72。小于 100 的十进制地址请用十六进制书写，例如用 `0x48` 表示 72（[#838](https://github.com/lagerdata/lager/issues/838)）。
+不带前缀的十六进制数字（例如 `1a`）会被拒绝；请写成 `0x1a`。
 
 ---
 

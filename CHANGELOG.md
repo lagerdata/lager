@@ -12,6 +12,23 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **Behavior change: `lager i2c` addresses and `lager spi --fill` read a bare
+  number as decimal.** Hex now needs a `0x` prefix. Before, a value of one or
+  two hex-valid digits was read as hex, so `--address 72` reached 0x72 and
+  `--fill 10` sent 0x10, while the help and error text said decimal. Bare hex
+  digits such as `1a` are refused. Scripts that pass `--address 48` meaning
+  0x48 must change to `--address 0x48`. The rule applies to `--address`,
+  `scan --start/--end` and `--fill`.
+
+- **`lager spi write` and `lager spi transfer --data` split a run of hex by the
+  net's word size.** Without `--word-size`, `0x9f01020304` is now five bytes on
+  a net whose saved word size is 8 (the default), instead of one 40-bit word
+  that the box refused. On a net configured with `--word-size 16` or `32`, a
+  run of hex is still one word, checked against that width before it is sent.
+  The saved size is used only for parsing.
+
 ### Fixed
 
 - **Turning off supply protection from a script acts on the net's own output.**
@@ -34,6 +51,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   the electronic load's `print_state()` printed into the box's service log and
   returned `None` to a `Net.get` caller. They now return the reading (a dict for
   the state reports), and a failed battery read returns `None`, not `0`. (#845)
+
+- **`lager i2c write`, `lager i2c transfer` and `lager spi transfer` refuse
+  inline data together with `--data-file`.** Before, the inline data was sent
+  and the file was ignored without a message. The command now exits with a
+  usage error naming both options.
+
 
 ## [0.65.0] - 2026-11-19
 

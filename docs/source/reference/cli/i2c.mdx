@@ -66,8 +66,8 @@ lager i2c NETNAME scan [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box name or IP address | |
-| `--start ADDR` | Start address in hex | `0x08` |
-| `--end ADDR` | End address in hex | `0x77` |
+| `--start ADDR` | Start address (see [Address Format](#address-format)) | `0x08` |
+| `--end ADDR` | End address (see [Address Format](#address-format)) | `0x77` |
 
 The default range `0x08`-`0x77` excludes reserved I2C addresses.
 
@@ -98,7 +98,7 @@ lager i2c NETNAME read NUM_BYTES [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box name or IP address | |
-| `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
+| `--address ADDR` | Device address: `0x48` (hex) or `72` (decimal) | **Required** |
 | `--frequency FREQ` | Clock frequency override (e.g., `100k`, `400k`) | |
 | `--format FORMAT` | Output format: `hex`, `bytes`, `json` | `hex` |
 
@@ -132,13 +132,13 @@ lager i2c NETNAME write DATA [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box name or IP address | |
-| `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
+| `--address ADDR` | Device address: `0x48` (hex) or `72` (decimal) | **Required** |
 | `--data-file PATH` | File containing binary data to write | |
 | `--frequency FREQ` | Clock frequency override | |
 | `--format FORMAT` | Accepted, but `write` prints no data, so it has no effect ([#840](https://github.com/lagerdata/lager/issues/840)) | `hex` |
 
-Provide data either as the `DATA` argument or via `--data-file`. If you give both, `DATA`
-is written and the file is ignored ([#840](https://github.com/lagerdata/lager/issues/840)).
+Provide data either as the `DATA` argument or via `--data-file`, not both. Giving both is a
+usage error.
 
 **Examples:**
 
@@ -170,7 +170,7 @@ lager i2c NETNAME transfer NUM_BYTES [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--box BOX` | Lager Box name or IP address | |
-| `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
+| `--address ADDR` | Device address: `0x48` (hex) or `72` (decimal) | **Required** |
 | `--data DATA` | Hex data to write before reading (e.g., register address) | |
 | `--data-file PATH` | File containing data to write before reading | |
 | `--frequency FREQ` | Clock frequency override | |
@@ -209,17 +209,16 @@ All values must be within byte range (`0x00`-`0xFF`).
 
 ## Address Format
 
-I2C addresses are 7-bit values (`0x00`-`0x7F`). You can specify addresses in hex, or in
-decimal with three digits:
+I2C addresses are 7-bit values (`0x00`-`0x7F`). A `0x` prefix means hex; any other number
+is decimal:
 
 | Format | Example | Value |
 |--------|---------|-------|
-| Hex prefixed | `0x48` | 72 |
-| Hex unprefixed | `48` | 72 |
-| Decimal, three digits | `100` | 100 |
+| Hex | `0x48` | 72 |
+| Decimal | `72` | 72 |
+| Decimal | `48` | 48 (`0x30`) |
 
-One or two digits are always read as hex: `72` is `0x72` (114), not 72. Write a decimal
-address below 100 in hex, such as `0x48` for 72 ([#838](https://github.com/lagerdata/lager/issues/838)).
+Bare hex digits such as `1a` are refused; write `0x1a`.
 
 ---
 
