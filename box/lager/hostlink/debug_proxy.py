@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import importlib
 import json
 import os
 import select
@@ -24,6 +25,26 @@ from . import tcp_forward
 RELAY_URL = "http://localhost:8080/v1/debug/call"
 # Flash and erase run for as long as the target takes.
 _CALL_TIMEOUT_S = 600.0
+
+
+def _error(payload):
+    """The error the real debug net raised, as the same class where possible.
+
+    A script that catches ``lager.debug.JLinkAlreadyRunningError`` must catch
+    it here too. Only classes from this package are looked up; anything else,
+    and any class that cannot be built from a message, is a RuntimeError.
+    """
+    name, module = payload.get("type"), payload.get("module") or ""
+    message = (payload.get("message") or payload.get("error")
+               or name or "debug operation failed")
+    if isinstance(name, str) and (module == "lager" or module.startswith("lager.")):
+        try:
+            cls = getattr(importlib.import_module(module), name, None)
+            if isinstance(cls, type) and issubclass(cls, Exception):
+                return cls(message)
+        except Exception:  # noqa: BLE001 - fall through to the plain error
+            pass
+    return RuntimeError(message)
 
 
 class _HostRtt:
@@ -97,7 +118,7 @@ class HostDebugNet:
         except ValueError:
             payload = {"error": resp.text}
         if not resp.ok:
-            raise RuntimeError(payload.get("message") or payload.get("error") or str(payload))
+            raise _error(payload if isinstance(payload, dict) else {"error": str(payload)})
         if "result_b64" in payload:
             return base64.b64decode(payload["result_b64"])
         return payload.get("result")

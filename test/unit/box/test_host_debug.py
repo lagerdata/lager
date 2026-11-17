@@ -264,7 +264,8 @@ class DebugRpcTests(unittest.TestCase):
     def test_driver_error_is_returned_with_its_type(self):
         resp = self._call(method="status")
         self.assertEqual(resp.status_code, 500)
-        self.assertEqual(resp.get_json(), {"error": "probe unplugged", "type": "ValueError"})
+        self.assertEqual(resp.get_json(), {"error": "probe unplugged", "type": "ValueError",
+                                           "module": "builtins"})
 
     def test_flash_writes_the_sent_bytes_to_a_file_that_is_then_removed(self):
         firmware = {"name": "app.hex", "data": base64.b64encode(b":00000001FF").decode()}
@@ -363,6 +364,24 @@ class DebugProxyTests(unittest.TestCase):
         self.reply = _Response(500, {"error": "probe unplugged", "type": "ValueError"})
         with self.assertRaisesRegex(RuntimeError, "probe unplugged"):
             self.net.status()
+
+    def test_box_error_class_survives_the_link(self):
+        from lager.debug.api import DebugError, JLinkAlreadyRunningError
+        self.reply = _Response(500, {"error": "", "type": "JLinkAlreadyRunningError",
+                                     "module": "lager.debug.api"})
+        with self.assertRaises(JLinkAlreadyRunningError) as caught:
+            self.net.connect()
+        self.assertIsInstance(caught.exception, DebugError)
+        self.assertEqual(str(caught.exception), "JLinkAlreadyRunningError")
+
+    def test_only_this_packages_exception_classes_are_built(self):
+        for module, name in (("os", "system"), ("builtins", "SystemExit"),
+                             ("lager.debug.api", "connect_jlink"),
+                             ("lager.no_such_module", "X"), ("lagerx", "Y")):
+            self.reply = _Response(500, {"error": "boom", "type": name, "module": module})
+            with self.assertRaises(RuntimeError) as caught:
+                self.net.status()
+            self.assertIs(type(caught.exception), RuntimeError, (module, name))
 
     def test_relay_error_message_is_raised(self):
         self.reply = _Response(503, {"error": "The host agent is not running.",
