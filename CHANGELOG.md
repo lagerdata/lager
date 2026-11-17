@@ -64,6 +64,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   after the call, an I2C `pull_ups`-only override no longer resets the bus to
   100 kHz, and `SPINet` hex output is padded to the word size set by `config()`.
 
+- **BLE `Central.connect()` and `Central.pair()` return the `Client`.** They
+  returned Bleak's bool and dropped the client, so a script could not use or
+  close the connection. `Client.start_notify(max_messages=N)` now returns when
+  the Nth notification arrives; it used to wait for one more, and timed out (or
+  hung with no timeout) when exactly N arrived.
+
 ## [0.65.0] - 2026-11-19
 
 ### Added

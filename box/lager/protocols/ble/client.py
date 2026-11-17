@@ -13,11 +13,14 @@ def noop_handler(handle: int, data: bytearray):
 
 def notify_handler(evt, messages, callback, max_messages, handle, data):
     if max_messages:
+        # Once max_messages have arrived the wait is over; later
+        # notifications (before stop_notify) are ignored.
+        if evt.is_set():
+            return
+        callback(handle, data)
+        messages.append(data)
         if len(messages) >= max_messages:
             evt.set()
-        else:
-            callback(handle, data)
-            messages.append(data)
     else:
         callback(handle, data)
 
@@ -118,9 +121,17 @@ class Central:
         return devices
 
     def connect(self, address, *args, **kwargs):
-        """connect to `address`"""
-        return Client(BleakClient(address), loop=self.loop).connect(*args, **kwargs)
+        """Connect to `address` and return the connected `Client`.
+
+        Use the returned client for reads, writes and notifications, and call
+        its `disconnect()` (or use it as a context manager) when done.
+        """
+        client = Client(BleakClient(address), loop=self.loop)
+        client.connect(*args, **kwargs)
+        return client
 
     def pair(self, address, *args, **kwargs):
-        """pair to `address`"""
-        return Client(BleakClient(address), loop=self.loop).pair(*args, **kwargs)
+        """Pair with `address` and return the `Client`."""
+        client = Client(BleakClient(address), loop=self.loop)
+        client.pair(*args, **kwargs)
+        return client

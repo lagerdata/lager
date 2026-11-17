@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3969 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5486 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5492 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10298** |
+| | **Total gated** | **10318** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 352 files)
+### Local Unit Tests (`test/unit/` -- 353 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 190 files)
+#### Box Unit Tests (`test/unit/box/` -- 191 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -523,7 +523,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_battery_command_esr.py` | `/battery/command` `set_esr`: offset written, instrument's answer reported, zero is a set, driver refusal |
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
-| `test_ble_central_loop.py` | The box BLE `Central()` makes its own event loop when none is passed: no `DeprecationWarning` with no current loop, a working loop off the main thread, and a passed-in `loop` is used |
+| `test_ble_central_loop.py` | The box BLE `Central()` makes its own event loop when none is passed: no `DeprecationWarning` with no current loop, a working loop off the main thread, and a passed-in `loop` is used; `Central.connect()`/`pair()` return the `Client`, and `start_notify(max_messages=N)` completes on the Nth notification and ignores later ones |
 | `test_ble_session.py` | Held BLE GATT session actions on `POST /ble/command`: session open/pair/read/write/notify/close, single-session and adapter-ownership rules (one-shot BLE and BluFi refuse while open), idempotent and forced close, lifetime and idle reaping, per-characteristic sequence numbers, draining buffered notifications after peer disconnect or expiry, and connecting via BlueZ's device record; Bleak is faked |
 | `test_ble_sniffer.py` | The `ble-sniffer` role: the `BleSnifferBase` template (lock, `.part` file, stop, a device lost with and without records, the driver's missing-device message) through a minimal stub driver; background capture jobs (start returning once recording begins, progress, stop, busy/missing/silent sniffers failing the start, a device lost after the start, trimming); and the nRF Sniffer serial-protocol driver against a fake firmware with a fake clock, using frames from a real capture: option types, ranges and conflicts checked before the device is touched (the HTTP limit of 300 s and the script limit of a day), SLIP framing, escapes and overlong frames, protocol-1 requests and protocol-1/2/3 frame parsing, pcap records matching the Nordic tool's layout (S1 byte removed, coded-PHY CI kept), record times from the firmware clock and its wrap, protocol-2 advertising told by access address, the request sequence (go idle, version, hop sequence, scan flags, temporary key, go idle), follow with a given or advertised address type, follow-by-name once a good-CRC name is seen, `follow_seen`, data PDUs kept by the RSSI cut-off, `request_stop` ending a capture, an unplug mid-capture keeping the recorded packets and releasing the port and lock, an unresponsive sniffer leaving an existing file untouched, an unknown protocol version, a port that cannot be opened or is held by another program, a missing dongle, the per-device `flock` refusing a second capture, status without opening the port, the data tty taken from the highest USB interface (firmware 5.x has two), pcap record counting, delete limited to `.pcap` files under the output root, pruning captures older than a day, `Net.get` routing and the catalog entry, and `/net/command` start/job/stop/status/delete replies with wrong types as 400 and busy as 409 |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |

@@ -77,11 +77,15 @@ devices = central.scan(address="AA:BB:CC:DD:EE:FF")
 
 ### `connect(address)`
 
-按地址连接一台 BLE 设备。
+按地址连接一台 BLE 设备，并返回已连接的 `Client`。
 
 ```python
 central = Central()
-ok = central.connect("AA:BB:CC:DD:EE:FF")
+client = central.connect("AA:BB:CC:DD:EE:FF")
+try:
+    value = client.read_gatt_char("00002a19-0000-1000-8000-00805f9b34fb")
+finally:
+    client.disconnect()
 ```
 
 **参数：**
@@ -90,19 +94,15 @@ ok = central.connect("AA:BB:CC:DD:EE:FF")
 |-----------|------|-------------|
 | `address` | `str` | 该设备的 MAC 地址 |
 
-**返回：** `bool` - Bleak 的 `connect()` 的结果
-
-<Warning>
-`connect()` 和 `pair()` 不返回 `Client`。它们创建的客户端不会被保留，因此脚本无法使用或关闭该连接。若要操作设备，请在 central 的循环上自行创建客户端，如[创建 Client](#创建-client)所示。请参阅 [#847](https://github.com/lagerdata/lager/issues/847)。
-</Warning>
+**返回：** `Client` - 已连接的客户端。使用完毕后调用其 `disconnect()`。
 
 ### `pair(address)`
 
-与一台 BLE 设备配对。
+与一台 BLE 设备配对，并返回该 `Client`。
 
 ```python
 central = Central()
-ok = central.pair("AA:BB:CC:DD:EE:FF")  # Returns a bool, not a Client
+client = central.pair("AA:BB:CC:DD:EE:FF")
 ```
 
 ## Client 类
@@ -254,7 +254,7 @@ else:
 |-----------|------|-------------|
 | `char_specifier` | `str` 或 `int` | 特征 UUID 或句柄 |
 | `callback` | `callable` | 每收到一条通知就调用的函数 |
-| `max_messages` | `int` | 收到这么多条消息之后停止。调用要等再到达一条通知才返回，且这一条不会保留，因此恰好收到 `max_messages` 条通知时会以超时结束（[#847](https://github.com/lagerdata/lager/issues/847)） |
+| `max_messages` | `int` | 收到这么多条消息之后停止。最后一条到达后调用立即返回，之后的通知会被忽略 |
 | `timeout` | `float` | 超时时间，单位秒 |
 
 **返回：** `tuple[bool, list]` - (timed_out, messages)，其中 timed_out 在超时时为 True

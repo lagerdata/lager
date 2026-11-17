@@ -77,11 +77,15 @@ devices = central.scan(address="AA:BB:CC:DD:EE:FF")
 
 ### `connect(address)`
 
-Connect to a BLE device by address.
+Connect to a BLE device by address and return the connected `Client`.
 
 ```python
 central = Central()
-ok = central.connect("AA:BB:CC:DD:EE:FF")
+client = central.connect("AA:BB:CC:DD:EE:FF")
+try:
+    value = client.read_gatt_char("00002a19-0000-1000-8000-00805f9b34fb")
+finally:
+    client.disconnect()
 ```
 
 **Parameters:**
@@ -90,21 +94,15 @@ ok = central.connect("AA:BB:CC:DD:EE:FF")
 |-----------|------|-------------|
 | `address` | `str` | MAC address of the device |
 
-**Returns:** `bool` - The result of Bleak's `connect()`
-
-<Warning>
-`connect()` and `pair()` do not return a `Client`. The client they create is not kept, so
-the script cannot use or close that connection. To work with a device, create the client
-yourself on the central's loop, as in [Creating a Client](#creating-a-client). See [#847](https://github.com/lagerdata/lager/issues/847).
-</Warning>
+**Returns:** `Client` - The connected client. Call its `disconnect()` when done.
 
 ### `pair(address)`
 
-Pair with a BLE device.
+Pair with a BLE device and return the `Client`.
 
 ```python
 central = Central()
-ok = central.pair("AA:BB:CC:DD:EE:FF")  # Returns a bool, not a Client
+client = central.pair("AA:BB:CC:DD:EE:FF")
 ```
 
 ## Client Class
@@ -256,7 +254,7 @@ else:
 |-----------|------|-------------|
 | `char_specifier` | `str` or `int` | Characteristic UUID or handle |
 | `callback` | `callable` | Function called for each notification |
-| `max_messages` | `int` | Stop after this many messages. The call returns when one more notification arrives, and that one is not kept, so exactly `max_messages` notifications end in a timeout ([#847](https://github.com/lagerdata/lager/issues/847)) |
+| `max_messages` | `int` | Stop after this many messages. The call returns as soon as the last one arrives; later notifications are ignored |
 | `timeout` | `float` | Timeout in seconds |
 
 **Returns:** `tuple[bool, list]` - (timed_out, messages) where timed_out is True if timeout occurred
