@@ -1,0 +1,689 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+
+"""Install a Lager Box on the Mac this CLI is running on.
+
+A Box on macOS is two pieces, and this module provisions both:
+
+* the **host agent**, a per-user launchd job running ``python -m lager.host``
+  from a private Python environment. It owns every instrument;
+* the **Box container**, the same image a Linux Box runs, started with no
+  privileges and no devices. It reaches hardware only through the agent.
+
+Nothing here is used when the target is a Linux Box: `lager install --box` /
+`--ip` still runs ``setup_and_deploy_box.sh`` over SSH, unchanged.
+
+Every step is safe to run again. Commands go through a ``run`` callable so
+the steps can be exercised without a Mac, Docker or launchd.
+"""
+from __future__ import annotations
+
+import os
+import platform
+import plistlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, List, Optional, Sequence
+
+from ..errors import LagerError
+
+LABEL = "com.lagerdata.lager-host"
+CONTAINER_NAME = "lager"
+ETC_DIR = "/etc/lager"
+LOCAL_ADDRESS = "127.0.0.1"
+IMAGE_REPO = "ghcr.io/lagerdata/lager-box"
+# The only platform the Box image is published for today. It runs under the
+# container runtime's x86 emulation on Apple silicon.
+IMAGE_PLATFORM = "linux/amd64"
+SOURCE_REPO = "https://github.com/lagerdata/lager"
+LABJACK_REPO = "https://github.com/labjack/exodriver"
+START_SCRIPT = "/app/lager/lager/docker/start-services-hostlink.sh"
+
+# macOS's AirPlay receiver holds 5000, so the script service is published on
+# 8301 -- the alias a Linux Box also publishes -- and the port is recorded
+# with the saved Box so `lager python` uses it.
+PYTHON_SERVICE_PORT = 8301
+# (host port, container port). Everything else a Box publishes is reached
+# through these or lives on the host already.
+PUBLISHED_PORTS = ((9000, 9000), (PYTHON_SERVICE_PORT, 5000), (8100, 8100),
+                   (8765, 8765), (8085, 8085))
+
+# What the agent's Python needs to run the Box's hardware code natively.
+# Versions are the ones the port was verified with on Apple silicon.
+AGENT_REQUIREMENTS = (
+    "requests>=2.31,<3",
+    "numpy>=1.26",
+    "Flask>=3.0,<4",
+    "Werkzeug>=3.0,<4",
+    "simplejson>=3.18",
+    "PyYAML>=6.0",
+    "pyserial==3.5",
+    "pyusb>=1.2.1",
+    "PyVISA>=1.14",
+    "pyvisa-py>=0.7",
+    "pexpect>=4.8",
+    "pygdbmi==0.11.0.0",
+    "LabJackPython==2.3.0",
+    "brainstem",
+    "simple-websocket>=1.0",
+    "packaging",
+)
+# Drivers for instruments a bench may not have. Each is installed on its own
+# and a failure is reported, not fatal: one vendor package without a build
+# for this Mac must not cost the user every other instrument.
+OPTIONAL_AGENT_REQUIREMENTS = (
+    ("LabJack T-series", "labjack-ljm==1.23.0"),
+    ("FTDI adapters", "pyftdi"),
+    ("Total Phase Aardvark", "aardvark_py"),
+    ("Joulescope", "joulescope"),
+    ("Nordic PPK2", "ppk2-api"),
+    ("Phidget", "Phidget22"),
+    ("Yoctopuce", "yoctopuce"),
+    ("YubiHSM", "yubihsm[usb]"),
+)
+MIN_PYTHON = (3, 10)
+# The oscilloscope daemon does not build with an older Rust.
+MIN_RUST = (1, 89)
+PICO_SDK_HEADERS = Path("/Library/Frameworks/PicoSDK.framework/Headers")
+HOMEBREW_PREFIXES = ("/opt/homebrew", "/usr/local")
+DOCKER_SOCKETS = ("~/.orbstack/run/docker.sock", "~/.docker/run/docker.sock")
+DOCKER_PATHS = ("/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+                "~/.orbstack/bin/docker",
+                "/Applications/Docker.app/Contents/Resources/bin/docker")
+
+Run = Callable[..., subprocess.CompletedProcess]
+
+
+def _run(argv: Sequence[str], **kwargs) -> subprocess.CompletedProcess:
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    return subprocess.run(list(argv), check=False, **kwargs)
+
+
+@dataclass
+class Layout:
+    """Where the pieces live for one user."""
+
+    home: Path = field(default_factory=Path.home)
+
+    @property
+    def app_dir(self) -> Path:
+        return self.home / "Library" / "Application Support" / "Lager"
+
+    @property
+    def venv(self) -> Path:
+        return self.app_dir / "host" / "venv"
+
+    @property
+    def python(self) -> Path:
+        return self.venv / "bin" / "python"
+
+    @property
+    def lib_dir(self) -> Path:
+        return self.app_dir / "host" / "lib"
+
+    @property
+    def build_dir(self) -> Path:
+        return self.app_dir / "build"
+
+    @property
+    def source_dir(self) -> Path:
+        return self.app_dir / "src"
+
+    @property
+    def scope_daemon(self) -> Path:
+        return self.app_dir / "host" / "bin" / "oscilloscope-daemon"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.home / "Library" / "Logs" / "Lager"
+
+    @property
+    def plist(self) -> Path:
+        return self.home / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+
+# --------------------------------------------------------------- detection
+
+def check_platform(system: Optional[str] = None, machine: Optional[str] = None) -> None:
+    system = system or platform.system()
+    machine = machine or platform.machine()
+    if system != "Darwin":
+        raise LagerError("This installer is for macOS.",
+                         cause=f"This machine reports {system}.")
+    if machine != "arm64":
+        raise LagerError(
+            "A Lager Box on macOS needs an Apple silicon Mac.",
+            cause=f"This Mac reports {machine}.",
+            fixes=["Install on an Apple silicon Mac or a Linux machine: "
+                   "lager install --ip <address>"])
+
+
+def find_docker(run: Run = _run, environ=None) -> tuple:
+    """``(docker, env)`` for a running Docker Desktop or OrbStack daemon.
+
+    A login shell usually has ``docker`` on PATH with a working context. A
+    launchd job or an SSH session often has neither, so the usual install
+    locations and sockets are tried too.
+    """
+    environ = dict(os.environ if environ is None else environ)
+    binaries = [shutil.which("docker", path=environ.get("PATH"))]
+    binaries += [os.path.expanduser(p) for p in DOCKER_PATHS]
+    binaries = [b for b in dict.fromkeys(binaries) if b and os.path.exists(b)]
+    if not binaries:
+        raise LagerError(
+            "Docker is not installed on this Mac.",
+            cause="A Lager Box runs in a container.",
+            fixes=["Install OrbStack (https://orbstack.dev) or Docker Desktop "
+                   "(https://www.docker.com/products/docker-desktop), start it, "
+                   "then run `lager install` again."])
+    docker = binaries[0]
+    envs = [environ]
+    for sock in DOCKER_SOCKETS:
+        path = os.path.expanduser(sock)
+        if os.path.exists(path):
+            envs.append(dict(environ, DOCKER_HOST=f"unix://{path}"))
+    for env in envs:
+        if run([docker, "info"], env=env, timeout=30).returncode == 0:
+            return docker, env
+    raise LagerError(
+        "Docker is installed but not running.",
+        fixes=["Start OrbStack or Docker Desktop, wait until it reports "
+               "running, then run `lager install` again."])
+
+
+def running_from_checkout() -> Optional[Path]:
+    """The source checkout this CLI runs from, if it carries the Box code."""
+    root = Path(__file__).resolve().parents[2]
+    return root if (root / "box" / "lager" / "host" / "__main__.py").exists() else None
+
+
+def source_version(root: Path) -> str:
+    """``__version__`` declared by the checkout at ``root``, or ''."""
+    try:
+        text = (root / "cli" / "__init__.py").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.startswith("__version__"):
+            return line.split("=", 1)[1].strip().strip("'\"")
+    return ""
+
+
+def image_for(version: str) -> str:
+    return f"{IMAGE_REPO}:v{version.lstrip('v')}"
+
+
+# ------------------------------------------------------------------- steps
+
+def ensure_source(layout: Layout, version: str, run: Run = _run) -> Path:
+    """The Box source both pieces run: the checkout, or a clone of ``version``.
+
+    The agent and the container are given the same tree, so the two sides of
+    the link can never be from different releases.
+    """
+    checkout = running_from_checkout()
+    if checkout is not None:
+        return checkout
+    target = layout.source_dir / version
+    if (target / "box" / "lager" / "host" / "__main__.py").exists():
+        return target
+    if not shutil.which("git"):
+        raise LagerError(
+            "git is not installed on this Mac.",
+            fixes=["Run `xcode-select --install`, then `lager install` again."])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(target, ignore_errors=True)
+    result = run(["git", "clone", "--depth", "1", "--branch", version,
+                  SOURCE_REPO, str(target)], timeout=600)
+    if result.returncode != 0:
+        raise LagerError(
+            f"The CLI did not download Lager {version}.",
+            cause=_last_line(result.stderr),
+            fixes=["Check the network connection and that the version exists: "
+                   f"{SOURCE_REPO}/releases"])
+    return target
+
+
+def ensure_config_dir(run: Run = _run, user: Optional[str] = None) -> bool:
+    """Create ``/etc/lager`` owned by the user. True if ``sudo`` was needed."""
+    if os.path.isdir(ETC_DIR) and os.access(ETC_DIR, os.W_OK):
+        os.chmod(ETC_DIR, 0o700)
+        return False
+    user = user or os.environ.get("USER") or str(os.getuid())
+    # Inherit the terminal: sudo asks for the password itself.
+    result = run(["sudo", "sh", "-c",
+                  f"mkdir -p {ETC_DIR} && chown {user} {ETC_DIR} && chmod 700 {ETC_DIR}"],
+                 capture_output=False)
+    if result.returncode != 0 or not os.access(ETC_DIR, os.W_OK):
+        raise LagerError(
+            f"The CLI did not create {ETC_DIR}.",
+            cause="It is the Box's configuration directory and needs "
+                  "administrator rights to create, once.",
+            fixes=[f"sudo mkdir -p {ETC_DIR} && sudo chown {user} {ETC_DIR} "
+                   f"&& chmod 700 {ETC_DIR}", "Then run `lager install` again."])
+    return True
+
+
+def base_python() -> str:
+    """A Python new enough for the Box code, to build the agent's venv from."""
+    if sys.version_info >= MIN_PYTHON:
+        return sys.executable
+    for prefix in HOMEBREW_PREFIXES:
+        for name in ("python3.13", "python3.12", "python3.11", "python3.10"):
+            candidate = os.path.join(prefix, "bin", name)
+            if os.path.exists(candidate):
+                return candidate
+    wanted = ".".join(str(n) for n in MIN_PYTHON)
+    raise LagerError(
+        f"The host agent needs Python {wanted} or newer.",
+        cause=f"This CLI runs on Python {platform.python_version()}.",
+        fixes=["brew install python@3.12", "Then run `lager install` again."])
+
+
+def ensure_agent_env(layout: Layout, run: Run = _run,
+                     python: Optional[str] = None) -> List[str]:
+    """Create the agent's private Python environment and install into it.
+
+    Returns a line for each optional driver package that did not install.
+    """
+    if not layout.python.exists():
+        layout.venv.parent.mkdir(parents=True, exist_ok=True)
+        result = run([python or base_python(), "-m", "venv", str(layout.venv)], timeout=300)
+        if result.returncode != 0:
+            raise LagerError("The CLI did not create the host agent's Python environment.",
+                             cause=_last_line(result.stderr))
+    result = run([str(layout.python), "-m", "pip", "install", "--quiet",
+                  "--disable-pip-version-check", *AGENT_REQUIREMENTS], timeout=1800)
+    if result.returncode != 0:
+        raise LagerError(
+            "The CLI did not install the host agent's Python packages.",
+            cause=_last_line(result.stderr),
+            fixes=["Check the network connection, then run `lager install` again."])
+    skipped = []
+    for what, requirement in OPTIONAL_AGENT_REQUIREMENTS:
+        result = run([str(layout.python), "-m", "pip", "install", "--quiet",
+                      "--disable-pip-version-check", requirement], timeout=900)
+        if result.returncode != 0:
+            skipped.append(f"{what} support: {requirement} did not install "
+                           f"({_last_line(result.stderr) or 'pip failed'})")
+    return skipped
+
+
+def homebrew_prefix_with(relative: str) -> Optional[str]:
+    for prefix in HOMEBREW_PREFIXES:
+        if os.path.exists(os.path.join(prefix, relative)):
+            return prefix
+    return None
+
+
+def build_labjack_library(layout: Layout, run: Run = _run) -> Optional[str]:
+    """Build LabJack's USB library from LabJack's source. A reason, or None.
+
+    Optional: without it everything but LabJack U3/U6/UE9 devices works.
+    """
+    if (layout.lib_dir / "liblabjackusb.dylib").exists():
+        return None
+    prefix = homebrew_prefix_with("include/libusb-1.0/libusb.h")
+    if prefix is None:
+        return "libusb is not installed (brew install libusb)"
+    if not (shutil.which("git") and shutil.which("make") and shutil.which("cc")):
+        return "the command line developer tools are not installed (xcode-select --install)"
+    source = layout.build_dir / "exodriver"
+    shutil.rmtree(source, ignore_errors=True)
+    source.parent.mkdir(parents=True, exist_ok=True)
+    if run(["git", "clone", "--depth", "1", LABJACK_REPO, str(source)],
+           timeout=300).returncode != 0:
+        return f"could not download {LABJACK_REPO}"
+    library_dir = source / "liblabjackusb"
+    result = run(["make", f"CFLAGS=-I{prefix}/include",
+                  f"LIBFLAGS=-L{prefix}/lib -lusb-1.0 -lc"],
+                 cwd=str(library_dir), timeout=300)
+    built = sorted(library_dir.glob("liblabjackusb*.dylib"))
+    if result.returncode != 0 or not built:
+        return f"the build failed ({_last_line(result.stderr) or 'no library produced'})"
+    layout.lib_dir.mkdir(parents=True, exist_ok=True)
+    for path in built:
+        shutil.copy2(path, layout.lib_dir / path.name)
+    if not (layout.lib_dir / "liblabjackusb.dylib").exists():
+        shutil.copy2(built[-1], layout.lib_dir / "liblabjackusb.dylib")
+    return None
+
+
+def pico_include_tree(layout: Layout, sdk_headers: Path = PICO_SDK_HEADERS) -> Optional[Path]:
+    """PicoTech's headers laid out the way the daemon's build expects.
+
+    The macOS SDK keeps the headers every family shares in ``shared/``; the
+    build looks for them beside each family's own. This makes a tree of
+    links with both together. None when the SDK is not installed.
+    """
+    shared = sdk_headers / "shared"
+    families = [d for d in sorted(sdk_headers.glob("libps*")) if d.is_dir()]
+    if not shared.is_dir() or not families:
+        return None
+    tree = layout.build_dir / "picoscope-include"
+    shutil.rmtree(tree, ignore_errors=True)
+    for family in families:
+        target = tree / family.name
+        target.mkdir(parents=True)
+        for header in list(family.glob("*.h")) + list(shared.glob("*.h")):
+            link = target / header.name
+            if not link.exists():
+                link.symlink_to(header)
+    return tree
+
+
+def _version(text: str) -> tuple:
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    return tuple(int(part or 0) for part in match.groups()) if match else ()
+
+
+def rust_toolchain(cargo: str, run: Run = _run) -> Optional[list]:
+    """Extra ``cargo`` arguments selecting a new enough Rust, or None.
+
+    The default toolchain when it is new enough. Otherwise the newest
+    numbered toolchain rustup already has: nothing is installed or updated.
+    """
+    if _version(run([cargo, "--version"], timeout=60).stdout) >= MIN_RUST:
+        return []
+    rustup = shutil.which("rustup") or os.path.join(os.path.dirname(cargo), "rustup")
+    if not os.path.exists(rustup):
+        return None
+    listed = run([rustup, "toolchain", "list"], timeout=60).stdout or ""
+    names = [line.split()[0] for line in listed.splitlines()
+             if line[:1].isdigit() and _version(line) >= MIN_RUST]
+    return [f"+{max(names, key=_version)}"] if names else None
+
+
+def build_scope_daemon(layout: Layout, source: Path, run: Run = _run) -> Optional[str]:
+    """Build the oscilloscope daemon natively. A reason, or None.
+
+    Optional: without it everything but oscilloscope nets works. PicoTech's
+    licence keeps its headers and drivers out of Lager, so they come from
+    PicoTech's own installers.
+    """
+    crate = source / "box" / "oscilloscope-daemon"
+    cargo = shutil.which("cargo") or os.path.expanduser("~/.cargo/bin/cargo")
+    if not os.path.exists(cargo):
+        return "Rust is not installed (https://rustup.rs)"
+    if not crate.exists():
+        return "this version of Lager has no oscilloscope daemon source"
+    include = pico_include_tree(layout)
+    if include is None:
+        return ("PicoTech's PicoSDK is not installed "
+                "(https://www.picotech.com/downloads; install PicoSDK and PicoScope 7)")
+    toolchain = rust_toolchain(cargo, run)
+    if toolchain is None:
+        wanted = ".".join(str(n) for n in MIN_RUST)
+        return f"Rust {wanted} or newer is needed (rustup update stable)"
+    target = layout.build_dir / "scope-target"
+    result = run([cargo, *toolchain, "build", "--release", "--target-dir", str(target)],
+                 cwd=str(crate), timeout=3600,
+                 env=dict(os.environ, LAGER_PICOSCOPE_INCLUDE=str(include)))
+    built = [p for p in (target / "release" / "daemon",
+                         target / "release" / "oscilloscope-daemon") if p.exists()]
+    if result.returncode != 0 or not built:
+        return f"the build failed ({_last_line(result.stderr) or 'no binary produced'})"
+    layout.scope_daemon.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built[0], layout.scope_daemon)
+    return None
+
+
+def launch_agent_plist(layout: Layout, source: Path, environ=None) -> bytes:
+    """The launchd job that keeps the agent running while the user is logged in."""
+    library_path = ":".join([str(layout.lib_dir)]
+                            + [f"{p}/lib" for p in HOMEBREW_PREFIXES] + ["/usr/lib"])
+    path = ":".join([f"{p}/bin" for p in HOMEBREW_PREFIXES]
+                    + [os.path.expanduser("~/.cargo/bin"),
+                       "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    env = {"PYTHONPATH": str(source / "box"), "PATH": path, "PYTHONUNBUFFERED": "1"}
+    if layout.scope_daemon.exists():
+        env["LAGER_HOST_SCOPE_DAEMON"] = str(layout.scope_daemon)
+    log = str(layout.log_dir / "host-agent.log")
+    return plistlib.dumps({
+        "Label": LABEL,
+        # macOS drops DYLD_* variables whenever it starts a system binary, so
+        # the library path is set by `env` as the last step before Python.
+        "ProgramArguments": ["/usr/bin/env",
+                             f"DYLD_FALLBACK_LIBRARY_PATH={library_path}",
+                             str(layout.python), "-m", "lager.host", "run"],
+        "EnvironmentVariables": env,
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Interactive",
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+    })
+
+
+def _domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def stop_agent(layout: Layout, run: Run = _run) -> None:
+    run(["launchctl", "bootout", f"{_domain()}/{LABEL}"], timeout=60)
+
+
+def start_agent(layout: Layout, source: Path, run: Run = _run,
+                wait_s: float = 30.0) -> None:
+    """(Re)install the launchd job and wait for the agent's endpoint record."""
+    layout.log_dir.mkdir(parents=True, exist_ok=True)
+    layout.plist.parent.mkdir(parents=True, exist_ok=True)
+    stop_agent(layout, run)
+    endpoint = os.path.join(ETC_DIR, "host_agent.json")
+    layout.plist.write_bytes(launch_agent_plist(layout, source))
+    result = None
+    # bootout returns before launchd has finished removing the old job.
+    for _ in range(10):
+        result = run(["launchctl", "bootstrap", _domain(), str(layout.plist)], timeout=60)
+        if result.returncode == 0:
+            break
+        time.sleep(1.0)
+    if result is None or result.returncode != 0:
+        raise LagerError(
+            "The CLI did not start the host agent.",
+            cause=_last_line(result.stderr) if result else None,
+            fixes=["The agent runs in a logged-in desktop session: log in at "
+                   "the Mac's screen, then run `lager install` again."])
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if os.path.exists(endpoint) and _agent_listening(endpoint):
+            return
+        time.sleep(0.5)
+    raise LagerError(
+        "The host agent did not start.",
+        fixes=[f"Read its log: tail -50 '{layout.log_dir}/host-agent.log'"])
+
+
+def _agent_listening(endpoint_file: str) -> bool:
+    import json
+    try:
+        with open(endpoint_file, encoding="utf-8") as fh:
+            record = json.load(fh)
+        with socket.create_connection((record.get("bind", LOCAL_ADDRESS),
+                                       int(record["port"])), timeout=1.0):
+            return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def docker_run_argv(docker: str, image: str, source: Path, etc_real: str,
+                    bind: str = LOCAL_ADDRESS) -> List[str]:
+    """The container: no privileges, no devices, config and code mounted."""
+    argv = [docker, "run", "-d", "--name", CONTAINER_NAME, "--restart", "always",
+            "--platform", IMAGE_PLATFORM,
+            "-v", f"{source / 'box' / 'lager'}:/app/lager/lager:ro",
+            "-v", f"{etc_real}:/etc/lager"]
+    for host_port, container_port in PUBLISHED_PORTS:
+        argv += ["-p", f"{bind}:{host_port}:{container_port}"]
+    return argv + [image, START_SCRIPT]
+
+
+def start_container(docker: str, env: dict, image: str, source: Path,
+                    run: Run = _run, echo=lambda _line: None) -> None:
+    # /etc is a symlink on macOS and OrbStack does not follow it for a bind
+    # mount (the container silently gets an empty directory).
+    etc_real = os.path.realpath(ETC_DIR)
+    nets = os.path.join(ETC_DIR, "saved_nets.json")
+    if not os.path.exists(nets):
+        with open(nets, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+    if run([docker, "image", "inspect", image], env=env, timeout=60).returncode != 0:
+        echo(f"Downloading {image} ...")
+        result = run([docker, "pull", "--platform", IMAGE_PLATFORM, image],
+                     env=env, timeout=3600, capture_output=False)
+        if result.returncode != 0:
+            raise LagerError(
+                f"The CLI did not download the Box image {image}.",
+                fixes=["Check the network connection, then run `lager install` again.",
+                       "For a development version, pass --version with a release "
+                       "tag that has an image."])
+    run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
+    result = run(docker_run_argv(docker, image, source, etc_real), env=env, timeout=300)
+    if result.returncode != 0:
+        cause = _last_line(result.stderr)
+        fixes = []
+        if "port is already allocated" in cause or "address already in use" in cause:
+            fixes = ["Another program holds one of the Box's ports "
+                     f"({', '.join(str(h) for h, _ in PUBLISHED_PORTS)}). "
+                     "Stop it, then run `lager install` again."]
+        raise LagerError("The CLI did not start the Box container.",
+                         cause=cause, fixes=fixes)
+
+
+_LINK_PROBE = ("import urllib.request;"
+               "print(urllib.request.urlopen("
+               "'http://localhost:8080/_hostlink/status', timeout=10).read().decode())")
+
+
+def wait_for_link(docker: str, env: dict, run: Run = _run, wait_s: float = 120.0) -> str:
+    """Wait until the container has shaken hands with the agent."""
+    deadline = time.monotonic() + wait_s
+    last = ""
+    while time.monotonic() < deadline:
+        result = run([docker, "exec", CONTAINER_NAME, "python3", "-c", _LINK_PROBE],
+                     env=env, timeout=30)
+        last = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0 and '"connected": true' in last.replace("'", '"'):
+            return last
+        time.sleep(2.0)
+    raise LagerError(
+        "The Box container did not connect to the host agent.",
+        cause=_last_line(last),
+        fixes=[f"docker logs {CONTAINER_NAME}",
+               "tail -50 ~/Library/Logs/Lager/host-agent.log"])
+
+
+def write_state(box_version: str, cli_version: str, ref: str) -> None:
+    """What `lager hello` and `lager boxes` report, as a Linux install writes."""
+    for name, content in (("version", f"{box_version}|{cli_version}"), ("ref", ref)):
+        with open(os.path.join(ETC_DIR, name), "w", encoding="utf-8") as fh:
+            fh.write(content + "\n")
+
+
+def _last_line(text) -> str:
+    lines = [line for line in (text or "").strip().splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+# ------------------------------------------------------------- entry points
+
+@dataclass
+class Result:
+    source: Path
+    image: str
+    box_version: str
+    skipped: List[str] = field(default_factory=list)
+
+
+def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
+            layout: Optional[Layout] = None) -> Result:
+    """Provision the agent and the container on this Mac."""
+    layout = layout or Layout()
+    check_platform()
+    echo("Checking Docker...")
+    docker, env = find_docker(run)
+
+    echo("Preparing the Box configuration directory...")
+    ensure_config_dir(run)
+
+    source = ensure_source(layout, version, run)
+    box_version = source_version(source) or version.lstrip("v")
+    image = image_for(box_version if running_from_checkout() else version)
+
+    echo("Installing the host agent...")
+    skipped = ensure_agent_env(layout, run)
+    reason = build_labjack_library(layout, run)
+    if reason:
+        skipped.append(f"LabJack U3/U6 support: {reason}")
+    reason = build_scope_daemon(layout, source, run)
+    if reason:
+        skipped.append(f"Oscilloscope support: {reason}")
+    if not os.path.exists("/Applications/SEGGER/JLink/JLinkExe"):
+        skipped.append("J-Link debugging: SEGGER's J-Link software is not installed "
+                       "(https://www.segger.com/downloads/jlink)")
+    start_agent(layout, source, run)
+
+    echo("Starting the Box container...")
+    start_container(docker, env, image, source, run, echo)
+    wait_for_link(docker, env, run)
+    ref = version if not running_from_checkout() else f"checkout:{source}"
+    write_state(box_version, cli_version, ref)
+    return Result(source=source, image=image, box_version=box_version, skipped=skipped)
+
+
+def installed_pieces(layout: Optional[Layout] = None) -> List[str]:
+    """What an uninstall would remove, for a dry run."""
+    layout = layout or Layout()
+    pieces = [f"the Box container '{CONTAINER_NAME}'",
+              f"the host agent's launchd job ({layout.plist})"]
+    if layout.app_dir.exists():
+        pieces.append(f"the host agent's files ({layout.app_dir})")
+    return pieces
+
+
+def backup_config(layout: Optional[Layout] = None) -> Optional[Path]:
+    """Copy ``/etc/lager`` aside before it is emptied. The copy, or None."""
+    layout = layout or Layout()
+    if not os.path.isdir(ETC_DIR) or not os.listdir(ETC_DIR):
+        return None
+    target = layout.home / f"lager-config-backup-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copytree(ETC_DIR, target)
+    os.chmod(target, 0o700)
+    return target
+
+
+def uninstall(*, purge_config: bool = False, echo=print, run: Run = _run,
+              layout: Optional[Layout] = None) -> None:
+    """Remove the container and the agent. Configuration is kept by default.
+
+    ``/etc/lager`` itself stays even when purged: removing it would need
+    administrator rights, and an empty directory is harmless.
+    """
+    layout = layout or Layout()
+    docker = env = None
+    try:
+        docker, env = find_docker(run)
+    except LagerError:
+        echo("Docker is not running; the Box container was not removed.")
+    if docker:
+        run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
+    stop_agent(layout, run)
+    if layout.plist.exists():
+        layout.plist.unlink()
+    shutil.rmtree(layout.app_dir, ignore_errors=True)
+    if purge_config and os.path.isdir(ETC_DIR):
+        backup = backup_config(layout)
+        if backup:
+            echo(f"Configuration backed up to {backup}")
+        for entry in Path(ETC_DIR).glob("*"):
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)

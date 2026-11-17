@@ -125,7 +125,8 @@ def save_boxes(boxes: Dict[str, str]) -> None:
         json.dump(data, f, indent=2)
 
 
-def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[str] = None) -> None:
+def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[str] = None,
+            python_port: Optional[int] = None) -> None:
     """Add a box to the local storage.
 
     Args:
@@ -133,15 +134,27 @@ def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[st
         ip: IP address
         user: Optional username (if None and version is None, stores in legacy format)
         version: Optional version/branch name (e.g., "staging", "main")
+        python_port: Optional script-service port, recorded only for a Box
+            that does not publish it on the default (a Box on macOS). When
+            not given, a port already recorded for a Box at ``ip`` is kept,
+            so editing or re-adding that Box does not lose it.
     """
     boxes = _load_global_boxes()
-    if user or version:
+    if python_port is None:
+        for existing in boxes.values():
+            if isinstance(existing, dict) and existing.get("ip") == ip \
+                    and "python_port" in existing:
+                python_port = existing["python_port"]
+                break
+    if user or version or python_port is not None:
         # New format with user and/or version
         box_dict = {"ip": ip}
         if user:
             box_dict["user"] = user
         if version:
             box_dict["version"] = version
+        if python_port is not None:
+            box_dict["python_port"] = python_port
         boxes[name] = box_dict
     else:
         # Legacy format (just IP string)
