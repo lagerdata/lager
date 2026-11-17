@@ -10,6 +10,8 @@ host when the Box container cannot reach hardware (macOS):
 * ``lager.host.darwin_debug``    -- the macOS adjustments to the debug service
 * ``lager.host.__main__``        -- the supervisor's children
 * the ``LAGER_HOSTLINK`` switch in ``lager.nets.debug_net``
+* ``lager.hostlink.usb_proxy`` / ``lager.host.usb_rpc`` -- the same hand-off
+  for USB hub ports, and its switch in the hub dispatcher
 
 No probe, GDB or J-Link software is involved: sockets are real loopback
 sockets, everything else is a stand-in. That the adjustments match what a
@@ -35,8 +37,9 @@ from unittest.mock import patch
 from flask import Flask
 
 from lager.host import __main__ as host_main
-from lager.host import darwin_debug, debug_rpc
-from lager.hostlink import config, debug_proxy, tcp_forward
+from lager.automation.usb_hub import dispatcher, usb_net
+from lager.host import darwin_debug, debug_rpc, usb_rpc
+from lager.hostlink import config, debug_proxy, tcp_forward, usb_proxy
 
 BOX_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "box")
 
@@ -741,6 +744,203 @@ class SupervisorTests(unittest.TestCase):
         thread.start()
         thread.join(10)
         self.assertFalse(thread.is_alive())
+
+
+class _FakeHub:
+    def __init__(self):
+        self.calls = []
+
+    def _lock_key(self):
+        return "USB0::0x24FF::0x0013::EC077668::INSTR"
+
+    def enable(self, net_name, port):
+        self.calls.append(("enable", net_name, port))
+
+    def disable(self, net_name, port):
+        self.calls.append(("disable", net_name, port))
+        return True
+
+    def toggle(self, net_name, port):
+        self.calls.append(("toggle", net_name, port))
+        return port == 1
+
+    def state(self, net_name, port):
+        raise usb_net.DeviceNotFoundError(
+            "hub EC077668 did not open", classification=usb_net.HUB_UNREACHABLE,
+            usb_context_healthy=True, detail="scan found 0 hubs")
+
+    def cycle(self, net_name, port, off_time=None):
+        self.calls.append(("cycle", net_name, port, off_time))
+        return True
+
+    def recover(self, net_name, port):
+        self.calls.append(("recover", net_name, port))
+        return True
+
+    def states(self, ports, timeout=None):
+        self.calls.append(("states", ports, timeout))
+        return {port: port % 2 == 0 for port in ports}
+
+    def firmware_update(self):  # not on the allow-list
+        raise AssertionError("must never be called")
+
+
+class UsbRpcTests(unittest.TestCase):
+    def setUp(self):
+        self.hub = _FakeHub()
+        self.net_infos = []
+
+        def controller(net_info):
+            self.net_infos.append(net_info)
+            return self.hub
+
+        self.powered = []
+        for target, name, value in (
+                (usb_rpc, "_controller", controller),
+                (usb_net, "note_powered_on", lambda c, port: self.powered.append(port))):
+            patcher = patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.client = usb_rpc.install(Flask(__name__)).test_client()
+
+    def _call(self, method, *args, **kwargs):
+        return self.client.post(usb_rpc.CALL_PATH, json={
+            "net_info": {"instrument": "Acroname_8Port", "port": 0},
+            "method": method, "args": list(args), "kwargs": kwargs})
+
+    def test_call_reaches_the_driver_for_that_net(self):
+        resp = self._call("cycle", "usbjl", 0, 2.0)
+        self.assertEqual(resp.get_json(), {"result": True})
+        self.assertEqual(self.hub.calls, [("cycle", "usbjl", 0, 2.0)])
+        self.assertEqual(self.net_infos, [{"instrument": "Acroname_8Port", "port": 0}])
+
+    def test_states_and_lock_key_are_served(self):
+        self.assertEqual(self._call("states", [0, 1], timeout=3.0).get_json(),
+                         {"result": {"0": True, "1": False}})
+        self.assertEqual(self._call("_lock_key").get_json()["result"],
+                         "USB0::0x24FF::0x0013::EC077668::INSTR")
+
+    def test_powering_a_port_on_is_recorded_as_the_dispatcher_does(self):
+        self._call("enable", "a", 3)
+        self._call("recover", "a", 4)
+        self._call("toggle", "a", 1)   # ends enabled
+        self._call("toggle", "a", 2)   # ends disabled
+        self._call("disable", "a", 5)
+        self._call("cycle", "a", 6)
+        self.assertEqual(self.powered, [3, 4, 1])
+
+    def test_a_method_off_the_allow_list_is_refused_not_looked_up(self):
+        for name in ("firmware_update", "__class__", "calls"):
+            self.assertEqual(self._call(name).status_code, 400, name)
+        self.assertEqual(self.net_infos, [])
+
+    def test_body_without_a_method_is_a_bad_request(self):
+        self.assertEqual(self.client.post(usb_rpc.CALL_PATH, json={}).status_code, 400)
+
+    def test_driver_error_carries_its_class_and_fields(self):
+        resp = self._call("state", "usbjl", 0)
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.get_json(), {
+            "error": "hub EC077668 did not open", "type": "DeviceNotFoundError",
+            "classification": "hub-unreachable", "usb_context_healthy": True,
+            "detail": "scan found 0 hubs"})
+
+
+class UsbProxyTests(unittest.TestCase):
+    def setUp(self):
+        self.posts = []
+        self.reply = _Response(200, {"result": None})
+
+        def post(url, data=None, headers=None, timeout=None):
+            self.posts.append((url, json.loads(data), timeout))
+            return self.reply
+
+        patcher = patch.object(usb_proxy.requests, "post", post)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.hub = usb_proxy.controller_for({"instrument": "Acroname_8Port", "port": 0})
+
+    def test_each_operation_is_sent_with_the_net(self):
+        self.reply = _Response(200, {"result": True})
+        self.assertTrue(self.hub.cycle("usbjl", 0, 2.0))
+        for name in ("enable", "disable", "toggle", "state", "recover"):
+            getattr(self.hub, name)("usbjl", 0)
+        url, body, timeout = self.posts[0]
+        self.assertEqual(url, "http://localhost:8080/v1/usb/call")
+        self.assertEqual(body, {"net_info": {"instrument": "Acroname_8Port", "port": 0},
+                                "method": "cycle", "args": ["usbjl", 0, 2.0], "kwargs": {}})
+        self.assertEqual([p[1]["method"] for p in self.posts[1:]],
+                         ["enable", "disable", "toggle", "state", "recover"])
+        # Longer than the longest cycle the drivers allow.
+        self.assertGreater(timeout, 10 + usb_net.USB_REENUM_WAIT_S)
+
+    def test_states_gives_back_the_callers_port_keys(self):
+        self.reply = _Response(200, {"result": {"0": True, "3": False}})
+        self.assertEqual(self.hub.states([0, 3, 5], timeout=2.0), {0: True, 3: False})
+        self.assertEqual(self.posts[0][1]["kwargs"], {"timeout": 2.0})
+
+    def test_lock_key_is_the_real_drivers(self):
+        self.reply = _Response(200, {"result": "USB0::0x24FF::0x0013::EC077668::INSTR"})
+        self.assertEqual(self.hub._lock_key(), "USB0::0x24FF::0x0013::EC077668::INSTR")
+
+    def test_driver_error_is_raised_as_the_same_class_with_its_fields(self):
+        self.reply = _Response(500, {
+            "error": "hub EC077668 did not open", "type": "DeviceNotFoundError",
+            "classification": "hub-unreachable", "usb_context_healthy": True,
+            "detail": "scan found 0 hubs"})
+        with self.assertRaises(usb_net.DeviceNotFoundError) as caught:
+            self.hub.state("usbjl", 0)
+        self.assertEqual(str(caught.exception), "hub EC077668 did not open")
+        self.assertEqual(caught.exception.classification, usb_net.HUB_UNREACHABLE)
+        self.assertTrue(caught.exception.usb_context_healthy)
+        self.assertEqual(caught.exception.detail, "scan found 0 hubs")
+
+    def test_each_handler_distinguished_class_survives_the_link(self):
+        for name in ("HubOperationTimeout", "DeviceLockError", "LibraryMissingError",
+                     "PortStateError", "USBBackendError"):
+            self.reply = _Response(500, {"error": "x", "type": name})
+            with self.assertRaises(getattr(usb_net, name)):
+                self.hub.enable("usbjl", 0)
+
+    def test_unknown_error_type_is_a_runtime_error(self):
+        for name in ("OSError", "NoSuchClass", "logging", None):
+            self.reply = _Response(500, {"error": "boom", "type": name})
+            with self.assertRaises(RuntimeError) as caught:
+                self.hub.enable("usbjl", 0)
+            self.assertIs(type(caught.exception), RuntimeError, name)
+
+    def test_link_failure_reads_as_the_relays_sentence(self):
+        self.reply = _Response(503, {"error": "The host agent is not running.",
+                                     "code": "host_agent_unreachable", "retryable": True})
+        with self.assertRaisesRegex(RuntimeError, "not running"):
+            self.hub.state("usbjl", 0)
+
+
+class UsbDispatcherSwitchTests(unittest.TestCase):
+    """The one Linux file the USB hand-off touches: default off."""
+
+    NET = {"instrument": "Acroname_8Port", "port": 0,
+           "address": "USB0::0x24FF::0x0013::EC077668::INSTR", "params": {}}
+
+    def _controller(self, value):
+        env = {k: v for k, v in os.environ.items() if k != "LAGER_HOSTLINK"}
+        if value is not None:
+            env["LAGER_HOSTLINK"] = value
+        with patch.dict(os.environ, env, clear=True):
+            return dispatcher._controller_for(dict(self.NET))
+
+    def test_unset_or_any_other_value_selects_the_box_driver(self):
+        for value in (None, "0", "", "true"):
+            self.assertEqual(type(self._controller(value)).__name__, "AcronameUSBNet", value)
+
+    def test_one_selects_the_host_stand_in(self):
+        self.assertIsInstance(self._controller("1"), usb_proxy.HostUSBNet)
+
+    def test_stand_in_has_every_operation_the_dispatcher_uses(self):
+        for name in ("enable", "disable", "toggle", "state", "cycle", "recover",
+                     "states", "_lock_key"):
+            self.assertTrue(callable(getattr(usb_proxy.HostUSBNet, name)), name)
+            self.assertIn(name, usb_rpc._METHODS)
 
 
 if __name__ == "__main__":
