@@ -693,6 +693,31 @@ Found on the way:
 - Port 5000 was not needed by any command above.
 - Unit tests for the new files: `test/unit/box/test_host_debug.py`.
 
+#### Hardware results, third pass (2026-11-16)
+
+| Path | Result |
+|---|---|
+| Acroname USBHub3p: state, enable, disable, toggle, cycle, `lager nets state` | Work through container -> host |
+| Cycle confirms the device came back | Works ("device re-enumerated"), from the I/O Registry |
+| J-Link unplugged and replugged by the hub | `lager debug` reconnects, also when a debug command was tried while it was off |
+
+How it is wired: the same shape as the debug net. The container's hub dispatcher returns
+a stand-in (`box/lager/hostlink/usb_proxy.py`) when `LAGER_HOSTLINK=1`; the agent runs the
+real driver (`box/lager/host/usb_rpc.py`). The switch is one check in
+`box/lager/automation/usb_hub/dispatcher.py`, in the ledger. Driver errors cross the link
+as the same class with the same fields, so the Box's handlers answer as on Linux.
+
+Found on the way:
+- BrainStem's PyPI wheel works natively on Apple Silicon. The agent environment needs it.
+- The hub drivers confirm a cycle from sysfs. The agent replaces that reader with one
+  over the I/O Registry, using the location ID as the stable per-port name.
+- Two toggles back to back (about one second off) once left the J-Link listed on USB but
+  unopenable, by SEGGER's own tools as well. A cycle with three seconds off cleared it.
+  Not reproduced with `cycle` or with two seconds off.
+- **Open:** `lager nets state` reports USB instruments as "not on the USB bus", because
+  that check reads sysfs inside the container.
+- **Open:** YKUSH and Plugable hubs go through the same stand-in but were not on the bench.
+
 ### Phase 2 — hardware in the loop, then installer
 
 First, repeat the Phase 1 exit criteria on a physical USBTMC supply, including unplug and
