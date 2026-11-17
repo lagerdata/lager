@@ -152,9 +152,10 @@ def _parse_hex_data(data_str: str, word_size: int = None) -> List[int]:
     - "9f,01,02" -> [0x9f, 0x01, 0x02]
     - "0x1234 0x5678" -> [0x1234, 0x5678] (for 16-bit word size)
 
-    When word_size is None (not explicitly specified), continuous hex strings
-    are parsed as a single value.  Byte-pair splitting only occurs when
-    word_size is explicitly 8.
+    When word_size is None (no --word-size and the net's saved word size is
+    unknown), continuous hex strings are parsed as a single value. Byte-pair
+    splitting only occurs when word_size is 8; callers pass the net's saved
+    word size when --word-size is absent.
 
     Args:
         data_str: Hex string to parse
@@ -259,27 +260,46 @@ def _parse_hex_data(data_str: str, word_size: int = None) -> List[int]:
 
 def _parse_fill_byte(fill_str: str) -> int:
     """
-    Parse fill byte value (hex or decimal).
+    Parse fill byte value: hex with a ``0x`` prefix, decimal otherwise.
 
     Supports:
     - "0xff" -> 255
     - "0xFF" -> 255
-    - "ff" -> 255
     - "255" -> 255
+    - "10" -> 10 (decimal; write "0x10" for 16)
     """
     fill_str = fill_str.strip().lower()
 
     try:
         if fill_str.startswith('0x'):
-            return int(fill_str, 16)
-        elif all(c in '0123456789abcdef' for c in fill_str) and len(fill_str) <= 2:
-            return int(fill_str, 16)
+            value = int(fill_str[2:], 16)
+        elif fill_str.isdigit():
+            value = int(fill_str, 10)
         else:
-            return int(fill_str)
+            raise ValueError(fill_str)
     except ValueError:
         raise click.BadParameter(
-            f"Invalid fill value '{fill_str}'. Use hex (0xff) or decimal (255)"
+            f"Invalid fill value '{fill_str}'. Use hex with a 0x prefix (0xff) "
+            f"or decimal (255)"
         )
+    return value
+
+
+def _saved_word_size(box_ip: str, netname: str) -> Optional[int]:
+    """The word size saved on the net (``spi config --word-size``), for parsing.
+
+    A run of hex like ``0x9f01020304`` is split into words of this size when
+    ``--word-size`` is not given. A net with no saved word size uses the box's
+    default of 8. Returns None when the net is not in the box's listing, which
+    leaves parsing as it was (one word, validated by the box).
+    """
+    for net in _fetch_spi_nets(None, box_ip):
+        if net.get("name") == netname:
+            try:
+                return int((net.get("params") or {}).get("word_size", 8))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _read_data_file(filepath: str) -> List[int]:
@@ -523,7 +543,7 @@ spi.net_examples = [
 @click.option('--data-file', type=click.Path(exists=True), default=None,
               help='File containing data to transmit')
 @click.option('--fill', default="0xFF",
-              help='Fill byte for padding (default: 0xFF)')
+              help='Fill byte for padding: 0x-prefixed hex or decimal (default: 0xFF)')
 @click.option('--format', 'output_format', type=click.Choice(["hex", "bytes", "json"]), default="hex",
               help='Output format')
 def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
@@ -557,13 +577,18 @@ def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs
     if not netname:
         net_not_specified_error('SPI', 'spi').die()
 
-    # Determine word size for parsing (None if not explicitly specified)
+    if data_str and data_file:
+        raise click.UsageError("Give --data or --data-file, not both.")
+
+    # Word size for parsing: --word-size, else the net's saved word size.
     ws = int(word_size) if word_size else None
+    parse_ws = ws if ws is not None else (
+        _saved_word_size(box_ip, netname) if data_str else None)
 
     # Parse data with appropriate word size
     data = []
     if data_str:
-        data = _parse_hex_data(data_str, word_size=ws)
+        data = _parse_hex_data(data_str, word_size=parse_ws)
     elif data_file:
         data = _read_data_file(data_file)
 
@@ -612,7 +637,7 @@ def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs
 @click.option('--word-size', type=click.Choice(["8", "16", "32"]), default=None,
               help='Word size in bits')
 @click.option('--fill', default="0xFF",
-              help='Fill byte to send while reading (default: 0xFF)')
+              help='Fill byte to send while reading: 0x-prefixed hex or decimal (default: 0xFF)')
 @click.option('--format', 'output_format', type=click.Choice(["hex", "bytes", "json"]), default="hex",
               help='Output format')
 def read(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
@@ -736,6 +761,9 @@ def write(ctx, data, box, mode, bit_order, frequency, cs_active, keep_cs,
 
     Performs a full-duplex transfer but outputs the received data.
 
+    A run of hex with no separators is split into words of --word-size,
+    or of the net's saved word size (8 unless `spi config` changed it).
+
     Example:
       lager spi MY_SPI write 0x9f01020304
     """
@@ -746,10 +774,12 @@ def write(ctx, data, box, mode, bit_order, frequency, cs_active, keep_cs,
     if not netname:
         net_not_specified_error('SPI', 'spi').die()
 
-    # Determine word size for parsing (None if not explicitly specified)
+    # Word size for parsing: --word-size, else the net's saved word size.
+    # Only parsing uses the saved size; it is not sent as an override.
     ws = int(word_size) if word_size else None
+    parse_ws = ws if ws is not None else _saved_word_size(box_ip, netname)
 
-    data_bytes = _parse_hex_data(data, word_size=ws)
+    data_bytes = _parse_hex_data(data, word_size=parse_ws)
 
     overrides = {}
     if mode is not None:

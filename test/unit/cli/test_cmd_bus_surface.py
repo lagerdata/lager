@@ -99,6 +99,44 @@ def test_i2c_write_refuses_an_address_outside_7_bits(lager, bus, address):
     assert bus.posts == []
 
 
+@pytest.mark.parametrize("address, value", [("0x48", 0x48), ("72", 72), ("48", 48),
+                                             ("10", 10), ("0X1a", 0x1A)])
+def test_i2c_address_is_hex_only_with_0x(lager, bus, address, value):
+    # A bare number is decimal, as the help and error text say. "48" used to
+    # be read as 0x48 and "72" as 0x72, which put the transaction on the
+    # wrong device without an error.
+    result = lager("i2c", "i2c1", "read", "1", "--address", address)
+    assert result.exit_code == 0, result.output
+    assert _net_command(bus)["params"]["address"] == value
+
+
+@pytest.mark.parametrize("address", ["48h", "1a", "0x", "-1"])
+def test_i2c_address_refuses_bare_hex_digits(lager, bus, address):
+    result = lager("i2c", "i2c1", "read", "1", "--address", address)
+    assert result.exit_code == 2
+    assert "0x prefix" in result.output
+    assert bus.posts == []
+
+
+def test_i2c_scan_accepts_a_decimal_range(lager, bus):
+    result = lager("i2c", "i2c1", "scan", "--start", "16", "--end", "32")
+    assert result.exit_code == 0, result.output
+    assert _net_command(bus)["params"] == {"start_addr": 16, "end_addr": 32}
+
+
+@pytest.mark.parametrize("argv", [
+    ("write", "0x01", "--address", "0x48"),
+    ("transfer", "1", "--address", "0x48", "--data", "0x01"),
+])
+def test_i2c_refuses_inline_data_and_a_data_file_together(lager, bus, tmp_path, argv):
+    f = tmp_path / "data.bin"
+    f.write_bytes(b"\x02")
+    result = lager("i2c", "i2c1", *argv, "--data-file", str(f))
+    assert result.exit_code == 2
+    assert "not both" in result.output
+    assert bus.posts == []
+
+
 def test_i2c_write_refuses_bad_hex(lager, bus):
     result = lager("i2c", "i2c1", "write", "zz", "--address", "0x48")
     assert result.exit_code == 2
@@ -161,12 +199,31 @@ def test_spi_write_is_a_full_duplex_read_write(lager, bus):
     assert body["params"]["data"] == [0x9F, 0x01]
 
 
-def test_spi_write_without_a_word_size_keeps_a_run_of_hex_as_one_word(lager, bus):
-    # Documented in _parse_hex_data: byte splitting happens only for an
-    # explicit 8-bit word size; otherwise the box validates the width.
-    result = lager("spi", "spi1", "write", "0x9f01")
+def test_spi_write_without_a_word_size_splits_by_the_nets_default_8_bits(lager, bus):
+    # The --help example: with no --word-size, a run of hex is split by the
+    # net's saved word size (8 when never configured), so it is five bytes
+    # rather than one 40-bit word an 8-bit net refuses.
+    result = lager("spi", "spi1", "write", "0x9f01020304")
     assert result.exit_code == 0, result.output
-    assert _net_command(bus)["params"]["data"] == [0x9F01]
+    params = _net_command(bus)["params"]
+    assert params["data"] == [0x9F, 0x01, 0x02, 0x03, 0x04]
+    # Parsing only: the saved size is not sent back as a per-call override.
+    assert params["overrides"] is None
+
+
+def test_spi_write_uses_the_nets_saved_word_size(lager, bus):
+    bus.net("spi16", "spi", params={"word_size": 16})
+    result = lager("spi", "spi16", "write", "0x9f01")
+    assert result.exit_code == 0, result.output
+    params = _net_command(bus)["params"]
+    assert params["data"] == [0x9F01]
+    assert params["overrides"] is None
+
+
+def test_spi_transfer_splits_data_by_the_nets_word_size(lager, bus):
+    result = lager("spi", "spi1", "transfer", "4", "--data", "0x9f01")
+    assert result.exit_code == 0, result.output
+    assert _net_command(bus)["params"]["data"] == [0x9F, 0x01]
 
 
 def test_spi_write_with_8_bit_words_splits_bytes(lager, bus):
@@ -204,3 +261,27 @@ def test_spi_per_call_overrides_reach_the_box(lager, bus):
     params = _net_command(bus)["params"]
     assert params["keep_cs"] is True
     assert params["overrides"] == {"mode": 3, "bit_order": "lsb", "cs_active": "high"}
+
+
+@pytest.mark.parametrize("fill, value", [("0xFF", 0xFF), ("0x10", 0x10), ("10", 10),
+                                         ("255", 255)])
+def test_spi_fill_is_hex_only_with_0x(lager, bus, fill, value):
+    result = lager("spi", "spi1", "read", "2", "--fill", fill)
+    assert result.exit_code == 0, result.output
+    assert _net_command(bus)["params"]["fill"] == value
+
+
+def test_spi_fill_refuses_bare_hex_digits(lager, bus):
+    result = lager("spi", "spi1", "read", "2", "--fill", "ff")
+    assert result.exit_code == 2
+    assert "0x prefix" in result.output
+    assert bus.posts == []
+
+
+def test_spi_transfer_refuses_data_and_a_data_file_together(lager, bus, tmp_path):
+    f = tmp_path / "data.bin"
+    f.write_bytes(b"\x02")
+    result = lager("spi", "spi1", "transfer", "2", "--data", "0x01", "--data-file", str(f))
+    assert result.exit_code == 2
+    assert "not both" in result.output
+    assert bus.posts == []
