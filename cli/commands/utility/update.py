@@ -2135,6 +2135,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             ctx.exit(2)
         raise
 
+    # A loopback address on a Mac is the Box installed on that Mac. False on
+    # every other platform, where everything below is unchanged.
+    from ._local_install import is_local_target, update_locally
+    if is_local_target(resolved_box):
+        update_locally(ctx, version=version, yes=yes, check=check, fork=fork)
+        return
+
     # The stored user for a saved name, else the one saved for this IP (an
     # IP or the default box never matches a name), else 'lagerdata'.
     from ..box._ssh import resolve_box_user

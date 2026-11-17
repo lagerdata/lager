@@ -429,8 +429,11 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
             stored_user = get_box_user(box)
             user = stored_user or "lagerdata"
     elif ip is None:
-        click.secho("Error: Either --box or --ip is required", fg='red', err=True)
-        ctx.exit(1)
+        # Neither --box nor --ip: uninstall from this machine. A remote
+        # uninstall, everything below, is untouched by this branch.
+        from ._local_install import uninstall_locally
+        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
+        return
     else:
         if user is None:
             user = "lagerdata"
@@ -443,6 +446,14 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
         for line in VALID_FORMATS_CHEATSHEET:
             click.echo(line, err=True)
         ctx.exit(1)
+
+    # A loopback address on a Mac is the Box installed on that Mac. False on
+    # every other platform, where the SSH path below is unchanged.
+    from ._local_install import is_local_target
+    if is_local_target(ip):
+        from ._local_install import uninstall_locally
+        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
+        return
 
     ssh_host = f"{user}@{ip}"
 
