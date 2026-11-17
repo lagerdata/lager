@@ -819,7 +819,7 @@ It exercises discovery, the dominant RPC path, authentication, version handshake
 propagation, session cleanup, and container-to-host networking on both runtimes, while
 touching the fewest files.
 
-### USB discovery on the Mac box (2026-11-17)
+#### USB discovery on the Mac box (2026-11-17)
 
 `lager instruments` listed nothing and `lager nets state` reported USB
 instruments as "not on the USB bus", because both read Linux's sysfs inside
