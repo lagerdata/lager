@@ -920,6 +920,38 @@ Verified on the bench with a U3-HV, nothing wired: ADC read, DAC set and read
 back, GPIO high/low read back, and `wait_for_level`, from the CLI and from a
 `lager python` script.
 
-**Open:** other roles whose script-side net opens USB in the script (SPI, I2C,
-thermocouple, and the FT232H, Aardvark, USB-202 and YKUSH3 adapters) are not
-handed off yet.
+**Open:** thermocouple nets, and GPIO/ADC/DAC nets on the FT232H, USB-202 and
+YKUSH3 adapters, are covered by the same stand-ins but none was on the bench.
+
+#### SPI and I2C in scripts (2026-11-17)
+
+- **CLI.** `lager spi` and `lager i2c` already ran in the hardware service
+  (`spi_hs`, `i2c_hs`), so they worked on the Mac box with no change.
+- **Scripts.** `SPINet` and `I2CNet` ask their dispatcher for the driver, and
+  the dispatcher opened the adapter over USB from the script. With
+  `LAGER_HOSTLINK=1`, `Net.get` for an spi or i2c net first calls
+  `lager.hostlink.bus_proxy.install()`, which replaces each dispatcher's
+  `_resolve_net_and_driver` in that script's process with one that returns a
+  stand-in driver calling `spi_hs` / `i2c_hs`. `SPINet`, `I2CNet` and the
+  dispatcher files are not edited. **Linux-affecting:** one more default-off
+  check in `box/lager/nets/net.py` (same ledger entry). Not run on Linux
+  hardware.
+- Failures arrive as `SPIBackendError` / `I2CBackendError`, as on Linux.
+- The script runner drops the hardware service's drivers before each script
+  (`/cache/release_direct_usb`, relayed to the agent), so a script starts from
+  the saved configuration, as its own driver would on Linux.
+
+Verified on the bench with a U3-HV, MOSI (FIO6) jumpered to MISO (FIO7): SPI
+transfer, read and read_write return the bytes sent, from the CLI and from a
+script, including after `config(mode=3, bit_order="lsb")`. Nothing is wired to
+the I2C pins: config and scan return, and a read reports the driver's no-ACK
+message. No real SPI or I2C slave has been read.
+
+**Differences from Linux, open:**
+- A script that only imports a dispatcher and never calls `Net.get` for an
+  spi or i2c net is not handed off.
+- An invalid argument that makes the driver fail to open (for example
+  `config(mode=9)`) is treated by the hardware service as a device it could
+  not open: the message gains a "restarting" prefix and the agent's worker
+  restarts (about two seconds). On Linux the script just gets the error.
+- Aardvark and FTDI adapters need their own libraries on the agent; untested.
