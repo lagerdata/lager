@@ -255,3 +255,46 @@ class TestProjectFilesDefiningBox:
         # `rm -rf` of the directory the shell is still sitting in.
         with mock.patch("cli.config._find_config_files", side_effect=FileNotFoundError):
             assert project_files_defining_box("STG-2") == []
+
+
+class TestPythonServicePort:
+    """The script-execution port recorded per Box (5000 unless a Box says otherwise)."""
+
+    def _save(self, lager_file, boxes):
+        lager_file.write_text(json.dumps({"BOXES": boxes}))
+
+    def test_default_when_nothing_is_saved(self, global_lager):
+        from cli.box_storage import get_python_service_port
+        assert get_python_service_port("10.0.0.5") == 5000
+
+    def test_default_for_legacy_and_ordinary_records(self, global_lager):
+        from cli.box_storage import get_python_service_port
+        self._save(global_lager, {"old": "10.0.0.5",
+                                  "new": {"ip": "10.0.0.6", "user": "lagerdata"}})
+        assert get_python_service_port("10.0.0.5") == 5000
+        assert get_python_service_port("10.0.0.6") == 5000
+
+    def test_recorded_port_is_used_for_that_address_only(self, global_lager):
+        from cli.box_storage import get_python_service_port
+        self._save(global_lager, {"mac": {"ip": "127.0.0.1", "python_port": 8301},
+                                  "bench": {"ip": "10.0.0.6"}})
+        assert get_python_service_port("127.0.0.1") == 8301
+        assert get_python_service_port("10.0.0.6") == 5000
+        assert get_python_service_port("10.0.0.7") == 5000
+
+    @pytest.mark.parametrize("bad", ["8301", 0, -1, 65536, True, None, 83.01, [8301]])
+    def test_unusable_value_falls_back_to_the_default(self, global_lager, bad):
+        from cli.box_storage import get_python_service_port
+        self._save(global_lager, {"mac": {"ip": "127.0.0.1", "python_port": bad}})
+        assert get_python_service_port("127.0.0.1") == 5000
+
+    def test_unreadable_storage_falls_back_to_the_default(self):
+        from cli.box_storage import get_python_service_port
+        with mock.patch("cli.box_storage.load_boxes", side_effect=OSError("denied")):
+            assert get_python_service_port("127.0.0.1") == 5000
+
+    def test_direct_session_and_kill_use_the_recorded_port(self, global_lager):
+        from cli.context.session import DirectHTTPSession
+        self._save(global_lager, {"mac": {"ip": "127.0.0.1", "python_port": 8301}})
+        assert DirectHTTPSession("127.0.0.1").base_url == "http://127.0.0.1:8301"
+        assert DirectHTTPSession("10.0.0.6").base_url == "http://10.0.0.6:5000"
