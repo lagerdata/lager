@@ -1016,8 +1016,72 @@ carries it across `lager boxes edit`.
 - `--fork`, `--skip-*`, `--pull`/`--no-pull` and `--timeout` are ignored or
   refused by the local path. Uninstall's `--all`, `--keep-docker-images` and
   `--include-control-plane` are ignored: the image is always kept.
-- Remote macOS install over SSH, and local Linux install, are not started.
+- Local Linux install is not started. Remote macOS install: next section.
 - No release bundle, signing or notarisation; the agent runs from source.
 - J-Link, PicoSDK/PicoScope 7, Rust and Homebrew libusb are detected, not
   installed.
 
+### `lager install --ip <a Mac>` (2026-11-17)
+
+`cli/commands/utility/_remote_macos.py` (CLI side) and
+`cli/deployment/macos_remote.py` (runs on the Mac). Both new.
+
+1. `lager install --box/--ip` checks SSH as it always has, then asks the
+   target `uname -s` once. Only the exact answer `Darwin` goes to the macOS
+   path. Any other answer, an error or a timeout continues down the Linux
+   path unchanged.
+2. The CLI pipes `macos_box.py` and `macos_remote.py` to
+   `~/Library/Caches/com.lagerdata.installer` on the Mac. From a checkout it
+   also pipes the tracked files under `box/` and `cli/__init__.py` to
+   `~/Library/Application Support/Lager/src/shipped`, because a development
+   version exists nowhere the Mac could download it from. A released CLI
+   lets the Mac clone the release tag, as a local install does.
+3. It runs the runner there over `ssh -t` (sudo may ask for the Mac's
+   password) with Homebrew's Python 3, or `/usr/bin/python3` when the command
+   line developer tools are installed. The runner uses the standard library
+   only (checked under Python 3.9) and executes the same `macos_box.install`
+   as a local install, with the ports published on `0.0.0.0`.
+4. The outcome comes back as JSON in a file the CLI reads with a second,
+   non-interactive SSH command; an error keeps its problem, cause and fixes.
+5. The Box is always saved, with `python_port: 8301` and
+   `"platform": "macos"`. With no name given it is saved as `mac-<address>`.
+   `lager update` and `lager uninstall` recognise the Mac from that record
+   and make no extra SSH call for any Box.
+
+**Verified:** on the bench Mac through a stand-in `ssh` that runs each
+command locally with the bare environment an SSH session has (and keeps the
+ports on loopback): install, install again via `lager update --box`,
+`lager uninstall --dry-run`, `lager uninstall`; then `lager hello` and
+`lager instruments` against the Box running from the copied source.
+**Not verified:** over real SSH to a second Mac. SSH to the bench Mac itself
+is not authorized for this user's keys, so these have not been exercised:
+`lager install`'s key set-up against a Mac, `sudo` over `ssh -t`, launchd
+`bootstrap gui/<uid>` from an SSH session, the image pull with the keychain
+locked (a retry without the credential store is written for it), and
+reaching the Box from another machine.
+
+**Linux-affecting (in the ledger, none run against a Linux Box):**
+`install.py` makes one more SSH connection (`uname -s`) on every remote
+install; `uninstall.py` and `update.py` read the saved-Boxes file once more;
+`box_storage.add_box` takes an optional `platform`; `boxes.py` carries it
+across `lager boxes edit`.
+
+**Decisions made here, open to change:**
+- A remote Mac's Box is published on every interface, like a Linux Box.
+- A remote Mac is always saved, even with `--yes` and no `--box` (a Linux
+  Box is not): without the record no later command knows the script port.
+
+**Open:**
+- `lager uninstall` / `lager update` with `--ip` for a Mac that is not saved
+  go down the Linux path and fail there.
+- Other commands that SSH to a Box and expect Linux (`lager ssh` is fine;
+  `lager logs`, `lager status`, box-config, control-plane commands) are not
+  audited against a Mac.
+- The host agent's own listeners (debug service, GDB and RFC 2217 ports)
+  bind to loopback on the Mac; from another machine only what the container
+  relays is reachable.
+- An update replaces the copied source in place before the new container
+  starts; an update that fails midway leaves the old container on a
+  replaced tree.
+- The agent needs a logged-in desktop session on the Mac (launchd `gui`
+  domain). A headless Mac that nobody has logged in to is not supported.
