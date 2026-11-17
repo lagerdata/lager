@@ -455,6 +455,15 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
         uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
         return
 
+    # A saved Box recorded as a Mac at install is removed by its own steps.
+    # Decided from the saved record alone; no Linux Box records a platform.
+    from ._remote_macos import saved_macos_box
+    if saved_macos_box(ip):
+        from ._remote_macos import uninstall_remote_macos
+        uninstall_remote_macos(ctx, ip=ip, user=user, purge_config=purge_config,
+                               yes=yes, dry_run=dry_run)
+        return
+
     ssh_host = f"{user}@{ip}"
 
     # 3. Check SSH connectivity (with password fallback), and settle which
