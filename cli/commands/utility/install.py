@@ -577,6 +577,16 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
 
     click.echo()
 
+    # A Mac is installed by its own steps, run on it. Any answer but "Darwin"
+    # to `uname -s`, or no answer, leaves everything below unchanged.
+    from ._remote_macos import remote_is_macos
+    if remote_is_macos(ssh_host, ssh_identity_args(identity)):
+        from ._remote_macos import install_remote_macos
+        install_remote_macos(ctx, ssh_host=ssh_host, ip=ip, user=user, box=box,
+                             identity_args=ssh_identity_args(identity),
+                             version=version, yes=yes, fork=fork)
+        return
+
     # A gateway left with no configuration refuses every connection whatever
     # this install does, so say so before the operator waits on a deploy and
     # then blames it.

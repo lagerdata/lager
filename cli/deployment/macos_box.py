@@ -31,7 +31,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from ..errors import LagerError
+try:
+    from ..errors import LagerError
+except ImportError:  # run on a remote Mac by macos_remote.py, without the CLI
+    from _lager_errors import LagerError  # type: ignore
 
 LABEL = "com.lagerdata.lager-host"
 CONTAINER_NAME = "lager"
@@ -222,12 +225,18 @@ def image_for(version: str) -> str:
 
 # ------------------------------------------------------------------- steps
 
-def ensure_source(layout: Layout, version: str, run: Run = _run) -> Path:
+def ensure_source(layout: Layout, version: str, run: Run = _run,
+                  source: Optional[Path] = None) -> Path:
     """The Box source both pieces run: the checkout, or a clone of ``version``.
 
     The agent and the container are given the same tree, so the two sides of
-    the link can never be from different releases.
+    the link can never be from different releases. ``source`` is a tree
+    already on this Mac (one a remote install copied over) and is used as is.
     """
+    if source is not None:
+        if not (source / "box" / "lager" / "host" / "__main__.py").exists():
+            raise LagerError(f"There is no Lager Box source at {source}.")
+        return source
     checkout = running_from_checkout()
     if checkout is not None:
         return checkout
@@ -525,8 +534,25 @@ def docker_run_argv(docker: str, image: str, source: Path, etc_real: str,
     return argv + [image, START_SCRIPT]
 
 
+def anonymous_env(docker: str, env: dict, run: Run = _run) -> dict:
+    """``env`` pointed at the same daemon, with an empty Docker configuration.
+
+    An empty configuration has no credential store and no contexts, so the
+    daemon the current context names is carried over as ``DOCKER_HOST``.
+    """
+    import tempfile
+    clean = dict(env, DOCKER_CONFIG=tempfile.mkdtemp(prefix="lager-docker-"))
+    if not clean.get("DOCKER_HOST"):
+        host = (run([docker, "context", "inspect", "--format",
+                     "{{.Endpoints.docker.Host}}"], env=env, timeout=30).stdout or "").strip()
+        if host:
+            clean["DOCKER_HOST"] = host
+    return clean
+
+
 def start_container(docker: str, env: dict, image: str, source: Path,
-                    run: Run = _run, echo=lambda _line: None) -> None:
+                    run: Run = _run, echo=lambda _line: None,
+                    bind: str = LOCAL_ADDRESS) -> None:
     # /etc is a symlink on macOS and OrbStack does not follow it for a bind
     # mount (the container silently gets an empty directory).
     etc_real = os.path.realpath(ETC_DIR)
@@ -539,13 +565,21 @@ def start_container(docker: str, env: dict, image: str, source: Path,
         result = run([docker, "pull", "--platform", IMAGE_PLATFORM, image],
                      env=env, timeout=3600, capture_output=False)
         if result.returncode != 0:
+            # Over SSH the login keychain is locked, and a Docker set up to
+            # keep credentials there fails every pull, even of a public
+            # image. Pull once more with no credential store at all.
+            result = run([docker, "pull", "--platform", IMAGE_PLATFORM, image],
+                         env=anonymous_env(docker, env, run), timeout=3600,
+                         capture_output=False)
+        if result.returncode != 0:
             raise LagerError(
                 f"The CLI did not download the Box image {image}.",
                 fixes=["Check the network connection, then run `lager install` again.",
                        "For a development version, pass --version with a release "
                        "tag that has an image."])
     run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
-    result = run(docker_run_argv(docker, image, source, etc_real), env=env, timeout=300)
+    result = run(docker_run_argv(docker, image, source, etc_real, bind),
+                 env=env, timeout=300)
     if result.returncode != 0:
         cause = _last_line(result.stderr)
         fixes = []
@@ -603,9 +637,17 @@ class Result:
 
 
 def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
-            layout: Optional[Layout] = None) -> Result:
-    """Provision the agent and the container on this Mac."""
+            layout: Optional[Layout] = None, bind: str = LOCAL_ADDRESS,
+            source: Optional[Path] = None) -> Result:
+    """Provision the agent and the container on this Mac.
+
+    ``bind`` is the address the Box's ports are published on: this Mac only
+    by default, every interface for a Box that other machines must reach.
+    ``source`` is a Box source tree already on this Mac, used instead of the
+    checkout or a download.
+    """
     layout = layout or Layout()
+    from_tree = source is not None or running_from_checkout() is not None
     check_platform()
     echo("Checking Docker...")
     docker, env = find_docker(run)
@@ -613,9 +655,9 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     echo("Preparing the Box configuration directory...")
     ensure_config_dir(run)
 
-    source = ensure_source(layout, version, run)
+    source = ensure_source(layout, version, run, source)
     box_version = source_version(source) or version.lstrip("v")
-    image = image_for(box_version if running_from_checkout() else version)
+    image = image_for(box_version if from_tree else version)
 
     echo("Installing the host agent...")
     skipped = ensure_agent_env(layout, run)
@@ -631,9 +673,9 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     start_agent(layout, source, run)
 
     echo("Starting the Box container...")
-    start_container(docker, env, image, source, run, echo)
+    start_container(docker, env, image, source, run, echo, bind)
     wait_for_link(docker, env, run)
-    ref = version if not running_from_checkout() else f"checkout:{source}"
+    ref = f"checkout:{source}" if from_tree else version
     write_state(box_version, cli_version, ref)
     return Result(source=source, image=image, box_version=box_version, skipped=skipped)
 
