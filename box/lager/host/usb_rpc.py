@@ -1,17 +1,21 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""USB hub calls from a Box container, served by the agent.
+"""USB hub calls and USB discovery for a Box container, served by the agent.
 
 On a Linux Box the hub drivers (``lager.automation.usb_hub``) run in the
 container, next to the hub. Where the container has no USB, it holds a
 stand-in (``lager.hostlink.usb_proxy``) that sends each call here, and the
 real driver runs in this process instead.
+
+The same goes for looking at the bus: which devices are attached, and which
+of them are instruments (``lager instruments``).
 """
 from __future__ import annotations
 
 import json
 import logging
+import sys
 
 from flask import Flask, jsonify, request
 
@@ -20,6 +24,8 @@ from lager.hostlink import protocol
 logger = logging.getLogger(__name__)
 
 CALL_PATH = "/v1/usb/call"
+IDS_PATH = "/v1/usb/ids"
+INSTRUMENTS_PATH = "/v1/instruments/list"
 
 # What a container may ask for. Everything else is refused, not looked up.
 _METHODS = frozenset({
@@ -44,8 +50,40 @@ def _note_powered_on(controller, method, args, result) -> None:
         usb_net.note_powered_on(controller, args[1])
 
 
+def _usb_ids():
+    """The bus as ``[[vid, pid, [serial, ...]], ...]``, or None if unknown."""
+    from lager.util import self_restart
+
+    ids = self_restart.enumerated_usb_ids()
+    if ids is None:
+        return None
+    return [[vid, pid, serials] for (vid, pid), serials in sorted(ids.items())]
+
+
+def _list_instruments():
+    if sys.platform == "darwin":
+        from . import darwin_scan
+
+        return darwin_scan.list_instruments()
+    from lager.http_handlers import usb_scanner
+
+    return usb_scanner.list_instruments()
+
+
 def install(app: Flask) -> Flask:
-    """Add the USB hub route. The agent's token guard already covers it."""
+    """Add the USB routes. The agent's token guard already covers them."""
+
+    @app.route(IDS_PATH, methods=["GET"])
+    def _hostlink_usb_ids():
+        return jsonify({"devices": _usb_ids()})
+
+    @app.route(INSTRUMENTS_PATH, methods=["GET"])
+    def _hostlink_instruments_list():
+        try:
+            return jsonify({"instruments": _list_instruments()})
+        except Exception as exc:  # the container reports it as its own scan failing
+            logger.exception("instrument scan failed")
+            return jsonify({"error": str(exc), "type": type(exc).__name__}), 500
 
     @app.route(CALL_PATH, methods=["POST"])
     def _hostlink_usb_call():
