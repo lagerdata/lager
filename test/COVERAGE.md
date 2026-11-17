@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3913 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 3934 (+3 xfailed) |
 | `unit (box)` | `test/unit/box/` | 5564 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10331** |
+| | **Total gated** | **10352** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,7 +504,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 355 files)
+### Local Unit Tests (`test/unit/` -- 356 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 195 files)
 
@@ -710,7 +710,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 136 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 137 files)
 
 | File | What it tests |
 |------|---------------|
@@ -833,6 +833,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
 | `test_webcam_command.py` | `lager webcam` CLI: the tokenised viewer link on access-gated boxes (`_viewer_url`, the token lookup asking for half a lifetime, the note that promises only how long the link can be opened, its pinned-token and `lager login` variants, and the layout: link on its own line, note under it, hint last), `start --open` opening the printed link (and never the browser without it), and pointing at the link when no browser opens, `start` sending `source`/`started_by`, and `snapshot` writing the decoded JPEG to `--out`. Also the stop hints `start` and `start-all` print, each replayed through the group so the line a user copies stays a command that parses and names the box the way they typed it |
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior. Also the per-Box script-execution port: 5000 unless a saved Box with that address records `python_port`, an unusable value or unreadable storage falling back to 5000, and `lager python`'s session building its URL from it |
+| `test_macos_local_install.py` | `lager install` / `update` / `uninstall` for a Box on the Mac the CLI runs on: the provisioner's pure pieces (Apple-silicon check, Docker found by path and socket, the launchd job setting the library path immediately before Python, a container with no privileges or devices published on loopback with 8301 for scripts, Rust toolchain choice, the PicoTech header tree, optional steps and optional driver packages reporting a reason instead of failing, config kept unless purged and backed up first), routing (no `--box`/`--ip` and loopback addresses go local on macOS only; Linux and Windows get "not yet supported"; SSH never invoked), and the saved Box keeping `python_port` while a Box without one is stored exactly as before. No Docker, launchd, sudo or network |
 | `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway, including the pinned CI token (`LAGER_GATEWAY_TOKEN`), and that `check_gateway_status` holds its first-contact retry to the caller's own timeout rather than a fixed 30s -- otherwise a caller with a deadline reports a box that was still answering |
 | `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict; the shared `/etc/lager` state-file writer, run against a scratch directory, including that the ref write skips identical content and that the version is recorded only after the container starts; the host CA-certificate step's status and warning; and the `--check` exit-code contract, guarded structurally so no failure ahead of the dry run exits 1 and becomes indistinguishable from "this box needs an update" |
 | `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows |
