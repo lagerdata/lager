@@ -649,7 +649,7 @@ container, not directly.
 | Keysight E36312A: voltage, current limit, enable | Works (3.3 V / 0.1 A read back as 3.299 V) |
 | `lager debug` flash, memrd, reset, status, disconnect | Work through container -> host |
 | PicoScope 2405A: enable, scale, timebase, start, measure | Work. 958 Hz on A and 247 Hz on D from the test firmware |
-| `lager debug gdbserver --rtt --interactive \| defmt-print` | Attaches, no data yet (see below) |
+| `lager debug gdbserver --rtt --interactive \| defmt-print` | Works: decoded heartbeat lines on every attach |
 
 How it is wired:
 - The agent supervises three children: hardware worker, debug service (port 48765) and,
@@ -670,15 +670,28 @@ Found on the way:
   the handler and kills any child that outlives a stop request.
 - RTT detection starts `gdb-multiarch`, which macOS does not have; `arm-none-eabi-gdb`
   is substituted.
-- GDB 18 takes about six seconds to refuse non-stop mode against J-Link, so the Box
-  code's fallback missed the refusal. The agent waits for the verdict. The first RTT
-  attach therefore exceeds the CLI's wait and fails; the second succeeds.
-- **Open:** after the RTT block is found, no data flows, and the target's RTT write
-  position does not advance, while the same firmware logs when run free of the
-  debugger. The core is being left halted after the all-stop RAM scan with GDB 18.
+- GDB 18 took about six seconds over every connect to J-Link, so the Box code's
+  non-stop fallback missed the refusal and the first RTT attach outlasted the CLI's
+  wait. Cause: GDB 17 and later send `qExecAndArgs`, which J-Link's GDB server never
+  answers, and GDB waits out three two-second timeouts. The agent sends
+  `set remote fetch-exec-and-args-packet off` before connecting; the connect now takes
+  0.2 s. This would also affect a Linux Box whose `gdb-multiarch` is 17 or newer.
+- The agent's worker kept reusing a GDB whose server had since been restarted by the
+  debug service, a separate process. Every read then failed, the RTT block was "not
+  found" and the resume went nowhere. The agent now checks a cached GDB still has a
+  thread and reconnects if not. **Suspected on Linux too, not verified:** the Box's
+  `/rtt` handler and debug service are also separate processes with the same cache. It
+  is hidden when the control block sits at a 4 KB-aligned address, because J-Link then
+  finds it unaided.
+- **RTT piped to defmt-print works:** three attaches in a row, including the first after
+  a restart, decode the firmware's heartbeat lines, and the count carries on across
+  attaches, so attaching does not reset the target.
+- An earlier note here said the core was left halted after the RAM scan. That was
+  wrong. A diagnostic command of mine (`monitor memU32 <addr> <n>`, which writes) had
+  overwritten a byte of the firmware's RTT header; a reset cleared it.
 - The GDB port (2331) is only reachable on the Mac itself, not through the container.
 - Port 5000 was not needed by any command above.
-- None of the new files has unit tests yet.
+- Unit tests for the new files: `test/unit/box/test_host_debug.py`.
 
 ### Phase 2 — hardware in the loop, then installer
 
