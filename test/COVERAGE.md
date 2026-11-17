@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3913 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5475 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5502 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10242** |
+| | **Total gated** | **10269** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 351 files)
+### Local Unit Tests (`test/unit/` -- 352 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 191 files)
+#### Box Unit Tests (`test/unit/box/` -- 192 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -581,6 +581,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_hardware_service_redaction.py` | The `/invoke` log line masks secret keyword arguments (`password`, `pin`, `private_key_pem`, ...) while the driver still receives them |
 | `test_hsm_net_command.py` | `/net/command` for `hsm` nets: each action reaches its `hsm_hs` method with the login kwargs, a missing password and unknown algorithm, mechanism or object type answer 400 before the device is reached, the password never appears in a reply, and hardware_service's wrapper text is dropped from errors |
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. The host `ca-certificates` upgrade `lager update` runs, including its command run by `sh` against stub `sudo` and `dpkg-query`. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
+| `test_host_darwin_scan.py` | USB discovery for a container whose USB is on a macOS host: the Mac's USB bus written out as a sysfs-shaped tree (a Linux-style name from the location ID, attributes as files, a device inside its parent hub, one controller per bus, a departed device removed), the Box's own scanner run against that tree as a private copy (Linux-identical addresses, a serial-less device addressed by port, the Box's module left reading the real sysfs), the agent's two routes (bus IDs with unknown kept apart from empty, the instrument list, a failed scan), the container's stand-ins (IDs back in the sysfs reader's shape, anything malformed as unknown, a failed scan raised with the agent's reason), and the `LAGER_HOSTLINK` switches in `self_restart.py` and `usb_scanner.py` staying off unless set to `1`. Device entries are constructed to match one real bench; no hardware or `ioreg` is involved |
 | `test_host_darwin_usb.py` | USB enumeration on macOS for the hardware service's self-restart gate, read from the I/O Registry in place of Linux sysfs: devices nested under hubs, two units of one model, a device with no serial, either serial key, an empty plane, and every `ioreg` failure reported as unknown rather than empty. Pins that the function the agent swaps in is the one the gate consults, and that a restart becomes due only when the device is present. Also the device list in the shape `usb_sysfs` returns, which the hub drivers use to confirm a power cycle: keys and formats, a name that follows the port across re-enumeration, the vid/pid/serial filters, an unreadable bus as empty, and the reader replaced where the drivers look. The registry data is constructed; the sysfs-shaped part matches what a real Acroname hub and J-Link reported |
 | `test_host_debug.py` | The debug probe and oscilloscope on the host, for a container that cannot reach hardware (macOS): the container's plain TCP forward over real loopback sockets (bytes unchanged both ways, half-close, an unreachable host service), the debug-net stand-in (calls and firmware bytes sent to the relay, errors re-raised, RTT read and written over the bridged port), the agent route that runs the real debug net (method allow-list, bytes as base64, flash from sent bytes, the RTT bridge bound to loopback and closing the session when the client leaves or never arrives), the macOS adjustments to the debug service (`/proc` answered from `ps`, the `-NoGui` Commander wrapper, ARM GDB in place of `gdb-multiarch`, the unanswered GDB query turned off before connecting, a cached GDB whose server is gone replaced), the supervisor's children (restart, stop, kill of one that ignores the request), and the `LAGER_HOSTLINK` switch in `debug_net.py` staying off unless set to `1`. The same hand-off for USB hub ports: the stand-in controller (operations sent with the net, port keys restored, a driver error re-raised as the same class with its classification), the agent route (allow-list, power-on recorded as the dispatcher does), and the switch in the hub dispatcher staying off unless set to `1`. No probe, hub, GDB or J-Link software is involved |
 | `test_hostlink.py` | The link between a Box container and a native host agent, used where the container cannot reach hardware (macOS): protocol version negotiation, the bearer token (fails closed, constant-time), the shared endpoint record (atomic write, no silent overwrite, no token rotation on re-provision), the agent's guard in front of the hardware service (every route needs the token and a supported protocol), and the in-container relay over real loopback sockets (verbatim pass-through of driver errors, one structured error when the agent is down, recovery after the agent restarts on a new port or token, version mismatch pointing at `lager update`, the status endpoint never exposing the token). No driver or instrument is involved |

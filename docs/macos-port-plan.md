@@ -818,3 +818,34 @@ net driven from a `lager python` script.
 It exercises discovery, the dominant RPC path, authentication, version handshake, error
 propagation, session cleanup, and container-to-host networking on both runtimes, while
 touching the fewest files.
+
+### USB discovery on the Mac box (2026-11-17)
+
+`lager instruments` listed nothing and `lager nets state` reported USB
+instruments as "not on the USB bus", because both read Linux's sysfs inside
+the container. Both now ask the agent when the container runs with
+`LAGER_HOSTLINK=1`.
+
+- **Presence** (`self_restart.enumerated_usb_ids`): the agent answers from the
+  I/O Registry (`GET /v1/usb/ids`).
+- **Instrument scan** (`usb_scanner.list_instruments`): the agent runs the
+  Box's own scanner, unedited, against a sysfs-shaped tree it writes from the
+  I/O Registry before each scan (`lager.host.darwin_scan`,
+  `GET /v1/instruments/list`). A device's directory name is derived from its
+  location ID (`0x01114400` is `1-1.1.4.4`), so port-addressed devices get
+  addresses of the same form as on Linux.
+- **Linux-affecting:** one default-off check in each of
+  `box/lager/util/self_restart.py` and `box/lager/http_handlers/usb_scanner.py`
+  (both in the ledger). Not run on Linux hardware.
+
+Verified on the bench: `lager instruments` lists the Acroname, J-Link,
+Keysight, LabJack U3 and PicoScope; `lager nets state` shows the Keysight's
+live state.
+
+**Open:**
+- The tree has no `/sys/class/tty` or `/sys/class/video4linux`, so serial
+  adapters and cameras are not listed.
+- The PicoScope reports no USB serial on macOS, so its scanned address has an
+  empty serial where a net created earlier carries the unit's serial.
+- A LabJack U3 is addressed as `port-1-1.3`; whether its driver can resolve
+  that on macOS is not yet tested.
