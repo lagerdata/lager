@@ -246,6 +246,34 @@ def get_box_name_by_ip(ip: str) -> Optional[str]:
     return None
 
 
+# The port a Box's script-execution service is published on. 5000 on every
+# Linux Box. A Box on macOS publishes it elsewhere, because the system's
+# AirPlay receiver holds 5000 there; the installer records the port it used.
+DEFAULT_PYTHON_SERVICE_PORT = 5000
+PYTHON_SERVICE_PORT_KEY = "python_port"
+
+
+def get_python_service_port(ip: str) -> int:
+    """The script-execution port for the Box at ``ip``.
+
+    ``DEFAULT_PYTHON_SERVICE_PORT`` unless a saved Box with that address
+    records another one. A value that is not a usable port is ignored, and so
+    is any failure to read the saved Boxes: this must never be the reason a
+    command cannot reach a Box that is on the default port.
+    """
+    try:
+        boxes = load_boxes()
+    except Exception:
+        return DEFAULT_PYTHON_SERVICE_PORT
+    for box_info in boxes.values():
+        if not isinstance(box_info, dict) or box_info.get("ip") != ip:
+            continue
+        port = box_info.get(PYTHON_SERVICE_PORT_KEY)
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+            return port
+    return DEFAULT_PYTHON_SERVICE_PORT
+
+
 def delete_box(name: str) -> bool:
     """Delete a box from the global storage. Returns True if deleted, False if not found.
 
