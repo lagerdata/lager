@@ -99,6 +99,26 @@ class RenderTests(unittest.TestCase):
         darwin_scan.render([broken, _device(0x01000000, 1, 2)], self.root)
         self.assertEqual(os.listdir(os.path.join(self.root, "devices")), [])
 
+    def test_serial_port_is_a_tty_entry_inside_its_usb_interface(self):
+        adapter = _device(0x01114300, 0x10C4, 0xEA60, "0001", "CP2102")
+        ports = [{"device": "/dev/cu.usbserial-0001", "location": 0x01114300, "interface": None},
+                 {"device": "/dev/cu.usbserial-B", "location": 0x01114300, "interface": 1},
+                 {"device": "/dev/cu.unnamed", "location": 0x01114300, "interface": 0},
+                 {"device": "/dev/cu.orphan", "location": 0x01990000, "interface": 0}]
+        names = {"/dev/cu.usbserial-0001": "ttyUSB0", "/dev/cu.usbserial-B": "ttyUSB1",
+                 "/dev/cu.orphan": "ttyUSB2"}
+        darwin_scan.render(BENCH + [adapter], self.root, ports, names)
+        ttys = os.path.join(self.root, "class", "tty")
+        # No Linux name, or no USB device at that location: not listed.
+        self.assertEqual(sorted(os.listdir(ttys)), ["ttyUSB0", "ttyUSB1"])
+        device = os.path.realpath(os.path.join(ttys, "ttyUSB1", "device"))
+        self.assertEqual(os.path.basename(os.path.dirname(device)), "1-1.1.4.3:1.1")
+        usb_dir = os.path.dirname(os.path.dirname(device))
+        self.assertEqual(usb_dir, os.path.realpath(
+            os.path.join(self.root, "devices", "1-1.1.4.3")))
+        first = os.path.realpath(os.path.join(ttys, "ttyUSB0", "device"))
+        self.assertEqual(os.path.basename(os.path.dirname(first)), "1-1.1.4.3:1.0")
+
 
 class ScanTests(unittest.TestCase):
     """The Box's own scanner, reading the rendered tree."""
@@ -176,7 +196,10 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(str(path("/sys/bus/usb/devices")), "/tmp/x/devices")
         self.assertEqual(str(path("/sys/bus/usb/devices/1-1")), "/tmp/x/devices/1-1")
         self.assertEqual(str(path("/sys/bus/usb/devicesX")), "/sys/bus/usb/devicesX")
-        self.assertEqual(str(path("/sys/class/tty")), "/sys/class/tty")
+        self.assertEqual(str(path("/sys/class/tty")), "/tmp/x/class/tty")
+        self.assertEqual(str(path("/sys/class/tty/ttyUSB0/device")),
+                         "/tmp/x/class/tty/ttyUSB0/device")
+        self.assertEqual(str(path("/sys/class/video4linux")), "/sys/class/video4linux")
         self.assertEqual(str(path("/etc", "lager")), "/etc/lager")
 
 
