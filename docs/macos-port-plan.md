@@ -955,3 +955,69 @@ message. No real SPI or I2C slave has been read.
   not open: the message gains a "restarting" prefix and the agent's worker
   restarts (about two seconds). On Linux the script just gets the error.
 - Aardvark and FTDI adapters need their own libraries on the agent; untested.
+
+#### `lager install` on this Mac (2026-11-17)
+
+`lager install` with neither `--box` nor `--ip`, run on an Apple silicon Mac,
+now provisions a Box on that Mac (`cli/deployment/macos_box.py`, wired in by
+`cli/commands/utility/_local_install.py`). `lager update` and
+`lager uninstall` follow, and a saved Box at a loopback address is routed the
+same way when the CLI runs on macOS. On Linux and Windows the no-target form
+exits with "not yet supported".
+
+What it does, each step safe to repeat:
+
+1. Finds a running Docker Desktop or OrbStack (PATH, then known locations
+   and sockets).
+2. Creates `/etc/lager` with one `sudo` if it is missing.
+3. Takes the Box source from the checkout the CLI runs from, or clones the
+   release tag. The agent and the container run the same tree.
+4. Builds the agent's Python environment under
+   `~/Library/Application Support/Lager/host/` and installs its packages.
+   Vendor driver packages are installed one at a time; a failure is reported
+   and does not stop the install.
+5. Builds LabJack's USB library from LabJack's GitHub source (needs Homebrew
+   libusb) and the oscilloscope daemon (needs Rust >= 1.89 and PicoTech's
+   PicoSDK). Each is skipped with a stated reason when a prerequisite is
+   missing. Nothing is installed or updated on the user's behalf.
+6. Installs and starts the per-user launchd job `com.lagerdata.lager-host`.
+7. Starts the container `lager` (`--restart always`, no privileges, no
+   devices), waits for the handshake, writes `/etc/lager/version` and `ref`.
+8. Saves the Box at `127.0.0.1` with `python_port: 8301`.
+
+Verified on the bench Mac: install from nothing (31 s with the image already
+pulled), install again, `lager update --box`, `lager uninstall --box` (agent
+files, launchd job, container and saved Box gone; `/etc/lager` kept), then
+install again. Through the installed Box: `lager hello`, `lager instruments`,
+Keysight state, J-Link status, PicoScope frequency measurement, LabJack ADC,
+SPI loopback script, UART loopback script, Acroname port state.
+
+**Linux-affecting (all in the ledger, none run against a Linux Box):**
+`cli/commands/utility/install.py`, `uninstall.py` and `update.py` each gain
+a branch for "no target" or "loopback on macOS"; `cli/box_storage.py`
+`add_box` takes an optional `python_port`; `cli/commands/box/boxes.py`
+carries it across `lager boxes edit`.
+
+**Decisions made here, open to change:**
+- A local install publishes the Box's ports on `127.0.0.1` only. A Linux Box
+  publishes on every interface; a laptop should not offer an unauthenticated
+  Box to whatever network it is on. A remote macOS install will need the LAN.
+- With `--yes` and no saved Box at `127.0.0.1`, the Box is saved as `local`.
+
+**Open:**
+- The Box image is `linux/amd64` only and runs emulated. The container
+  always mounts the source tree over the image's copy.
+- macOS asks once to allow the agent's Python (a new program to macOS)
+  when it first runs. The installer does not announce this yet.
+- After several agent restarts in a row the Keysight answered
+  "Query INTERRUPTED" and then timed out until the agent was restarted once
+  more. Seen once; not reproduced.
+- `lager update --check` is not available for a local Box.
+- `--fork`, `--skip-*`, `--pull`/`--no-pull` and `--timeout` are ignored or
+  refused by the local path. Uninstall's `--all`, `--keep-docker-images` and
+  `--include-control-plane` are ignored: the image is always kept.
+- Remote macOS install over SSH, and local Linux install, are not started.
+- No release bundle, signing or notarisation; the agent runs from source.
+- J-Link, PicoSDK/PicoScope 7, Rust and Homebrew libusb are detected, not
+  installed.
+
