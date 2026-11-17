@@ -12,6 +12,7 @@ import json
 import re
 import sys
 import threading
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lager.dispatchers import helpers
@@ -29,6 +30,7 @@ __all__ = [
     'read_write',
     'transfer',
     '_resolve_net_and_driver',
+    '_driver_for_call',
 ]
 
 # Role constant for SPI nets
@@ -100,6 +102,16 @@ def achieved_frequency_hz(rec, requested_hz):
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'SPIBase'] = {}
 _driver_cache_lock = threading.Lock()
+
+# One lock per net, held across a whole per-call-override transaction (apply,
+# I/O, restore), so two calls with different overrides cannot interleave on the
+# same cached driver.
+_net_locks: Dict[str, threading.RLock] = {}
+
+# The settings a per-call override may change. Each is stored on every driver
+# as ``_<name>`` in the form its config() accepts.
+_OVERRIDE_KEYS = ("mode", "bit_order", "frequency_hz", "word_size",
+                  "cs_active", "cs_mode")
 
 
 def _persist_params(netname: str, **kwargs) -> None:
@@ -411,6 +423,10 @@ def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):
 
     Uses shared helpers for net lookup and role validation.
     Caches drivers for efficiency. Thread-safe via _driver_cache_lock.
+
+    ``overrides`` given here are applied to the cached driver and STAY applied:
+    this is the persistent path config() uses. A per-call override must go
+    through _driver_for_call(), which restores the driver afterwards.
     """
     if overrides is None:
         overrides = {}
@@ -435,6 +451,37 @@ def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):
         _driver_cache[cache_key] = drv
 
         return drv
+
+
+def _net_lock(netname: str) -> threading.RLock:
+    with _driver_cache_lock:
+        return _net_locks.setdefault(netname, threading.RLock())
+
+
+@contextmanager
+def _driver_for_call(netname: str, overrides: Optional[Dict[str, Any]] = None):
+    """
+    Yield the net's cached driver with *overrides* applied for this call only.
+
+    Only the settings the overrides change are snapshotted, and they are put
+    back when the block exits, whether or not the transfer raised. Persistent
+    changes go through config(), not here.
+    """
+    with _net_lock(netname):
+        drv = _resolve_net_and_driver(netname)
+        changes = {k: v for k, v in (overrides or {}).items()
+                   if v is not None}
+        if not changes:
+            yield drv
+            return
+        saved = {k: getattr(drv, f"_{k}") for k in changes
+                 if k in _OVERRIDE_KEYS and hasattr(drv, f"_{k}")}
+        try:
+            drv.config(**changes)
+            yield drv
+        finally:
+            if saved:
+                drv.config(**saved)
 
 
 def _format_output(data: List[int], fmt: str = "hex", word_size: int = 8) -> str:
@@ -566,11 +613,10 @@ def read(
         output_format: Output format - "hex", "bytes", or "json"
         overrides: Optional configuration overrides
     """
-    drv = _resolve_net_and_driver(netname, overrides)
-    result = drv.read(n_words, fill=fill, keep_cs=keep_cs)
-
-    # Get word size from driver (reflects stored config + any overrides)
-    effective_ws = getattr(drv, '_word_size', 8)
+    with _driver_for_call(netname, overrides) as drv:
+        result = drv.read(n_words, fill=fill, keep_cs=keep_cs)
+        # Word size in force for this transfer (stored config + overrides)
+        effective_ws = getattr(drv, '_word_size', 8)
 
     output = _format_output(result, output_format, effective_ws)
     print(output)
@@ -594,11 +640,10 @@ def read_write(
         output_format: Output format - "hex", "bytes", or "json"
         overrides: Optional configuration overrides
     """
-    drv = _resolve_net_and_driver(netname, overrides)
-    result = drv.read_write(data, keep_cs=keep_cs)
-
-    # Get word size from driver (reflects stored config + any overrides)
-    effective_ws = getattr(drv, '_word_size', 8)
+    with _driver_for_call(netname, overrides) as drv:
+        result = drv.read_write(data, keep_cs=keep_cs)
+        # Word size in force for this transfer (stored config + overrides)
+        effective_ws = getattr(drv, '_word_size', 8)
 
     output = _format_output(result, output_format, effective_ws)
     print(output)
@@ -640,11 +685,10 @@ def transfer(
     elif len(data) > n_words:
         data = data[:n_words]
 
-    drv = _resolve_net_and_driver(netname, overrides)
-    result = drv.read_write(data, keep_cs=keep_cs)
-
-    # Get word size from driver (reflects stored config + any overrides)
-    effective_ws = getattr(drv, '_word_size', 8)
+    with _driver_for_call(netname, overrides) as drv:
+        result = drv.read_write(data, keep_cs=keep_cs)
+        # Word size in force for this transfer (stored config + overrides)
+        effective_ws = getattr(drv, '_word_size', 8)
 
     output = _format_output(result, output_format, effective_ws)
     print(output)

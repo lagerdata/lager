@@ -139,3 +139,80 @@ class SharedOnTheBaseTests(unittest.TestCase):
     def test_defaults_are_the_eight_bit_msb_first_case(self):
         self.assertEqual(SPIBase.words_to_bytes([0xA5]), [0xA5])
         self.assertEqual(SPIBase.bytes_to_words([0xA5]), [0xA5])
+
+
+class _FakeSPI:
+    """Records the word size and mode in force for each transfer."""
+
+    def __init__(self):
+        self._mode = 0
+        self._bit_order = "msb"
+        self._frequency_hz = 1_000_000
+        self._word_size = 8
+        self._cs_active = "low"
+        self._cs_mode = "auto"
+        self.seen = []
+
+    def config(self, **kw):
+        for k, v in kw.items():
+            if v is not None:
+                setattr(self, f"_{k}", v)
+
+    def read_write(self, data, keep_cs=False):
+        self.seen.append((self._word_size, self._mode))
+        return list(data)
+
+    def read(self, n_words, fill=0xFF, keep_cs=False):
+        return self.read_write([fill] * n_words, keep_cs=keep_cs)
+
+
+class PerCallOverrideTests(unittest.TestCase):
+    """Per-call SPI overrides apply to one call only (#848)."""
+
+    NET = "spi-override-test"
+
+    def setUp(self):
+        from lager.protocols.spi import dispatcher as disp
+        self.disp = disp
+        self.drv = _FakeSPI()
+        disp._driver_cache[self.NET] = self.drv
+        self.addCleanup(disp._driver_cache.pop, self.NET, None)
+
+    def test_override_applies_to_its_call_only(self):
+        ov = {"word_size": 16, "mode": 3}
+        self.disp.read(self.NET, 1, overrides=ov)
+        self.disp.read_write(self.NET, [1], overrides=ov)
+        self.disp.transfer(self.NET, 1, data=[1], overrides=ov)
+        self.disp.read(self.NET, 1)
+        self.assertEqual(self.drv.seen, [(16, 3)] * 3 + [(8, 0)])
+
+    def test_restores_when_the_transfer_raises(self):
+        def boom(data, keep_cs=False):
+            raise RuntimeError("bus error")
+        self.drv.read_write = boom
+        with self.assertRaises(RuntimeError):
+            self.disp.read_write(self.NET, [1], overrides={"word_size": 32})
+        self.assertEqual(self.drv._word_size, 8)
+
+    def test_hardware_adapter_reports_the_word_size_used(self):
+        from lager.spi_hs import SPIHardwareAdapter
+        hs = SPIHardwareAdapter(self.NET)
+        out = hs.read_write([1], overrides={"word_size": 16})
+        self.assertEqual(out["word_size"], 16)
+        self.assertEqual(hs.transfer([1], overrides={"word_size": 32})
+                         ["word_size"], 32)
+        self.assertEqual(hs.read(1)["word_size"], 8)
+
+    def test_hardware_adapter_config_persists(self):
+        from lager.spi_hs import SPIHardwareAdapter
+        SPIHardwareAdapter(self.NET).config({"word_size": 16})
+        self.disp.read(self.NET, 1)
+        self.assertEqual(self.drv.seen, [(16, 0)])
+
+    def test_spinet_hex_output_uses_the_live_word_size(self):
+        from lager.protocols.spi.spi_net import SPINet
+        net = SPINet(self.NET, {"name": self.NET, "params": {"word_size": 8}})
+        net.config(word_size=16)
+        self.assertEqual(net.read_write([0x12], output_format="hex"), "0012")
+        self.assertEqual(net.transfer(1, data=[0x12], output_format="hex"),
+                         "0012")

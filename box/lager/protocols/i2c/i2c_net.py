@@ -127,8 +127,9 @@ class I2CNet:
             data = i2c.read(address=0x48, num_bytes=2)
             temp = (data[0] << 8) | data[1]
         """
-        drv = self._get_driver(overrides)
-        result = drv.read(address, num_bytes)
+        from .dispatcher import _driver_for_call
+        with _driver_for_call(self.name, overrides) as drv:
+            result = drv.read(address, num_bytes)
 
         if output_format == "list":
             return result
@@ -152,8 +153,9 @@ class I2CNet:
             # Write register address and value
             i2c.write(address=0x48, data=[0x0A, 0x03])
         """
-        drv = self._get_driver(overrides)
-        drv.write(address, data)
+        from .dispatcher import _driver_for_call
+        with _driver_for_call(self.name, overrides) as drv:
+            drv.write(address, data)
 
     def write_read(
         self,
@@ -183,8 +185,9 @@ class I2CNet:
             temp_bytes = i2c.write_read(address=0x48, data=[0x00], num_bytes=2)
             temperature = (temp_bytes[0] << 8) | temp_bytes[1]
         """
-        drv = self._get_driver(overrides)
-        result = drv.write_read(address, data, num_bytes)
+        from .dispatcher import _driver_for_call
+        with _driver_for_call(self.name, overrides) as drv:
+            result = drv.write_read(address, data, num_bytes)
 
         if output_format == "list":
             return result
