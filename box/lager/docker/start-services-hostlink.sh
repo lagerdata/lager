@@ -121,6 +121,9 @@ echo "Starting Lager Python Execution Service on port 5000..."
 # Every service below, and every script they run, sees this: it is what
 # switches the debug net to the host (lager/nets/debug_net.py).
 export LAGER_HOSTLINK=1
+# Makes serial.Serial("/dev/ttyUSB0") reach the host's port in every Python
+# process started from here, user scripts included (see the file itself).
+export PYTHONPATH="/app/lager/lager/hostlink/site${PYTHONPATH:+:$PYTHONPATH}"
 
 start_service "python execution" "python3 -m lager.python.service" "/tmp/lager-python-service.log"
 

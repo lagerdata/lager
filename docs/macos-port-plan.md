@@ -849,3 +849,50 @@ live state.
   empty serial where a net created earlier carries the unit's serial.
 - A LabJack U3 is addressed as `port-1-1.3`; whether its driver can resolve
   that on macOS is not yet tested.
+
+#### Serial ports on the Mac box (2026-11-17)
+
+A USB serial adapter on the Mac is usable from the container under the name
+a Linux Box gives it.
+
+- **Names.** The agent gives each Mac port (`/dev/cu.usbserial-0001`) a Linux
+  name (`/dev/ttyUSB0`; `ttyACM` for CDC devices), lowest free number first.
+  Nets, scripts and CLI output only ever show the Linux name.
+- **Lookups.** The agent writes the ports into its sysfs-shaped tree as
+  `/sys/class/tty` entries, and the Box's own `serial_id` and UART-bridge
+  lookups run against it unedited. The container asks the agent
+  (`POST /v1/serial/lookup`).
+- **Opening.** The agent opens the device exclusively and serves it to one
+  client over RFC 2217 on a loopback port (`POST /v1/serial/open`). In the
+  container `serial.Serial("/dev/ttyUSB0")` returns pySerial's RFC 2217
+  client pointed at it, so data, line settings, modem lines and break cross.
+  A startup hook (`hostlink/site/sitecustomize.py`, on PYTHONPATH only in the
+  macOS start script) installs this in every Python process, so a user script
+  that opens a port with pySerial directly works too.
+- **Errors match Linux.** A second open reports the locked-port error with
+  errno 11; an absent port reports "No such file or directory"; an adapter
+  unplugged mid-session is classified device-gone by the Box's reconnect
+  logic.
+- **Linux-affecting:** one default-off block at the end of
+  `box/lager/devices/serial_id.py` and one default-off check in
+  `box/lager/protocols/uart/uart_bridge.py` (both in the ledger). Not run on
+  Linux hardware.
+
+Verified on the bench with a CP2102 adapter (TX looped to RX) behind the
+Acroname: `lager instruments` lists it with `/dev/ttyUSB0`; `lager nets add`
+records its USB identity; `lager uart -i` echoes typed text; a `lager python`
+script loops data through `Net.connect()` and through raw
+`serial.Serial('/dev/ttyUSB0')`; baud changes, a second open, and powering
+the adapter off and on through the hub behave as described above.
+
+**Open:**
+- Only pySerial can open a host port. A non-Python tool in the container
+  (picocom, a vendor flasher) finds no `/dev/ttyUSB0`.
+- The RFC 2217 port is unauthenticated on the Mac's loopback for as long as
+  a port is open, like the 8765 and 8085 forwards.
+- `/dev/serial/by-id` and `by-path` names are not provided.
+- A net with neither a USB identity nor a USB serial reconnects by checking
+  that its path exists, which is never true in the container.
+- Multi-interface chips (FT2232H, FT4232H) are covered by tests only.
+- A Prolific PL2303G adapter (067b:23a3, in Lager's catalog) gets no port on
+  macOS without Prolific's driver; the installer should say so.
