@@ -549,7 +549,7 @@ class RigolDP700(SupplyNet):
             return
         print(f"{GREEN}OVP Limit: {self.get_overvoltage_protection_value()}{RESET}")
 
-    def state(self) -> None:
+    def state(self) -> dict:
         enabled = self.output_is_enabled()
         v = self.measure_voltage() if enabled else self.get_channel_voltage()
         i = self.measure_current() if enabled else self.get_channel_current()
@@ -569,8 +569,9 @@ class RigolDP700(SupplyNet):
         print(f"    OCP Tripped: {f'{RED}YES{RESET}' if ocp_tripped else f'{GREEN}NO{RESET}'}")
         print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
         print(f"    OVP Tripped: {f'{RED}YES{RESET}' if ovp_tripped else f'{GREEN}NO{RESET}'}")
+        return self._state_report()
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         enabled = self.output_is_enabled()
         v_set = self.get_channel_voltage()
         i_set = self.get_channel_current()
@@ -597,6 +598,7 @@ class RigolDP700(SupplyNet):
         print(f"    OVP Tripped: {f'{RED}YES{RESET}' if ovp_tripped else f'{GREEN}NO{RESET}'}")
         print(f"{GREEN}Voltage_Max: {hw['voltage_max']}{RESET}")
         print(f"{GREEN}Current_Max: {hw['current_max']}{RESET}")
+        return self._state_report()
 
 
 def create_device(net_info: dict) -> RigolDP700:

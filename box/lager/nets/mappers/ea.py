@@ -1,103 +1,125 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-import pyvisa
+"""Net-level API for an EA PSB supply net (``Net.get(name, NetType.PowerSupply)``).
 
-CONDITION_OVP = 0x1
-CONDITION_OCP = 0x2
-CONDITION_OPP = 0x4
+Every call here ends up on ``lager.power.supply.ea.EA`` through the device
+proxy, so each method names a method that driver actually defines. A test
+checks that (test/unit/box/test_ea_mapper_targets.py).
+
+EA PSB units are bidirectional (source and sink) and have a photovoltaic
+simulator, but the supply driver only drives the source side. Sink and
+power-protection calls are refused here with a clear error; the PV simulator
+is the ``solar`` net (``lager.power.solar``).
+"""
+
+
+def _unsupported(what):
+    return NotImplementedError(
+        f"{what} is not supported on an EA supply net through the Python API"
+    )
+
 
 class EAMapper:
     def __init__(self, net, device):
         self.net = net
         self.device = device
 
+    # ----------------------------- setpoints -----------------------------
+
     def set_voltage(self, voltage):
-        self.set_source_voltage(voltage)
+        self.device.voltage(value=voltage)
 
     def set_current(self, current):
-        self.set_source_current(current)
+        self.device.current(value=current)
 
     def set_ovp(self, voltage):
-        self.set_source_voltage_protection(voltage)
+        self.device.ovp(value=voltage)
 
     def set_ocp(self, current):
-        self.set_source_current_protection(current)
+        self.device.ocp(value=current)
 
     def set_opp(self, power):
-        self.set_source_power_protection(power)
+        raise _unsupported("Over-power protection")
+
+    # ----------------------------- protection ----------------------------
 
     def get_ovp_limit(self):
-        return self.get_source_voltage_protection()
+        return self.device.get_overvoltage_protection_value()
+
+    def get_ocp_limit(self):
+        return self.device.get_overcurrent_protection_value()
+
+    # Old name, kept so existing scripts keep working.
+    get_source_ocp_limit = get_ocp_limit
 
     def is_ovp(self):
-        register = int(self.get_condition_register())
-        return bool(register & CONDITION_OVP)
-
-    def clear_supply_ovp(self):
-        return self.supply_ovoltage_count()
-
-    def get_source_ocp_limit(self):
-        return self.get_source_current_protection()
+        return bool(self.device.overvoltage_protection_is_tripped())
 
     def is_ocp(self):
-        register = int(self.get_condition_register())
-        return bool(register & CONDITION_OCP)
-
-    def clear_supply_ocp(self):
-        return self.supply_ocurrent_count()
+        return bool(self.device.overcurrent_protection_is_tripped())
 
     def is_opp(self):
-        register = int(self.get_condition_register())
-        return bool(register & CONDITION_OPP)
+        raise _unsupported("Over-power protection")
+
+    def clear_ovp(self):
+        return self.device.clear_ovp()
+
+    def clear_ocp(self):
+        return self.device.clear_ocp()
+
+    # Old names, kept so existing scripts keep working.
+    clear_supply_ovp = clear_ovp
+    clear_supply_ocp = clear_ocp
 
     def clear_supply_opp(self):
-        return self.supply_opower_count()
+        raise _unsupported("Over-power protection")
+
+    # ---------------------------- measurements ---------------------------
 
     def voltage(self):
-        return self.measure_voltage()
+        return self.device.measure_voltage()
 
     def current(self):
-        return self.measure_current()
+        return self.device.measure_current()
 
     def power(self):
-        return self.measure_power()
+        return self.device.measure_power()
 
-    def set_mode(self, mode):
-        """
-            Intentional no-op, set_mode is for Keithley which can function as battery or power supply
-        """
+    # ------------------------------- output ------------------------------
+
+    def enable(self):
+        self.device.enable()
+
+    def disable(self):
+        self.device.disable()
+
+    def set_mode(self, mode=None):
+        """Intentional no-op; set_mode is for the Keithley, which can act as a battery or a supply."""
         pass
 
+    # --------------------------- not supported ---------------------------
+
     def set_resistance_load(self, *, ocp, opp, resistance, current):
-        self.enable_resistance_mode()
-        self.set_sink_current_protection(ocp)
-        self.set_sink_power_protection(opp)
-        self.set_sink_resistance(resistance)
-        self.set_sink_current(current)
+        raise _unsupported("Sink (electronic load) mode")
 
     def slew_rate(self):
-        raise NotImplementedError
+        raise _unsupported("Slew rate")
 
     def resistance(self):
-        raise NotImplementedError
+        raise _unsupported("Sink resistance")
 
     def clear_sink_opp(self):
-        return self.sink_opower_count()
+        raise _unsupported("Sink (electronic load) mode")
 
     def clear_sink_ocp(self):
-        return self.sink_ocurrent_count()
+        raise _unsupported("Sink (electronic load) mode")
 
     def start_pv_mode(self):
-        self.disable_resistance_mode()
-        self.start_photovoltaic_sim()
+        raise _unsupported("PV simulation (use a solar net)")
 
     def stop_pv_mode(self):
-        state = self.get_photovoltaic_sim_state()
-        if state != 'STOP':
-            self.stop_photovoltaic_sim()
-        self.enable_resistance_mode()
+        raise _unsupported("PV simulation (use a solar net)")
 
     def __getattr__(self, attr):
         return getattr(self.device, attr)
-    

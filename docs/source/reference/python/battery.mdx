@@ -13,11 +13,10 @@ from lager import Net, NetType
 
 ## Methods
 
-The Net-based API provides methods that can either get or set values. When called with a value, they set it. When called without a value, they print the current value and return `None`.
-
-<Warning>
-A getter such as `soc()`, `voc()`, `mode()`, `capacity()`, `current_limit()`, `ovp()`, `ocp()` or `model()` runs in the box's hardware service. The value goes to `/tmp/lager-hardware-service.log` on the box, not to your script, and the call returns `None`. `print_state()` and the capacity clamp warning go to the same log. To read values in a script, use [`get_monitor_state()`](#get_monitor_state), `terminal_voltage()`, `current()` or `esr()`. See [#845](https://github.com/lagerdata/lager/issues/845).
-</Warning>
+The Net-based API provides methods that can either get or set values. When called with a value, they set it. When called without a value, they return the current value: a number, or `None` when the
+read fails. `mode()` and `model()` return a string, and `print_state()` returns the same dict
+as [`get_monitor_state()`](#get_monitor_state). The printed text and the capacity clamp
+warning go to the box's hardware-service log, not to your script.
 
 | Method | Description |
 |--------|-------------|
@@ -40,7 +39,7 @@ A getter such as `soc()`, `voc()`, `mode()`, `capacity()`, `current_limit()`, `o
 | `disable()` | Disable battery simulation output |
 | `clear_ovp()` | Clear over-voltage protection fault |
 | `clear_ocp()` | Clear over-current protection fault |
-| `print_state()` | Print the battery state to the box's hardware-service log; returns `None` |
+| `print_state()` | Return the battery state as a dict (same as `get_monitor_state()`) |
 | `get_monitor_state()` | Read the full battery state; returns a dict |
 | `terminal_voltage()` | Read terminal voltage (returns float) |
 | `current()` | Read current (returns float) |
@@ -309,11 +308,11 @@ batt.clear_ocp()  # Clear over-current fault
 
 ### `print_state()`
 
-Print comprehensive battery simulator state. The text goes to the box's hardware-service log, not to your script, and the call returns `None`.
+Return the battery simulator state as the same dict `get_monitor_state()` returns. The printed text goes to the box's hardware-service log, not to your script.
 
 ```python
-batt.print_state()
-# Prints: terminal voltage, current, ESR, SOC, VOC, capacity, protection status
+state = batt.print_state()
+# terminal voltage, current, ESR, SOC, VOC, capacity, protection status
 ```
 
 ### `terminal_voltage()` / `current()` / `esr()`
@@ -470,7 +469,7 @@ batt.disable()
 - Use `mode('static')` for fixed parameters, `mode('dynamic')` for evolving behavior
 - Always call `disable()` when finished
 - `terminal_voltage()`, `current()`, and `esr()` return values (for use in code)
-- `print_state()` and the getters print to the box's hardware-service log; use `get_monitor_state()` in code
+- The getters and `print_state()` return their readings; the printed text goes to the box's hardware-service log
 - Protection thresholds help prevent damage to your DUT
 - Keithley 2281S limits: 0-20 V output, 0.001-6.0 A current, capacity must be > 0
 - OVP range: 0-60 V; OCP range: 0.001-6.0 A

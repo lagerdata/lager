@@ -457,11 +457,13 @@ class SiglentSPD1000X(SupplyNet):
             print(f"{GREEN}Voltage_Max: {hw['voltage_max']}{RESET}")
             print(f"{GREEN}Current_Max: {hw['current_max']}{RESET}")
 
-    def state(self) -> None:
+    def state(self) -> dict:
         self._print_state(full=False)
+        return self._state_report()
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         self._print_state(full=True)
+        return self._state_report()
 
 
 def create_device(net_info: dict) -> SiglentSPD1000X:

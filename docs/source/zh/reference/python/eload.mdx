@@ -24,7 +24,7 @@ from lager import Net, NetType
 | `power(value)` | 设置或读取恒功率值（W） |
 | `enable()` | 打开电子负载输入 |
 | `disable()` | 关闭电子负载输入 |
-| `print_state()` | 把状态打印到 Box 的硬件服务日志；返回 `None` |
+| `print_state()` | 以 dict 返回状态（与 `get_state_dict()` 相同） |
 | `get_state_dict()` | 读取完整状态；返回一个 dict |
 | `get_input_state()` | 读取输入是否打开（返回 bool） |
 | `measured_voltage()` | 读取实测电压（返回浮点数） |
@@ -151,11 +151,11 @@ eload.disable()  # Stop sinking current
 
 ### `print_state()`
 
-打印电子负载的完整状态。文本写入 Box 的硬件服务日志，而不是您的脚本，并且调用返回 `None`。在脚本中请使用 `get_state_dict()`。请参阅 [#845](https://github.com/lagerdata/lager/issues/845)。
+返回电子负载状态，与 `get_state_dict()` 返回同样的 dict。打印的文本写入 Box 的硬件服务日志，而不是您的脚本。
 
 ```python
-eload.print_state()
-# Prints: mode, current/voltage/resistance/power settings, measured values, input state
+state = eload.print_state()
+# mode, input state, measured values, and the active mode's setting
 ```
 
 ### `get_state_dict()`
@@ -299,7 +299,7 @@ psu.disable()
 - 请先用 `mode()` 设置工作模式，再设置对应的数值
 - `current()`、`voltage()`、`resistance()`、`power()` 等方法既能读取也能设置
 - `measured_voltage()`、`measured_current()`、`measured_power()` 返回实际测量值
-- `print_state()` 打印到 Box 的硬件服务日志；`get_state_dict()` 和测量方法返回数值（供代码使用）
+- `print_state()` 返回与 `get_state_dict()` 相同的 dict；打印的文本写入 Box 的硬件服务日志
 - 请务必调用 `enable()` 才会开始吸收电流
 - 结束时请务必调用 `disable()`
 - 低于 0.02 欧姆的电阻值可能被仪器钳位
