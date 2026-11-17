@@ -966,11 +966,17 @@ def edit(name, ip, user, version, new_name, yes):
             click.echo("Cancelled. Box not modified.")
             return
 
+    # A Box on macOS records the port its script service is published on;
+    # carry it across a rename. None for every Box that records none.
+    stored = load_boxes().get(name)
+    python_port = stored.get("python_port") if isinstance(stored, dict) else None
+
     # If renaming, delete old entry
     if new_name and new_name != name:
         delete_box(name)
 
-    add_box(updated_name, updated_ip, updated_user, updated_version)
+    add_box(updated_name, updated_ip, updated_user, updated_version,
+            python_port=python_port)
 
     changes_made = []
     if new_name and new_name != name:

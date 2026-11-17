@@ -402,8 +402,12 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
             stored_user = get_box_user(box)
             user = stored_user or "lagerdata"
     elif ip is None:
-        click.secho("Error: Either --box or --ip is required", fg='red', err=True)
-        ctx.exit(1)
+        # Neither --box nor --ip: install onto this machine. A remote install,
+        # everything below, is untouched by this branch.
+        from ._local_install import install_locally
+        install_locally(ctx, version=version, version_defaulted=version_defaulted,
+                        yes=yes, fork=fork)
+        return
     else:
         # Default username if not provided
         if user is None:
@@ -417,6 +421,15 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
         for line in VALID_FORMATS_CHEATSHEET:
             click.echo(line, err=True)
         ctx.exit(1)
+
+    # A loopback address on a Mac is the Box installed on that Mac. False on
+    # every other platform, where the SSH path below is unchanged.
+    from ._local_install import is_local_target
+    if is_local_target(ip):
+        from ._local_install import install_locally
+        install_locally(ctx, version=version, version_defaulted=version_defaulted,
+                        yes=yes, fork=fork)
+        return
 
     ssh_host = f"{user}@{ip}"
 
