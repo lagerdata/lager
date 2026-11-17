@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 350 files)
+### Local Unit Tests (`test/unit/` -- 351 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 190 files)
+#### Box Unit Tests (`test/unit/box/` -- 191 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
