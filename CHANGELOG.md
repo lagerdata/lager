@@ -57,6 +57,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   and the file was ignored without a message. The command now exits with a
   usage error naming both options.
 
+- **Per-call I2C and SPI `overrides` now apply to that one call only.** An
+  `overrides` dict passed to an I2C `read`, `write`, `write_read` or `scan`, or
+  to an SPI `read`, `read_write` or `transfer`, used to stay on the net's driver
+  for the rest of the script. The driver now returns to its configured settings
+  after the call, an I2C `pull_ups`-only override no longer resets the bus to
+  100 kHz, and `SPINet` hex output is padded to the word size set by `config()`.
 
 ## [0.65.0] - 2026-11-19
 

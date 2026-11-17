@@ -36,16 +36,17 @@ class SPIHardwareAdapter:
 
     def read(self, n_words, fill=0xFF, keep_cs=False, overrides=None) -> dict:
         from lager.protocols.spi import dispatcher as _disp
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
-        result = drv.read(int(n_words), fill=int(fill), keep_cs=bool(keep_cs))
-        return self._result(drv, result)
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            result = drv.read(int(n_words), fill=int(fill),
+                              keep_cs=bool(keep_cs))
+            return self._result(drv, result)
 
     def read_write(self, data, keep_cs=False, overrides=None) -> dict:
         from lager.protocols.spi import dispatcher as _disp
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
-        result = drv.read_write([int(b) for b in (data or [])],
-                                keep_cs=bool(keep_cs))
-        return self._result(drv, result)
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            result = drv.read_write([int(b) for b in (data or [])],
+                                    keep_cs=bool(keep_cs))
+            return self._result(drv, result)
 
     def transfer(self, data, n_words=None, fill=0xFF, keep_cs=False,
                  overrides=None) -> dict:
@@ -56,9 +57,9 @@ class SPIHardwareAdapter:
             buf = buf + [int(fill)] * (n - len(buf))
         elif len(buf) > n:
             buf = buf[:n]
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
-        result = drv.read_write(buf, keep_cs=bool(keep_cs))
-        return self._result(drv, result)
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            result = drv.read_write(buf, keep_cs=bool(keep_cs))
+            return self._result(drv, result)
 
 
 def create_device(net_info, **_):

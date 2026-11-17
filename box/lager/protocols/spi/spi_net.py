@@ -132,7 +132,7 @@ class SPINet:
 
         if output_format == "list":
             return result
-        return self._format_output(result, output_format)
+        return self._format_output(result, output_format, drv)
 
     def read_write(
         self,
@@ -164,7 +164,7 @@ class SPINet:
 
         if output_format == "list":
             return result
-        return self._format_output(result, output_format)
+        return self._format_output(result, output_format, drv)
 
     def transfer(
         self,
@@ -210,7 +210,7 @@ class SPINet:
 
         if output_format == "list":
             return result
-        return self._format_output(result, output_format)
+        return self._format_output(result, output_format, drv)
 
     def write(
         self,
@@ -238,20 +238,23 @@ class SPINet:
         drv.read_write(data, keep_cs=keep_cs)
         # Discard response
 
-    def _format_output(self, data: List[int], fmt: str) -> Any:
+    def _format_output(self, data: List[int], fmt: str, drv=None) -> Any:
         """
         Format output data according to the requested format.
 
         Args:
             data: List of words to format
             fmt: Output format - "hex", "bytes", or "json"
+            drv: The driver that ran the transfer. Its live word size wins
+                 over the saved one, so hex padding follows config(word_size=)
+                 made after this net object was created.
 
         Returns:
             Formatted output (string or dict depending on format)
         """
-        import json
-
         word_size = self.params.get("word_size", 8)
+        if drv is not None:
+            word_size = getattr(drv, "_word_size", word_size)
 
         if fmt == "json":
             return {"data": data}

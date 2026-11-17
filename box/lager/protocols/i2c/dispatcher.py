@@ -12,6 +12,7 @@ import json
 import re
 import sys
 import threading
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lager.dispatchers import helpers
@@ -29,6 +30,7 @@ __all__ = [
     'write',
     'transfer',
     '_resolve_net_and_driver',
+    '_driver_for_call',
 ]
 
 # Role constant for I2C nets
@@ -97,6 +99,14 @@ def achieved_frequency_hz(rec, requested_hz):
 # Driver cache to avoid recreating drivers for each call
 _driver_cache: Dict[str, 'I2CBase'] = {}
 _driver_cache_lock = threading.Lock()
+
+# One lock per net, held across a whole per-call-override transaction (apply,
+# I/O, restore), so two calls with different overrides cannot interleave on the
+# same cached driver.
+_net_locks: Dict[str, threading.RLock] = {}
+
+# The settings a per-call override may change.
+_OVERRIDE_KEYS = ("frequency_hz", "pull_ups")
 
 
 def _get_pin_config(rec: Dict[str, Any]) -> Dict[str, int]:
@@ -328,6 +338,10 @@ def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):
 
     Uses shared helpers for net lookup and role validation.
     Caches drivers for efficiency. Thread-safe via _driver_cache_lock.
+
+    ``overrides`` given here are applied to the cached driver and STAY applied:
+    this is the persistent path config() uses. A per-call override must go
+    through _driver_for_call(), which restores the driver afterwards.
     """
     if overrides is None:
         overrides = {}
@@ -339,12 +353,14 @@ def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):
             drv = _driver_cache[cache_key]
             # Apply any configuration overrides
             if overrides:
-                config_params = {}
-                if "frequency_hz" in overrides:
-                    config_params["frequency_hz"] = overrides["frequency_hz"]
-                if "pull_ups" in overrides:
-                    config_params["pull_ups"] = overrides["pull_ups"]
+                config_params = {k: overrides[k] for k in _OVERRIDE_KEYS
+                                 if overrides.get(k) is not None}
                 if config_params:
+                    # Every driver's config() defaults frequency_hz to 100 kHz,
+                    # so a pull_ups-only change must carry the live frequency
+                    # or it silently resets the bus clock.
+                    config_params.setdefault(
+                        "frequency_hz", _live_settings(drv)["frequency_hz"])
                     drv.config(**config_params)
             return drv
 
@@ -358,6 +374,44 @@ def _resolve_net_and_driver(netname: str, overrides: Dict[str, Any] = None):
         _driver_cache[cache_key] = drv
 
         return drv
+
+
+def _live_settings(drv) -> Dict[str, Any]:
+    """The driver's current frequency and pull-up setting, as config() takes them."""
+    return {
+        "frequency_hz": getattr(drv, "_frequency_hz", 100_000),
+        "pull_ups": getattr(drv, "_pull_ups", None),
+    }
+
+
+def _net_lock(netname: str) -> threading.RLock:
+    with _driver_cache_lock:
+        return _net_locks.setdefault(netname, threading.RLock())
+
+
+@contextmanager
+def _driver_for_call(netname: str, overrides: Optional[Dict[str, Any]] = None):
+    """
+    Yield the net's cached driver with *overrides* applied for this call only.
+
+    The driver is restored to the settings it had before the call when the
+    block exits, whether or not the I/O raised. ``overrides`` that change
+    nothing (empty, or every value None) skip the apply/restore entirely.
+    Persistent changes go through config(), not here.
+    """
+    with _net_lock(netname):
+        drv = _resolve_net_and_driver(netname)
+        changes = {k: overrides[k] for k in _OVERRIDE_KEYS
+                   if overrides and overrides.get(k) is not None}
+        if not changes:
+            yield drv
+            return
+        saved = _live_settings(drv)
+        try:
+            drv.config(**{**saved, **changes})
+            yield drv
+        finally:
+            drv.config(**saved)
 
 
 def _format_output(data: List[int], fmt: str = "hex") -> str:
@@ -498,8 +552,8 @@ def scan(
     """
     Scan I2C bus for connected devices.
     """
-    drv = _resolve_net_and_driver(netname, overrides)
-    found = drv.scan(start_addr=start_addr, end_addr=end_addr)
+    with _driver_for_call(netname, overrides) as drv:
+        found = drv.scan(start_addr=start_addr, end_addr=end_addr)
 
     # Print i2cdetect-style grid
     print(_format_scan_output(found, start_addr, end_addr))
@@ -524,8 +578,8 @@ def read(
     """
     Read bytes from an I2C device.
     """
-    drv = _resolve_net_and_driver(netname, overrides)
-    result = drv.read(address, num_bytes)
+    with _driver_for_call(netname, overrides) as drv:
+        result = drv.read(address, num_bytes)
 
     output = _format_output(result, output_format)
     print(output)
@@ -542,8 +596,8 @@ def write(
     """
     Write bytes to an I2C device.
     """
-    drv = _resolve_net_and_driver(netname, overrides)
-    drv.write(address, data)
+    with _driver_for_call(netname, overrides) as drv:
+        drv.write(address, data)
 
     print(f"Wrote {len(data)} byte(s) to 0x{address:02x}")
 
@@ -563,8 +617,8 @@ def transfer(
     if data is None:
         data = []
 
-    drv = _resolve_net_and_driver(netname, overrides)
-    result = drv.write_read(address, data, num_bytes)
+    with _driver_for_call(netname, overrides) as drv:
+        result = drv.write_read(address, data, num_bytes)
 
     output = _format_output(result, output_format)
     print(output)

@@ -28,29 +28,29 @@ class I2CHardwareAdapter:
 
     def scan(self, start_addr=None, end_addr=None, overrides=None) -> list:
         from lager.protocols.i2c import dispatcher as _disp
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
         kwargs = {}
         if start_addr is not None:
             kwargs["start_addr"] = int(start_addr)
         if end_addr is not None:
             kwargs["end_addr"] = int(end_addr)
-        return [int(a) for a in drv.scan(**kwargs)]
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            return [int(a) for a in drv.scan(**kwargs)]
 
     def read(self, address, num_bytes, overrides=None) -> list:
         from lager.protocols.i2c import dispatcher as _disp
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
-        return [int(b) for b in drv.read(int(address), int(num_bytes))]
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            return [int(b) for b in drv.read(int(address), int(num_bytes))]
 
     def write(self, address, data, overrides=None) -> None:
         from lager.protocols.i2c import dispatcher as _disp
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
-        drv.write(int(address), [int(b) for b in (data or [])])
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            drv.write(int(address), [int(b) for b in (data or [])])
 
     def write_read(self, address, data, num_bytes, overrides=None) -> list:
         from lager.protocols.i2c import dispatcher as _disp
-        drv = _disp._resolve_net_and_driver(self._netname, overrides)
-        return [int(b) for b in drv.write_read(
-            int(address), [int(b) for b in (data or [])], int(num_bytes))]
+        with _disp._driver_for_call(self._netname, overrides) as drv:
+            return [int(b) for b in drv.write_read(
+                int(address), [int(b) for b in (data or [])], int(num_bytes))]
 
 
 def create_device(net_info, **_):
