@@ -1605,6 +1605,10 @@ def _saved_net_ttys() -> set:
 
 def list_instruments() -> List[dict]:
     """Return all detected instruments, sorted by name."""
+    if os.environ.get("LAGER_HOSTLINK") == "1":
+        # This container has no USB; the host agent runs this scan instead.
+        from lager.hostlink.usb_proxy import list_instruments as host_instruments
+        return host_instruments()
     custom = custom_instruments()
     instruments = scan_usb()
     # Everything the box knows owns a tty joins the handshake exclusion set:

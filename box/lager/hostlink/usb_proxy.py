@@ -19,6 +19,11 @@ import json
 import requests
 
 RELAY_URL = "http://localhost:8080/v1/usb/call"
+IDS_URL = "http://localhost:8080/v1/usb/ids"
+INSTRUMENTS_URL = "http://localhost:8080/v1/instruments/list"
+# Reading the bus is quick; a full instrument scan may handshake with an arm.
+_IDS_TIMEOUT_S = 10.0
+_SCAN_TIMEOUT_S = 60.0
 # A power cycle holds the port off for up to ten seconds, then waits for the
 # device to come back; the drivers bound their own operations below this.
 _CALL_TIMEOUT_S = 120.0
@@ -97,3 +102,31 @@ class HostUSBNet:
 
 def controller_for(net_info):
     return HostUSBNet(net_info)
+
+
+def enumerated_usb_ids():
+    """``lager.util.self_restart.enumerated_usb_ids``, for the host's bus.
+
+    ``{(vid, pid): [serial, ...]}``, or None when the host cannot say -- the
+    same "unknown" a Linux Box gets when sysfs cannot be read.
+    """
+    try:
+        resp = requests.get(IDS_URL, timeout=_IDS_TIMEOUT_S)
+        devices = resp.json().get("devices") if resp.ok else None
+        if devices is None:
+            return None
+        return {(int(vid), int(pid)): list(serials) for vid, pid, serials in devices}
+    except Exception:  # noqa: BLE001 - unreachable or malformed is "unknown"
+        return None
+
+
+def list_instruments():
+    """``usb_scanner.list_instruments``, scanned on the host."""
+    resp = requests.get(INSTRUMENTS_URL, timeout=_SCAN_TIMEOUT_S)
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {"error": resp.text}
+    if not resp.ok or not isinstance(payload.get("instruments"), list):
+        raise RuntimeError(payload.get("error") or "the host agent returned no instrument list")
+    return payload["instruments"]

@@ -109,6 +109,10 @@ def enumerated_usb_ids():
     and match against it with ``usb_address_enumerated``, rather than globbing
     sysfs once per address.
     """
+    if os.environ.get("LAGER_HOSTLINK") == "1":
+        # This container has no USB; the bus is the host's.
+        from ..hostlink.usb_proxy import enumerated_usb_ids as host_usb_ids
+        return host_usb_ids()
     found = {}
     try:
         for dev_dir in glob.glob("/sys/bus/usb/devices/*/"):
