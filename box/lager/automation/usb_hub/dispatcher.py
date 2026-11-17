@@ -66,6 +66,10 @@ def _load_net_definitions() -> Dict[str, Dict]:
 
 
 def _controller_for(net_info: Dict) -> USBNet:
+    if os.environ.get("LAGER_HOSTLINK") == "1":
+        # This container has no USB; the hub is driven by the host agent.
+        from ...hostlink.usb_proxy import controller_for
+        return controller_for(net_info)
     instr = (net_info.get("instrument") or "").lower()
     if "acroname" in instr:
         return AcronameUSBNet(net_info)
