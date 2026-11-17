@@ -598,6 +598,12 @@ class Net:
                     net.device = mapper_factory(net, net.device_type, item)
                     return net
 
+                if (os.environ.get("LAGER_HOSTLINK") == "1"
+                        and role in (NetType.GPIO, NetType.ADC, NetType.DAC)):
+                    # This container has no USB; the host agent drives these.
+                    from ..hostlink.io_proxy import for_role
+                    return for_role(item['role'], name, item)
+
                 if role == NetType.GPIO:
                     # Check for instrument type - support MCC_USB-202, FT232H, or default to LabJack
                     instrument = item.get('instrument', '').lower()
