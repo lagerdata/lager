@@ -130,6 +130,10 @@ class UARTBridge:
         Find the /dev/tty* device path for a USB serial adapter by serial number.
         Uses sysfs to map USB device serial to tty device.
         """
+        if os.environ.get("LAGER_HOSTLINK") == "1":
+            # This container has no USB; the host agent runs this lookup.
+            from ...hostlink.serial_proxy import find_device_by_serial
+            return find_device_by_serial(serial_number)
         sys_tty = Path("/sys/class/tty")
         if not sys_tty.exists():
             return None

@@ -456,3 +456,12 @@ def list_cables() -> List[Dict[str, Any]]:
             "by_path": by_path.get(tty_dev.name),
         })
     return cables
+
+
+if os.environ.get("LAGER_HOSTLINK") == "1":
+    # This container has no USB; the lookups above are answered by the host
+    # agent instead. Never true on a Linux Box.
+    from ..hostlink import serial_proxy as _host_serial
+
+    _host_serial.install_lookups(globals())
+    _host_serial.install_pyserial()
