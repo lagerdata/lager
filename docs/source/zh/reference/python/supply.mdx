@@ -30,8 +30,8 @@ from lager import Net, NetType
 | `is_ocp()` | 检查 OCP 故障是否已触发 |
 | `clear_ovp()` | 清除过压保护故障 |
 | `clear_ocp()` | 清除过流保护故障 |
-| `state()` | 把电源状态打印到 Box 的硬件服务日志；返回 `None` |
-| `get_full_state()` | 把扩展状态打印到同一个日志；返回 `None` |
+| `state()` | 以 dict 返回电源状态 |
+| `get_full_state()` | 以 dict 返回扩展状态 |
 | `set_mode()` | 仅限 Keithley 2281S：把仪器切换到直流电源模式 |
 | `disable_ocp(channel)` | 在支持的仪器上关闭过流保护 |
 | `disable_ovp(channel)` | 在支持的仪器上关闭过压保护 |
@@ -218,12 +218,11 @@ psu.clear_ocp()
 
 ### `state()`
 
-打印完整的电源状态，包括通道、是否已打开、模式（CV/CC）、实测电压/电流/功率，以及保护状态。
-
-该调用在 Box 的硬件服务中运行。文本写入 Box 上的 `/tmp/lager-hardware-service.log`，而不是您的脚本，并且调用返回 `None`。若要在脚本中读取状态，请使用 [`get_monitor_state()`](#get_monitor_state-channel)。请参阅 [#845](https://github.com/lagerdata/lager/issues/845)。
+返回该 Net 通道的电源状态：一个 dict，包含 `channel` 以及 [`get_monitor_state()`](#get_monitor_state-channel) 返回的各个键。打印的报告写入 Box 的硬件服务日志，而不是您的脚本。
 
 ```python
-psu.state()
+s = psu.state()
+print(s['voltage'], s['ocp_tripped'])
 ```
 
 **输出示例：**
@@ -243,7 +242,7 @@ OVP Limit: 3.6000
 
 ### `get_full_state()`
 
-打印扩展状态，包括全部测量值、已配置的设定值、保护限值和硬件最大额定值。与 `state()` 一样，它打印到硬件服务日志并返回 `None`。
+返回扩展状态：全部测量值、已配置的设定值、保护限值和硬件最大额定值，与 `state()` 返回同样的 dict。打印的报告写入硬件服务日志。
 
 ```python
 psu.get_full_state()
@@ -290,7 +289,7 @@ print(state['voltage'], state['current'], state['enabled'])
 | `voltage_max`、`current_max` | 硬件通道的额定值 |
 | `ocp_limit`、`ocp_tripped`、`ovp_limit`、`ovp_tripped` | 保护限值与触发状态 |
 
-请传入该 Net 的通道。不传通道时，DP832 这样的多通道电源会读取其前面板上选中的输出（[#846](https://github.com/lagerdata/lager/issues/846)）。`get_monitor_states([1, 2])` 读取多个通道，并返回 `{'1': {...}, '2': {...}}`。
+不传通道时，读取该 Net 自己的通道。`get_monitor_states([1, 2])` 读取多个通道，并返回 `{'1': {...}, '2': {...}}`。
 
 ### `disable_ocp(channel)` / `disable_ovp(channel)`
 
@@ -305,7 +304,7 @@ psu.disable_ovp(psu.channel)
 | Rigol DP700、Rigol DP800、Keysight E36200 | 保护被关闭 |
 | Keysight E36300、Keithley 2281S、Siglent SPD1000X、EA | 引发错误 |
 
-请传入该 Net 的通道。不传通道时，多通道电源会作用于其前面板上选中的输出（[#846](https://github.com/lagerdata/lager/issues/846)）。设置了 `max_voltage` 安全限值的 Net 会拒绝关闭 OVP，设置了 `max_current` 的 Net 会拒绝关闭 OCP。
+不传通道时，作用于该 Net 自己的通道。设置了 `max_voltage` 安全限值的 Net 会拒绝关闭 OVP，设置了 `max_current` 的 Net 会拒绝关闭 OCP。
 
 ## 示例
 
@@ -418,11 +417,11 @@ psu.disable()
 | Keithley | 2281S | 1 | 20V/6A/120W，支持电池模拟模式 |
 | Keysight | E36200 系列 | 2 | E36233A：每通道 30V/20A |
 | Keysight | E36300 系列 | 3 | E36311A/12A/13A |
-| EA | PSB 10060-60 / 10080-60 | 1 | 双象限。请参阅下面的警告 |
+| EA | PSB 10060-60 / 10080-60 | 1 | 双象限。请参阅下面的说明 |
 
-<Warning>
-目前 EA 电源无法通过 `Net.get()` 使用。`set_voltage()`、`set_current()`、`set_ovp()`、`set_ocp()`、`enable()` 和 `disable()` 会以 "Function not found" 失败。对 EA 电源请使用 [`lager supply`](/source/zh/reference/cli/supply)。请参阅 [#843](https://github.com/lagerdata/lager/issues/843)。
-</Warning>
+<Note>
+EA 电源 Net 只驱动源（source）一侧。通过 `Net.get()` 调用吸收（电子负载）模式、过功率保护和 PV 仿真时会抛出 `NotImplementedError`。PV 仿真请使用 [solar Net](/source/zh/reference/python/solar)。
+</Note>
 
 ## 说明
 
@@ -433,4 +432,4 @@ psu.disable()
 - 在 Keithley 2281S 上，低于电压设定值的 OVP 会引发错误
 - 电压和电流的上限取决于硬件能力
 - 多通道电源：每个通道配置为一个单独的 Net
-- `state()` 和 `get_full_state()` 打印到 Box 的硬件服务日志并返回 `None`；在代码中取值请用 `voltage()`、`current()`、`power()` 或 `get_monitor_state()`
+- `state()` 和 `get_full_state()` 返回 dict；打印的报告写入 Box 的硬件服务日志

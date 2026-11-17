@@ -384,7 +384,7 @@ class EA(SupplyNet):
     # -------- latched trips & clear (parity with Rigol/Keithley) --------
     # EA exposes alarm counters; treat counter>0 as “tripped” and provide a clear.
 
-    def overvoltage_protection_is_tripped(self) -> bool:
+    def overvoltage_protection_is_tripped(self, channel=None) -> bool:
         # EA power supplies only trip OVP when output is enabled and voltage exceeds protection limit
         # A voltage setpoint above OVP limit while output is disabled is NOT a trip condition
         try:
@@ -413,7 +413,7 @@ class EA(SupplyNet):
             # Most conservative fallback: never report false trips
             return False
 
-    def overcurrent_protection_is_tripped(self) -> bool:
+    def overcurrent_protection_is_tripped(self, channel=None) -> bool:
         # EA power supplies only trip OCP when output is enabled and current exceeds protection limit
         # A current setpoint above OCP limit while output is disabled is NOT a trip condition
         try:
@@ -714,6 +714,14 @@ class EA(SupplyNet):
             self._out_off()
             time.sleep(0.2)
 
+    # Net.enable()/Net.disable() call these on every non-Keithley supply.
+    # EA is single-output, so the channel is accepted and ignored.
+    def enable_output(self, channel=None) -> None:
+        self.enable()
+
+    def disable_output(self, channel=None) -> None:
+        self.disable()
+
     def set_mode(self) -> None:
         """
         No-op for EA in 'supply' CLI. (EA’s PV/solar simulator mode is handled by `lager solar`.)
@@ -763,7 +771,7 @@ class EA(SupplyNet):
         ovp_limit = self._get_ovp()
         print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
 
-    def state(self) -> None:
+    def state(self) -> dict:
         on = self._enabled()
         v_set = self._get_vset()
         i_set = self._get_iset()
@@ -803,8 +811,9 @@ class EA(SupplyNet):
         print(f"    OCP Tripped: {'YES' if ocp_trip else 'NO'}")
         print(f"OVP Limit: {ovp}")
         print(f"    OVP Tripped: {'YES' if ovp_trip else 'NO'}")
+        return self._state_report()
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         """
         Get full state including measurements, setpoints, and limits.
         Format matches Rigol implementation for TUI compatibility.
@@ -882,8 +891,19 @@ class EA(SupplyNet):
         print(f"    OVP Tripped: {ovp_status}")
         print(f"{GREEN}Voltage_Max: {v_max}{RESET}")
         print(f"{GREEN}Current_Max: {i_max}{RESET}")
+        return self._state_report()
 
     # TUI-required methods
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        """Parse an instrument reply as a float, or None if it is not one.
+
+        ``_safe_query`` turns a failed query into "n/a"; that must read as
+        unknown, never as 0.0. Tolerates a trailing unit ("12.00 V").
+        """
+        m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", str(value))
+        return float(m.group(0)) if m else None
+
     def measure_voltage(self, channel=None) -> float:
         """Measure actual output voltage."""
         return self._safe_float(self._meas_v())
@@ -943,14 +963,6 @@ class EA(SupplyNet):
     def get_overvoltage_protection_value(self, channel=None) -> float:
         """Get overvoltage protection limit."""
         return self._safe_float(self._get_ovp())
-
-    def overcurrent_protection_is_tripped(self, channel=None) -> bool:
-        """Check if overcurrent protection is tripped."""
-        return self._ocp_tripped()
-
-    def overvoltage_protection_is_tripped(self, channel=None) -> bool:
-        """Check if overvoltage protection is tripped."""
-        return self._ovp_tripped()
 
     def __str__(self) -> str:
         return self._safe_query("*IDN?", "EA PSB")

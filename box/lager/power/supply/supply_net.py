@@ -62,8 +62,11 @@ class SupplyNet(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def state(self) -> None:
-        """Print a comprehensive power state for this net (voltage, current, power, OCP/OVP status)."""
+    def state(self) -> dict:
+        """Print a comprehensive power state for this net and return it.
+
+        Drivers print the human-readable report and return ``_state_report()``.
+        """
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -86,16 +89,30 @@ class SupplyNet(abc.ABC):
         """Set or read over-voltage protection limit. If `value` is provided, set the OVP limit; otherwise read and print the current OVP limit."""
         raise NotImplementedError
 
+    def _resolve_channel(self, channel):
+        """The channel to act on: the one given, else this net's own channel.
+
+        A channel-less SCPI command (``:OUTP:OCP OFF``) on a multi-output
+        supply acts on whichever output is selected on the front panel, not
+        on this net's output. The hardware service points the cached driver
+        at the calling net's channel (``set_active_channel``) before every
+        call, so ``self.channel`` is the right default.
+        """
+        if channel is None:
+            channel = getattr(self, "channel", None)
+        return channel
+
     def disable_ocp(self, channel=None) -> None:
         """Turn over-current protection off, or refuse on an instrument that cannot.
 
         A uniform name over the drivers' differently-shaped methods, in the
         same way as `clear_ocp`. Setting an OCP limit turns it back on.
+        With no ``channel``, acts on this net's channel.
         """
         disable = getattr(self, "disable_overcurrent_protection", None)
         if disable is None:
             raise SupplyBackendError(f"{type(self).__name__} cannot turn OCP off")
-        disable(channel)
+        disable(self._resolve_channel(channel))
 
     def disable_ovp(self, channel=None) -> None:
         """Turn over-voltage protection off, or refuse on an instrument that cannot.
@@ -105,12 +122,26 @@ class SupplyNet(abc.ABC):
         disable = getattr(self, "disable_overvoltage_protection", None)
         if disable is None:
             raise SupplyBackendError(f"{type(self).__name__} cannot turn OVP off")
-        disable(channel)
+        disable(self._resolve_channel(channel))
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         """Get full state including measurements, setpoints, and limits. This is optional and can be overridden by specific drivers."""
         # Default implementation falls back to state()
-        self.state()
+        return self.state()
+
+    def _state_report(self) -> dict:
+        """The dict ``state()`` and ``get_full_state()`` return.
+
+        Called over ``Net.get`` these run in the hardware-service process, so
+        their printed report lands in the service log and a script got
+        ``None``. Returning ``get_monitor_state()`` (plus ``channel``) gives
+        scripts the same structured shape the supply monitor uses. It re-reads
+        the instrument; these are interactive getters, not a polling path.
+        """
+        channel = self._resolve_channel(None)
+        report = {'channel': channel}
+        report.update(self.get_monitor_state(channel))
+        return report
 
     def output_state(self, channel=None):
         """Whether the output is on: ``True``, ``False``, or ``None`` if unknown.
@@ -158,7 +189,10 @@ class SupplyNet(abc.ABC):
         whose supply function shares hardware with a battery function)
         should override this with a non-intrusive implementation that
         never enforces or switches the instrument mode.
+
+        With no ``channel``, reads this net's channel.
         """
+        channel = self._resolve_channel(channel)
         # Liveness probe — deliberately NOT swallowed (mirrors the Keithley
         # overrides). If the cached pyvisa session is stale (instrument
         # power-cycled / USB re-enumerated), this raises a session/ENODEV

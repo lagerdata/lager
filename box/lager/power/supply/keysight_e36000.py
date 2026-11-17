@@ -894,7 +894,7 @@ class KeysightE36000(SupplyNet):
         """(No-op) Keysight E36xxx series is always in power supply mode."""
         return  # This instrument has no alternate modes.
 
-    def state(self) -> None:
+    def state(self) -> dict:
         """
         Print a summary of the supply state for this channel, including
         setpoints, measurements, and protection status.
@@ -995,8 +995,9 @@ class KeysightE36000(SupplyNet):
         print(f"    OCP Tripped: {'YES' if ocp_tripped else 'NO'}")
         print(f"OVP Limit: {ovp_str}")
         print(f"    OVP Tripped: {'YES' if ovp_tripped else 'NO'}")
+        return self._state_report()
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         """
         Get full state including measurements, setpoints, and limits.
         Format matches Rigol implementation for TUI compatibility.
@@ -1092,6 +1093,7 @@ class KeysightE36000(SupplyNet):
         print(f"    OVP Tripped: {ovp_status}")
         print(f"{GREEN}Voltage_Max: {v_max}{RESET}")
         print(f"{GREEN}Current_Max: {i_max}{RESET}")
+        return self._state_report()
 
     def clear_ocp(self) -> None:
         """Clear an OCP trip (over-current protection) on this channel."""

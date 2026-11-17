@@ -30,8 +30,8 @@ from lager import Net, NetType
 | `is_ocp()` | Check if OCP fault is active |
 | `clear_ovp()` | Clear over-voltage protection fault |
 | `clear_ocp()` | Clear over-current protection fault |
-| `state()` | Print the power state to the box's hardware-service log; returns `None` |
-| `get_full_state()` | Print the extended state to the same log; returns `None` |
+| `state()` | Return the power state as a dict |
+| `get_full_state()` | Return the extended state as a dict |
 | `set_mode()` | Keithley 2281S only: put the instrument into DC power-supply mode |
 | `disable_ocp(channel)` | Turn over-current protection off, on instruments that can |
 | `disable_ovp(channel)` | Turn over-voltage protection off, on instruments that can |
@@ -218,12 +218,13 @@ psu.clear_ocp()
 
 ### `state()`
 
-Print comprehensive power supply state including channel, enabled status, mode (CV/CC), measured voltage/current/power, and protection status.
-
-The call runs in the box's hardware service. The text goes to `/tmp/lager-hardware-service.log` on the box, not to your script, and the call returns `None`. To read the state in a script, use [`get_monitor_state()`](#get_monitor_state-channel). See [#845](https://github.com/lagerdata/lager/issues/845).
+Return the power supply state for the net's channel: a dict with `channel` and the keys
+[`get_monitor_state()`](#get_monitor_state-channel) returns. The printed report goes to the
+box's hardware-service log, not to your script.
 
 ```python
-psu.state()
+s = psu.state()
+print(s['voltage'], s['ocp_tripped'])
 ```
 
 **Example output:**
@@ -243,7 +244,7 @@ OVP Limit: 3.6000
 
 ### `get_full_state()`
 
-Print extended state including all measurements, configured setpoints, protection limits, and hardware maximum ratings. Like `state()`, it prints to the hardware-service log and returns `None`.
+Return the extended state: all measurements, configured setpoints, protection limits, and hardware maximum ratings, as the same dict `state()` returns. The printed report goes to the hardware-service log.
 
 ```python
 psu.get_full_state()
@@ -291,8 +292,7 @@ print(state['voltage'], state['current'], state['enabled'])
 | `voltage_max`, `current_max` | Hardware channel ratings |
 | `ocp_limit`, `ocp_tripped`, `ovp_limit`, `ovp_tripped` | Protection limits and trip state |
 
-Pass the net's channel. With no channel, a multi-channel supply such as a DP832 reads the
-output that is selected on its front panel ([#846](https://github.com/lagerdata/lager/issues/846)). `get_monitor_states([1, 2])` reads several
+With no channel, it reads the net's own channel. `get_monitor_states([1, 2])` reads several
 channels and returns `{'1': {...}, '2': {...}}`.
 
 ### `disable_ocp(channel)` / `disable_ovp(channel)`
@@ -309,9 +309,8 @@ psu.disable_ovp(psu.channel)
 | Rigol DP700, Rigol DP800, Keysight E36200 | Protection turns off |
 | Keysight E36300, Keithley 2281S, Siglent SPD1000X, EA | Raises an error |
 
-Pass the net's channel. With no channel, a multi-channel supply acts on the output that is
-selected on its front panel ([#846](https://github.com/lagerdata/lager/issues/846)). A net with a `max_voltage` safety limit refuses to turn OVP
-off, and a net with `max_current` refuses to turn OCP off.
+With no channel, it acts on the net's own channel. A net with a `max_voltage` safety limit
+refuses to turn OVP off, and a net with `max_current` refuses to turn OCP off.
 
 ## Examples
 
@@ -424,13 +423,13 @@ psu.disable()
 | Keithley | 2281S | 1 | 20V/6A/120W, battery simulator mode |
 | Keysight | E36200 series | 2 | E36233A: 30V/20A per channel |
 | Keysight | E36300 series | 3 | E36311A/12A/13A |
-| EA | PSB 10060-60 / 10080-60 | 1 | Two-quadrant. See the warning below |
+| EA | PSB 10060-60 / 10080-60 | 1 | Two-quadrant. See the note below |
 
-<Warning>
-An EA supply does not work through `Net.get()` today. `set_voltage()`, `set_current()`,
-`set_ovp()`, `set_ocp()`, `enable()` and `disable()` fail with "Function not found". Use
-[`lager supply`](/source/reference/cli/supply) for an EA supply. See [#843](https://github.com/lagerdata/lager/issues/843).
-</Warning>
+<Note>
+An EA supply net drives the source side only. Sink (electronic load) mode, over-power
+protection and PV simulation raise `NotImplementedError` through `Net.get()`. For PV
+simulation, use a [solar net](/source/reference/python/solar).
+</Note>
 
 ## Notes
 
@@ -441,4 +440,4 @@ An EA supply does not work through `Net.get()` today. `set_voltage()`, `set_curr
 - On a Keithley 2281S, an OVP below the voltage setpoint raises an error
 - Voltage and current limits depend on hardware capabilities
 - Multi-channel supplies: each channel is configured as a separate net
-- `state()` and `get_full_state()` print to the box's hardware-service log and return `None`; use `voltage()`, `current()`, `power()` or `get_monitor_state()` to get values in code
+- `state()` and `get_full_state()` return a dict; their printed report goes to the box's hardware-service log

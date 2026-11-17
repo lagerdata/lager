@@ -180,45 +180,63 @@ class KeithleyBattery(BatteryNet):
         self.disable()
 
     # ----- getters/setters used by CLI actions -----
+    #
+    # A getter called with no value prints the reading AND returns it. Over
+    # Net.get these run in the hardware-service process, so the print lands in
+    # the service log and the return value is what a script receives.
+
+    @staticmethod
+    def _num(raw):
+        """An instrument reply as a float, or None if it is not a number."""
+        try:
+            return float(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
 
     def mode(self, mode_type: str | None = None) -> None:
         if mode_type is None:
             try:
                 method = SimMethod.from_cmd(self._safe_query(":BATT:SIM:METH?", "STAT"))
-                print(f"{GREEN}{'static' if method == SimMethod.Static else 'dynamic'}{RESET}")
+                name = 'static' if method == SimMethod.Static else 'dynamic'
             except Exception:
-                print(f"{GREEN}unknown{RESET}")
-            return
+                name = 'unknown'
+            print(f"{GREEN}{name}{RESET}")
+            return name
         self.set_mode(mode_type)
 
     def soc(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:SOC?', '0')}%{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:SOC?', 'n/a')
+            print(f"{GREEN}{raw}%{RESET}")
+            return self._num(raw)
         self.set_soc(value)
 
     def voc(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:VOC?', '0')} V{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:VOC?', 'n/a')
+            print(f"{GREEN}{raw} V{RESET}")
+            return self._num(raw)
         self.set_voc(value)
 
     def voltage_full(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:VOC:FULL?', '0')} V{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:VOC:FULL?', 'n/a')
+            print(f"{GREEN}{raw} V{RESET}")
+            return self._num(raw)
         self.set_volt_full(value)
 
     def voltage_empty(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:VOC:EMPT?', '0')} V{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:VOC:EMPT?', 'n/a')
+            print(f"{GREEN}{raw} V{RESET}")
+            return self._num(raw)
         self.set_volt_empty(value)
 
     def capacity(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:CAP:LIM?', '0')} Ah{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:CAP:LIM?', 'n/a')
+            print(f"{GREEN}{raw} Ah{RESET}")
+            return self._num(raw)
         self.set_capacity(value)
         # Verify if value was clamped by instrument
         if value is not None:
@@ -228,8 +246,9 @@ class KeithleyBattery(BatteryNet):
 
     def current_limit(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:CURR:LIM?', '0')} A{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:CURR:LIM?', 'n/a')
+            print(f"{GREEN}{raw} A{RESET}")
+            return self._num(raw)
         self.set_current_limit(value)
         # Verify if value was clamped by instrument
         if value is not None:
@@ -239,20 +258,23 @@ class KeithleyBattery(BatteryNet):
 
     def ovp(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:TVOL:PROT?', '0')} V{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:TVOL:PROT?', 'n/a')
+            print(f"{GREEN}{raw} V{RESET}")
+            return self._num(raw)
         self.set_ovp(value)
 
     def ocp(self, value: float | None = None) -> None:
         if value is None:
-            print(f"{GREEN}{self._safe_query(':BATT:SIM:CURR:PROT?', '0')} A{RESET}")
-            return
+            raw = self._safe_query(':BATT:SIM:CURR:PROT?', 'n/a')
+            print(f"{GREEN}{raw} A{RESET}")
+            return self._num(raw)
         self.set_ocp(value)
 
     def model(self, partnumber: str | None = None) -> None:
         if partnumber is None:
-            print(f"{GREEN}{self.current_model()}{RESET}")
-            return
+            name = self.current_model()
+            print(f"{GREEN}{name}{RESET}")
+            return name
         self.set_model(partnumber)
 
     def current_model(self) -> str:
@@ -968,7 +990,7 @@ class KeithleyBattery(BatteryNet):
 
     # ----------------------------- state dump -----------------------------
 
-    def print_state(self) -> None:
+    def print_state(self) -> dict:
         enabled = self._is_batt_output_on()
         mode_str = self._mode_string()
         model_str = self.current_model()
@@ -1005,6 +1027,7 @@ class KeithleyBattery(BatteryNet):
         print(f"{GREEN}OVP Limit: {self._fmt_v(ovp_lim)}{RESET}")
         ovp_status = f"{RED}YES{RESET}" if ovp_tripped else f"{GREEN}NO{RESET}"
         print(f"    OVP Tripped: {ovp_status}")
+        return self.get_monitor_state()
 
     def get_monitor_state(self, channel=None) -> dict:
         """Single-call monitor state for the battery TUI WebSocket.

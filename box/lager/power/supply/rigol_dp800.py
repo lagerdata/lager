@@ -258,7 +258,7 @@ class RigolDP800(SupplyNet):
         # DP800 is a DC supply; nothing special needed here.
         return
 
-    def state(self) -> None:
+    def state(self) -> dict:
         ch = self.channel
         v = self.measure_voltage(ch)
         i = self.measure_current(ch)
@@ -284,6 +284,7 @@ class RigolDP800(SupplyNet):
         print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
         ovp_status = f"{RED}YES{RESET}" if ovp_tripped else f"{GREEN}NO{RESET}"
         print(f"    OVP Tripped: {ovp_status}")
+        return self._state_report()
 
     def clear_ocp(self) -> None:
         self.clear_overcurrent_protection_trip(channel=self.channel)
@@ -345,7 +346,7 @@ class RigolDP800(SupplyNet):
         ovp_limit = self.get_overvoltage_protection_value(ch)
         print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         """Get full state including measurements, setpoints, and limits"""
         ch = self.channel
 
@@ -390,6 +391,7 @@ class RigolDP800(SupplyNet):
         print(f"    OVP Tripped: {ovp_status}")
         print(f"{GREEN}Voltage_Max: {v_max}{RESET}")
         print(f"{GREEN}Current_Max: {i_max}{RESET}")
+        return self._state_report()
 
     def check_instrument(self):
         idn = self.get_identification()

@@ -239,7 +239,7 @@ class RigolDL3021(ELoadNet):
         """Read the measured input power."""
         return self._query_float(":MEASure:POWer?")
 
-    def print_state(self) -> None:
+    def print_state(self) -> dict:
         """Print comprehensive electronic load state."""
         mode = self.mode()
         input_state = "Enabled" if self.get_input_state() else "Disabled"
@@ -259,6 +259,7 @@ class RigolDL3021(ELoadNet):
             print(f"{GREEN}  Resistance Setting: {self.resistance():.3f} Ω{RESET}")
         elif mode in ["CW", "CP"]:
             print(f"{GREEN}  Power Setting: {self.power():.3f} W{RESET}")
+        return self.get_state_dict()
 
     # ------------------------------------------------------------------
     # Composite methods for the hardware_service (/invoke) path.

@@ -414,7 +414,7 @@ class Keithley2281S(SupplyNet):
         ovp_limit = self._safe_query_no_mode(":SOUR1:VOLT:PROT?", default="n/a")
         print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
 
-    def state(self) -> None:
+    def state(self) -> dict:
         """
         Friendly state dump. Uses measurement if output ON; else setpoints.
         Non-intrusive - does not change instrument mode or state.
@@ -466,8 +466,9 @@ class Keithley2281S(SupplyNet):
         print(f"{GREEN}OVP Limit: {ovp_raw}{RESET}")
         ovp_status = f"{RED}YES{RESET}" if ovp_trip else f"{GREEN}NO{RESET}"
         print(f"    OVP Tripped: {ovp_status}")
+        return self._state_report()
 
-    def get_full_state(self) -> None:
+    def get_full_state(self) -> dict:
         """
         Get full state including measurements, setpoints, and limits.
         Format matches Rigol implementation for TUI compatibility.
@@ -526,6 +527,7 @@ class Keithley2281S(SupplyNet):
         print(f"    OVP Tripped: {ovp_status}")
         print(f"{GREEN}Voltage_Max: {v_max}{RESET}")
         print(f"{GREEN}Current_Max: {i_max}{RESET}")
+        return self._state_report()
 
     def get_monitor_state(self, channel=None) -> dict:
         """Non-intrusive single-call monitor state for the supply TUI.

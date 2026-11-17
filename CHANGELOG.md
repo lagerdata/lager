@@ -12,6 +12,29 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Fixed
+
+- **Turning off supply protection from a script acts on the net's own output.**
+  `disable_ocp()`, `disable_ovp()` and `get_monitor_state()` on a supply net
+  called with no channel used to send a channel-less command, which a
+  multi-output supply (Rigol DP800, Keysight E36000) applies to the output
+  selected on its front panel. They now act on the net's channel. (#846)
+
+- **EA supply nets work through `Net.get`.** `set_voltage`, `set_current`,
+  `set_ovp`, `set_ocp`, the protection reads and clears, `enable` and `disable`
+  called driver methods that do not exist and failed with "Function not found".
+  The state, measurement and trip reads also failed, or read as zero. Sink,
+  power-protection and PV-simulation calls now refuse with a clear error; use a
+  solar net for PV simulation. (#843)
+
+- **Supply, battery and electronic load getters return their value to scripts.**
+  `state()` and `get_full_state()` on a supply net, the battery `mode()`,
+  `soc()`, `voc()`, `voltage_full()`, `voltage_empty()`, `capacity()`,
+  `current_limit()`, `ovp()`, `ocp()`, `model()` and `print_state()` reads, and
+  the electronic load's `print_state()` printed into the box's service log and
+  returned `None` to a `Net.get` caller. They now return the reading (a dict for
+  the state reports), and a failed battery read returns `None`, not `0`. (#845)
+
 ## [0.65.0] - 2026-11-19
 
 ### Added
@@ -185,6 +208,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   alone, with its live view read from the on-screen record; `lager instruments`
   lists it (`1ab1:04ce`) and `lager scope` controls it. Verified on a DS1054Z
   (firmware 00.04.05.SP2), including recovery after the daemon is killed.
+
+### Changed
+
+- **The first update to 0.62.0 downloads the whole box image.** The box image
+  moves to a new Python base image, so every layer changes. Expect a download
+  of about 1 GB per box.
 
 ### Fixed
 
