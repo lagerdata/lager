@@ -604,6 +604,12 @@ class Net:
                     from ..hostlink.io_proxy import for_role
                     return for_role(item['role'], name, item)
 
+                if (os.environ.get("LAGER_HOSTLINK") == "1"
+                        and role in (NetType.SPI, NetType.I2C)):
+                    # Same reason: the dispatchers hand out host-side drivers.
+                    from ..hostlink.bus_proxy import install
+                    install()
+
                 if role == NetType.GPIO:
                     # Check for instrument type - support MCC_USB-202, FT232H, or default to LabJack
                     instrument = item.get('instrument', '').lower()
