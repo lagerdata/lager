@@ -1120,3 +1120,27 @@ and `uninstall.py`, which until this branch was an error.
 - With `--yes` and no `--box` the Box is not saved, as for any Linux Box;
   it is then reached with `--box 127.0.0.1`.
 - A bare `lager update` is unchanged: it updates the default Box.
+
+### Leftover agent processes (2026-11-18)
+
+**Bug found on the bench Mac:** the agent's hardware worker restarted every
+two seconds overnight (17,574 times) with "Port ... is in use by another
+program". A worker from an agent started the previous day had survived the
+agent that started it, and two uninstall/reinstall cycles, and still held
+the agent's port. It kept answering hardware requests from a source tree
+that no longer existed, which is why `lager instruments` looked healthy
+after the reinstalls. A supervisor that is killed outright
+(`launchctl kickstart -k`, a crash) cannot stop its children.
+
+**Fix (`box/lager/host/orphans.py`, new; macOS agent only, no Linux file
+touched):** each Python child watches its parent and exits when it changes;
+a starting supervisor ends agent children whose parent is launchd, asking
+first and killing after five seconds. **Verified live:** the day-old
+leftover was killed on the next agent start and the worker bound its port;
+after two further `kickstart -k` there were no leftovers and no bind errors.
+
+**Open:** the earlier "Keysight answered Query INTERRUPTED until one more
+restart" was seen while that leftover was running and may have been two
+workers talking to one instrument; not re-tested (the bench was not
+attached on 2026-11-18).
+
