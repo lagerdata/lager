@@ -48,15 +48,17 @@ def cmd_init(args) -> int:
 
 
 def cmd_worker(args) -> int:
-    from . import worker
+    from . import orphans, worker
 
+    orphans.watch_parent()
     worker.serve(args.config_dir)
     return 0
 
 
 def cmd_debug(args) -> int:
-    from . import darwin_debug
+    from . import darwin_debug, orphans
 
+    orphans.watch_parent()
     darwin_debug.serve(config.HOST_DEBUG_PORT)
     return 0
 
@@ -111,7 +113,11 @@ def _children(args):
 
 
 def cmd_run(args) -> int:
+    from . import orphans
+
     cmd_init(args)
+    # A child of an agent that was killed outright still holds its port.
+    orphans.reap_stale([args.scope_daemon or os.environ.get(SCOPE_DAEMON_ENV)])
     stopping = threading.Event()
     children = _children(args)
 
