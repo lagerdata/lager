@@ -404,10 +404,17 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     elif ip is None:
         # Neither --box nor --ip: install onto this machine. A remote install,
         # everything below, is untouched by this branch.
-        from ._local_install import install_locally
-        install_locally(ctx, version=version, version_defaulted=version_defaulted,
-                        yes=yes, fork=fork)
-        return
+        from ._local_install import install_locally, local_ssh_target
+        # On Linux this machine is a Box like any other, reached over SSH
+        # at its own loopback address: the steps below run unchanged.
+        local_target = local_ssh_target(user)
+        if local_target is None:
+            install_locally(ctx, version=version, version_defaulted=version_defaulted,
+                            yes=yes, fork=fork)
+            return
+        ip, user = local_target
+        click.echo(f"No --box or --ip: installing onto this machine, "
+                   f"over SSH as {user}@{ip}.")
     else:
         # Default username if not provided
         if user is None:
