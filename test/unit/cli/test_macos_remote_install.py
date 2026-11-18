@@ -68,10 +68,20 @@ def test_only_a_clean_darwin_answer_is_a_mac(result, expected):
     assert _remote_macos.remote_is_macos("u@h", ["-i", "key"], run=run) is expected
     argv = run.call_args.args[0]
     assert argv[:3] == ["ssh", "-i", "key"] and "BatchMode=yes" in argv
-    assert argv[-2:] == ["u@h", "uname -s"]
+    assert "ConnectTimeout=10" in argv and argv[-2:] == ["u@h", "uname -s"]
+    assert run.call_args.kwargs["timeout"] == 20
 
 
-@pytest.mark.parametrize("error", [OSError("no ssh"),
+def test_the_probe_goes_through_subprocess_run_so_a_test_double_replaces_it():
+    """It once bound subprocess.run at import and ran a real ssh from other tests."""
+    with mock.patch.object(subprocess, "run", return_value=_done(0, "Darwin\n")) as run:
+        assert _remote_macos.remote_is_macos("u@h", []) is True
+    run.assert_called_once()
+    with mock.patch.object(subprocess, "run", return_value=mock.Mock()):
+        assert _remote_macos.remote_is_macos("u@h", []) is False  # not a real answer
+
+
+@pytest.mark.parametrize("error", [OSError("no ssh"), ValueError("odd"),
                                    subprocess.TimeoutExpired("ssh", 20)])
 def test_a_target_that_does_not_answer_is_not_a_mac(error):
     assert _remote_macos.remote_is_macos("u@h", [], run=mock.Mock(side_effect=error)) is False

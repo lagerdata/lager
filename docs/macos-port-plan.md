@@ -1144,3 +1144,47 @@ restart" was seen while that leftover was running and may have been two
 workers talking to one instrument; not re-tested (the bench was not
 attached on 2026-11-18).
 
+### Commands that SSH into a Box, against a Mac (2026-11-18)
+
+Audited against the Box installed on the bench Mac (`--box local`). Before:
+`lager ssh`, `lager dut`, `lager logs` and the SSH half of `lager box-config`
+all tried `ssh lagerdata@127.0.0.1` and failed on the host key or the user.
+
+**Change:** `cli/commands/box/_macos_target.py` (new), asked first by the
+shared runner `default_ssh_runner` and by `lager ssh`.
+- The Box on this Mac (loopback address, macOS CLI): the command runs in a
+  local shell. No SSH, no Remote Login, no `lagerdata` user.
+- Any Mac Box, local or saved with `"platform": "macos"`: a command that
+  manages a Linux host (apt, dpkg, sysctl, udev, systemd, journalctl, ufw,
+  sudoers, `start_box.sh`) is refused by name and never run.
+- Every other Box: unchanged; a test pins the identical `ssh` argv.
+
+**Verified on the bench Mac:** `lager ssh --box local -- <cmd>` (output and
+exit status), `lager dut show`, `lager box-config init/status/show/reset`
+and `apt add`, `lager logs size`. `lager box-config apply` stops at the first
+host step with "not supported for a Box on macOS".
+
+**Linux-affecting (in the ledger):** `cli/commands/box/_ssh.py` (one call at
+the top of `default_ssh_runner`; one more read of the saved-Boxes file per
+SSH command) and `cli/commands/box/ssh.py`.
+
+**Bug fixed in the 2026-11-17 remote-install commit:** the `uname -s` probe
+bound `subprocess.run` when its module was imported, so tests that replace
+`subprocess.run` did not replace it there, and existing install tests ran a
+real `ssh lagerdata@10.0.0.1`. That failed instantly on one network and hung
+the suite on another. The probe now looks `subprocess.run` up when called,
+carries `ConnectTimeout=10`, reads no stdin and treats any failure as "not a
+Mac".
+
+**Open:**
+- `lager box-config apply` cannot restart the container on a Mac, so config
+  that needs a restart (mounts, env, volumes, pip/npm/cargo packages) can be
+  edited but not applied. Needs a macOS restart path.
+- `lager logs docker` reports "needs sudo" on a Mac; Docker's log files are
+  inside the runtime's VM there.
+- After a refusal some commands still print a Linux "manual fix" line.
+- A remote Mac runs these commands over SSH as before; only the refusals
+  apply. Not exercised against a remote Mac.
+- A laptop Box saved by LAN address stops resolving when the laptop changes
+  network (seen: the bench Mac moved from 10.101.x to 192.168.x overnight).
+
