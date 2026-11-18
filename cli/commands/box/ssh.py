@@ -118,6 +118,11 @@ def ssh(ctx, box, command):
     if command:
         ssh_cmd.append(' '.join(shlex.quote(arg) for arg in command))
 
+    # The Box on this Mac is this machine: a local shell, not SSH. None for
+    # every other Box, which keeps the command built above.
+    from ._macos_target import local_shell_argv
+    ssh_cmd = local_shell_argv(resolved_box, command) or ssh_cmd
+
     try:
         # Run SSH as a child process (not exec) so Click ctx.call_on_close hooks run.
         try:
