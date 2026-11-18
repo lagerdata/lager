@@ -24,6 +24,7 @@ Lager 提供两种锁机制：
 | 通信 | `spi`、`i2c`、`uart`、`wifi`、`ble`、`blufi`、`usb`、`router` | 单次命令调用 | 总线/协议事务不能在不同用户之间交错。 |
 | 电源 | `supply`、`battery`、`eload`、`solar` | 单次命令调用（仅子命令，不含列表操作） | 并发修改电压/电流是危险的。 |
 | 开发 | `debug`（flash/connect/erase/reset 等）、`arm`、`webcam`、`hsm` | 单次命令调用 | 烧录或调试会话不能相互冲突。 |
+| 访问 | `ssh`（交互式 shell 与一次性远程命令） | 整个 SSH 会话（获取 → 心跳 → 释放） | 软性可见性：表明有人在使用该 Box。直接的 `ssh user@box` 仍会绕过该锁。 |
 | 自定义驱动 | `lager custom` 以及自定义驱动的命令 | 单次命令调用 | 自定义驱动像任何内置命令一样驱动硬件。 |
 | 管理 | `install`、`uninstall`、`update`、`install-wheel` | 仅破坏性的部分 | 测试进行中重启或改动容器会终止测试。 |
 

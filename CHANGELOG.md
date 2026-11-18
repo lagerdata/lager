@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **`lager ssh` auto-locks the box for the session.** Interactive shells and
+  one-shot remote commands acquire an ephemeral lock with heartbeat, and
+  release it when the session ends. Other lager users can see that someone is
+  on the box; a direct `ssh user@box` still bypasses the lock.
+  `LAGER_AUTO_LOCK_DISABLE=1` skips acquiring.
+
 ## [0.64.0] - 2026-11-13
 
 ### Fixed

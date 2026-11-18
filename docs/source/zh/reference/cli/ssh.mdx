@@ -61,9 +61,16 @@ lager ssh --box lab-lager-box -- docker ps
 
 该命令：
 1. 把 Lager Box 名称解析为 IP 地址
-2. 查找 SSH 用户名（默认 `lagerdata`）
-3. 选择要提供的 SSH 身份
-4. 打开交互式 SSH 会话，或运行该命令
+2. 为该会话获取一个临时 Box 锁（交互式或一次性命令）
+3. 查找 SSH 用户名（默认 `lagerdata`）
+4. 选择要提供的 SSH 身份
+5. 打开交互式 SSH 会话，或运行该命令
+6. 会话结束时释放该锁
+
+该锁是软性协调：其他 `lager` 命令能看到有人在使用该 Box，但直接的
+`ssh user@box` 仍然可以连接。心跳会维持较长的交互式会话；断开、退出或
+`Ctrl-C` 会释放锁。设置 `LAGER_AUTO_LOCK_DISABLE=1` 可跳过获取锁（他人的
+用户锁仍会被拒绝）。参见 [Box 锁定](/source/zh/reference/cli/locking)。
 
 如果 `~/.ssh/lager_box` 存在，`lager ssh` 会用 `-i` 传入它。`-i` 标志会替换
 SSH 的默认身份列表，而不是追加到其中。因此 `lager ssh` 还会在 `lager_box`

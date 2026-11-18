@@ -69,9 +69,17 @@ code, so it composes cleanly in scripts.</Note>
 
 The command:
 1. Resolves the Lager Box name to IP address
-2. Looks up the SSH username (default: `lagerdata`)
-3. Chooses the SSH identities to offer
-4. Opens an interactive SSH session, or runs the command
+2. Acquires an ephemeral box lock for the session (interactive or one-shot)
+3. Looks up the SSH username (default: `lagerdata`)
+4. Chooses the SSH identities to offer
+5. Opens an interactive SSH session, or runs the command
+6. Releases the lock when the session ends
+
+The lock is soft coordination: other `lager` commands see that someone is on
+the box, but a direct `ssh user@box` still connects. A heartbeat keeps a long
+interactive session alive; disconnect, exit, or `Ctrl-C` releases the lock.
+Set `LAGER_AUTO_LOCK_DISABLE=1` to skip acquiring (a foreign user lock is
+still refused). See [Box Locking](/source/reference/cli/locking).
 
 If `~/.ssh/lager_box` exists, `lager ssh` passes it with `-i`. The `-i` flag
 replaces the default identity list of SSH instead of adding to it. So

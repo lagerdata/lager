@@ -223,9 +223,19 @@ class InteractiveSshIdentities(unittest.TestCase):
             calls.append(list(argv))
             return 0
 
+        # Identity tests are about argv; stub the auto-lock so they never
+        # reach a real box. Dedicated lock coverage lives in test_ssh_auto_lock.
+        import contextlib
+
+        @contextlib.contextmanager
+        def _noop_lock(*_a, **_k):
+            yield ("test", "disabled")
+
         patches = [
             mock.patch.object(ssh_mod.subprocess, "call", fake_call),
-            mock.patch.object(ssh_mod, "resolve_and_validate_box", lambda _ctx, _box: "10.0.0.1"),
+            mock.patch.object(ssh_mod, "resolve_and_validate_box",
+                              lambda _ctx, _box, **_kw: "10.0.0.1"),
+            mock.patch.object(ssh_mod, "auto_lock_around_command", _noop_lock),
             mock.patch.object(bs, "get_box_user", lambda _name: None),
             mock.patch.object(_ssh, "lager_box_key_if_present",
                               _fake_key_if_present(key_exists)),
