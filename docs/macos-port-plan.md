@@ -1048,17 +1048,23 @@ carries it across `lager boxes edit`.
    `lager update` and `lager uninstall` recognise the Mac from that record
    and make no extra SSH call for any Box.
 
-**Verified:** on the bench Mac through a stand-in `ssh` that runs each
-command locally with the bare environment an SSH session has (and keeps the
-ports on loopback): install, install again via `lager update --box`,
-`lager uninstall --dry-run`, `lager uninstall`; then `lager hello` and
-`lager instruments` against the Box running from the copied source.
-**Not verified:** over real SSH to a second Mac. SSH to the bench Mac itself
-is not authorized for this user's keys, so these have not been exercised:
-`lager install`'s key set-up against a Mac, `sudo` over `ssh -t`, launchd
-`bootstrap gui/<uid>` from an SSH session, the image pull with the keychain
-locked (a retry without the credential store is written for it), and
-reaching the Box from another machine.
+**Verified over real SSH (2026-11-17), from the bench Mac to its own LAN
+address:** the project owner ran `lager install --ip <address> --user <user>`
+in a terminal, which set up the `lager_box` key with one password prompt,
+detected the Mac and installed. Then, non-interactively: `lager update --box`,
+`lager uninstall --dry-run`, `lager uninstall` (agent files, launchd job and
+container gone), and `lager install --box` from nothing (42 s with the image
+present; the LabJack library and the oscilloscope daemon were built in the
+SSH session's bare environment). Through the LAN address afterwards:
+`lager hello`, `lager instruments` (all six bench devices) and a
+`lager python` script on port 8301. launchd `bootstrap gui/<uid>` works from
+an SSH session while the user is logged in at the desktop. With no terminal
+on the CLI side `ssh -t` prints "Pseudo-terminal will not be allocated" and
+carries on.
+**Not verified:** a second Mac (the one offered was not reachable on the
+network), `sudo` over `ssh -t` (`/etc/lager` already existed), the image
+pull with the keychain locked (the image was already present), and reaching
+the Box from a different machine.
 
 **Linux-affecting (in the ledger, none run against a Linux Box):**
 `install.py` makes one more SSH connection (`uname -s`) on every remote
@@ -1085,3 +1091,6 @@ across `lager boxes edit`.
   replaced tree.
 - The agent needs a logged-in desktop session on the Mac (launchd `gui`
   domain). A headless Mac that nobody has logged in to is not supported.
+- The Mac's Docker default context decides which runtime gets the container
+  (Docker Desktop on the bench Mac, which also has OrbStack). Nothing checks
+  that an earlier install used the other one.
