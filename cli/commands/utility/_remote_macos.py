@@ -42,25 +42,31 @@ _FIND_PYTHON = (
 SHIPPED_FILES = ("macos_box.py", "macos_remote.py")
 
 
-def _ssh(ssh_host, identity_args, command, *, tty=False, run=subprocess.run, **kwargs):
+def _ssh(ssh_host, identity_args, command, *, tty=False, run=None, **kwargs):
+    # subprocess.run is looked up when called, not when this module is
+    # imported, so a test that replaces it replaces it here too.
     argv = ["ssh", *identity_args]
     argv += ["-t"] if tty else ["-o", "BatchMode=yes"]
-    return run([*argv, ssh_host, command], **kwargs)
+    return (run or subprocess.run)([*argv, ssh_host, command], **kwargs)
 
 
-def remote_is_macos(ssh_host, identity_args, run=subprocess.run):
+def remote_is_macos(ssh_host, identity_args, run=None):
     """True only when the target answers ``uname -s`` with ``Darwin``.
 
-    Never raises: a target that does not answer is not a Mac as far as the
-    caller is concerned, and continues down the Linux path unchanged.
+    Never raises and never waits long: a target that does not answer, or
+    answers anything unexpected, is not a Mac as far as the caller is
+    concerned, and continues down the Linux path unchanged.
     """
     try:
-        result = _ssh(ssh_host, identity_args, "uname -s", run=run,
-                      capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+        result = _ssh(ssh_host, [*identity_args, "-o", "ConnectTimeout=10"], "uname -s",
+                      run=run, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                      timeout=20)
+        if result.returncode != 0 or not isinstance(result.stdout, str):
+            return False
+        lines = result.stdout.strip().splitlines()
+        return bool(lines) and lines[-1].strip() == "Darwin"
+    except Exception:  # noqa: BLE001 - any failure means "not a Mac"
         return False
-    lines = (result.stdout or "").strip().splitlines()
-    return result.returncode == 0 and bool(lines) and lines[-1].strip() == "Darwin"
 
 
 def saved_macos_box(ip):
@@ -110,13 +116,14 @@ def ship_installer(ssh_host, identity_args, popen=subprocess.Popen):
               REMOTE_INSTALLER_DIR, cwd=Path(deployment.__file__).parent, popen=popen)
 
 
-def ship_source(checkout, ssh_host, identity_args, run=subprocess.run,
+def ship_source(checkout, ssh_host, identity_args, run=None,
                 popen=subprocess.Popen):
     """Copy the checkout's Box source to the Mac, replacing an earlier copy.
 
     A development version exists nowhere the Mac could download it from.
     Tracked files only, as they are on disk now.
     """
+    run = run or subprocess.run
     listed = run(["git", "-C", str(checkout), "ls-files", "-z", "--", "box", "cli/__init__.py"],
                  capture_output=True, timeout=120)
     if listed.returncode != 0 or not listed.stdout:
@@ -131,7 +138,7 @@ def ship_source(checkout, ssh_host, identity_args, run=subprocess.run,
               REMOTE_SOURCE_DIR, cwd=checkout, stdin=names + b"\0", popen=popen)
 
 
-def run_remote(ssh_host, identity_args, arguments, run=subprocess.run):
+def run_remote(ssh_host, identity_args, arguments, run=None):
     """Run the installer on the Mac with a terminal; its JSON outcome."""
     result_file = f"{REMOTE_INSTALLER_DIR}/result.json"
     command = (f"rm -f {result_file}; {_FIND_PYTHON}"

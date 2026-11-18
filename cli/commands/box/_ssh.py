@@ -698,6 +698,13 @@ def default_ssh_runner(
     retry can't double-execute anything. Timeouts/no-route are NOT
     retried — the second attempt would just hang the same way.
     """
+    # A Box on macOS: run on this Mac without SSH, or refuse a command that
+    # manages a Linux host. None for every other Box, which goes on below.
+    from . import _macos_target
+    handled = _macos_target.run(box_ip, cmd, stdin=stdin, timeout=timeout)
+    if handled is not None:
+        return handled
+
     user = resolve_box_user(box_ip)
     dest = f"{user}@{box_ip}"
 
