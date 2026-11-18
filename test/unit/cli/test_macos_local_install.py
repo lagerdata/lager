@@ -239,16 +239,29 @@ def test_loopback_is_local_only_on_a_mac():
     assert not _local_install.is_local_target("192.168.1.5", platform="darwin")
 
 
-def test_a_local_install_off_macos_says_not_yet_supported():
+def test_a_local_install_on_windows_says_not_yet_supported():
     ctx = mock.Mock()
-    for platform, word in (("linux", "Linux"), ("win32", "Windows")):
-        with pytest.raises(LagerError, match="not yet supported") as caught:
-            _local_install.install_locally(ctx, version="v1", version_defaulted=True,
-                                           yes=True, platform=platform)
-        assert word in caught.value.problem
-        with pytest.raises(LagerError, match="not yet supported"):
-            _local_install.uninstall_locally(ctx, purge_config=False, yes=True,
-                                             dry_run=False, platform=platform)
+    with pytest.raises(LagerError, match="not yet supported") as caught:
+        _local_install.install_locally(ctx, version="v1", version_defaulted=True,
+                                       yes=True, platform="win32")
+    assert "Windows" in caught.value.problem
+    with pytest.raises(LagerError, match="not yet supported"):
+        _local_install.uninstall_locally(ctx, purge_config=False, yes=True,
+                                         dry_run=False, platform="win32")
+
+
+def test_this_machine_is_an_ssh_target_only_on_linux():
+    yes, no = (lambda: True), (lambda: False)
+    for platform in ("darwin", "win32"):
+        assert _local_install.local_ssh_target(platform=platform, answers=no) is None
+    with mock.patch.object(_local_install.getpass, "getuser", return_value="me"):
+        assert _local_install.local_ssh_target(platform="linux", answers=yes) \
+            == ("127.0.0.1", "me")
+    assert _local_install.local_ssh_target("pi", platform="linux", answers=yes) \
+        == ("127.0.0.1", "pi")
+    with pytest.raises(LagerError, match="does not accept SSH") as caught:
+        _local_install.local_ssh_target(platform="linux", answers=no)
+    assert any("openssh-server" in fix for fix in caught.value.fixes)
 
 
 @pytest.fixture
@@ -279,9 +292,47 @@ def test_install_without_a_target_provisions_and_registers_the_port(lager_home):
     assert box_storage.get_python_service_port("127.0.0.1") == 8301
 
 
-def test_install_without_a_target_on_linux_exits_with_the_message(lager_home):
+class _Stop(Exception):
+    """Raised by the first step of the SSH path, to end the command there."""
+
+
+def test_without_a_target_on_linux_the_ssh_path_runs_against_this_machine(lager_home):
+    """The same deploy as a remote Linux Box, aimed at loopback as this user."""
+    import importlib
+    install_module = importlib.import_module("cli.commands.utility.install")
+    uninstall_module = importlib.import_module("cli.commands.utility.uninstall")
+    for module, command in ((install_module, install_module.install),
+                            (uninstall_module, uninstall_module.uninstall)):
+        with mock.patch.object(_local_install.sys, "platform", "linux"), \
+                mock.patch.object(_local_install, "_ssh_server_answers", return_value=True), \
+                mock.patch.object(_local_install.getpass, "getuser", return_value="me"), \
+                mock.patch.object(_local_install, "local_ssh_target",
+                                  wraps=_local_install.local_ssh_target) as asked, \
+                mock.patch.object(macos_box, "install") as provision, \
+                mock.patch.object(macos_box, "uninstall") as remove, \
+                mock.patch.object(module, "probe_box_identity", side_effect=_Stop) as ssh:
+            result = CliRunner().invoke(command, ["--yes"], obj={})
+        asked.assert_called_once_with(None)
+        ssh.assert_called_once_with("me@127.0.0.1")
+        assert "over SSH as me@127.0.0.1" in result.output
+        provision.assert_not_called()
+        remove.assert_not_called()
+
+
+def test_without_a_target_on_linux_and_no_ssh_server_the_fix_is_named(lager_home):
     from cli.commands.utility.install import install
     with mock.patch.object(_local_install.sys, "platform", "linux"), \
+            mock.patch.object(_local_install, "_ssh_server_answers", return_value=False), \
+            mock.patch("subprocess.run") as ssh:
+        result = CliRunner().invoke(install, ["--yes"], obj={})
+    assert result.exit_code == 1
+    assert "does not accept SSH" in result.output and "openssh-server" in result.output
+    ssh.assert_not_called()
+
+
+def test_install_without_a_target_on_windows_exits_with_the_message(lager_home):
+    from cli.commands.utility.install import install
+    with mock.patch.object(_local_install.sys, "platform", "win32"), \
             mock.patch.object(macos_box, "install") as provision:
         result = CliRunner().invoke(install, ["--yes"], obj={})
     assert result.exit_code == 1

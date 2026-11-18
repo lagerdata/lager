@@ -1016,7 +1016,7 @@ carries it across `lager boxes edit`.
 - `--fork`, `--skip-*`, `--pull`/`--no-pull` and `--timeout` are ignored or
   refused by the local path. Uninstall's `--all`, `--keep-docker-images` and
   `--include-control-plane` are ignored: the image is always kept.
-- Local Linux install is not started. Remote macOS install: next section.
+- Local Linux install and remote macOS install: sections below.
 - No release bundle, signing or notarisation; the agent runs from source.
 - J-Link, PicoSDK/PicoScope 7, Rust and Homebrew libusb are detected, not
   installed.
@@ -1094,3 +1094,29 @@ across `lager boxes edit`.
 - The Mac's Docker default context decides which runtime gets the container
   (Docker Desktop on the bench Mac, which also has OrbStack). Nothing checks
   that an earlier install used the other one.
+
+### `lager install` on a Linux machine (2026-11-17)
+
+A bare `lager install` or `lager uninstall` on Linux no longer exits with
+"not yet supported". It checks that `127.0.0.1` port 22 answers and then
+continues into the existing SSH path with `ip=127.0.0.1` and the user running
+the CLI (or `--user`). There is one Linux deploy path, whichever machine the
+CLI runs on; `setup_and_deploy_box.sh` and everything after the target is
+chosen are untouched. Windows still gets "not yet supported".
+
+**Verified:** in a throwaway `python:3.11-slim` Linux container: with no SSH
+server the command names the fix (`openssh-server`); with one it announces
+`over SSH as <user>@127.0.0.1`, accepts the host key and reaches the key
+set-up step. **Not verified:** a full install on a real Linux machine. The
+deploy needs Docker, systemd and sudo, which the container does not have.
+Run a bare `lager install` on one Linux bench before release.
+
+**Linux-affecting (in the ledger):** only the no-target case in `install.py`
+and `uninstall.py`, which until this branch was an error.
+
+**Open:**
+- The user installed for is the one running the CLI, not `lagerdata`; the
+  deploy script takes any user, but this combination has not been run.
+- With `--yes` and no `--box` the Box is not saved, as for any Linux Box;
+  it is then reached with `--box 127.0.0.1`.
+- A bare `lager update` is unchanged: it updates the default Box.
