@@ -4,8 +4,12 @@
 """`lager install` with neither --box nor --ip: install onto this machine.
 
 The operating system is detected, never asked for. macOS is provisioned by
-``cli.deployment.macos_box``. A remote install does not come through here.
+``cli.deployment.macos_box``. Linux is installed by the same steps as a remote
+Linux Box, over SSH to the machine's own loopback address: one deploy path,
+whichever machine the CLI runs on. A remote install does not come through here.
 """
+import getpass
+import socket
 import sys
 
 import click
@@ -29,16 +33,40 @@ def is_local_target(ip, platform=None):
 
 
 def _unsupported(system):
-    if system == "win32":
-        return LagerError(
-            "Installing a Lager Box on this Windows machine is not yet supported.",
-            fixes=["Install onto a Linux machine or a Mac: lager install --ip <address>"])
     return LagerError(
-        "Installing a Lager Box on this machine is not yet supported on Linux.",
-        cause="Without --box or --ip, `lager install` installs onto the machine "
-              "it runs on, which today works on macOS only.",
-        fixes=["Install over SSH instead: lager install --ip <address> "
-               "(the address may be this machine's own)."])
+        "Installing a Lager Box on this Windows machine is not yet supported."
+        if system == "win32" else
+        f"Installing a Lager Box on this machine ({system}) is not yet supported.",
+        fixes=["Install onto a Linux machine or a Mac: lager install --ip <address>"])
+
+
+def _ssh_server_answers(address=LOOPBACK_ADDRESSES[0], port=22, timeout=3.0):
+    try:
+        with socket.create_connection((address, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def local_ssh_target(user=None, platform=None, answers=None):
+    """``(address, user)`` for a Box on this Linux machine; None off Linux.
+
+    A Linux Box is deployed over SSH, so the machine the CLI runs on is
+    reached the same way, at its loopback address, as the user running the
+    CLI unless ``--user`` names another. Everything after that is the
+    remote install, unchanged. It needs an SSH server on this machine.
+    """
+    if not (platform or sys.platform).startswith("linux"):
+        return None
+    if not (answers or _ssh_server_answers)():
+        raise LagerError(
+            "This machine does not accept SSH connections, which the install uses "
+            "to reach it.",
+            cause="Nothing answered on 127.0.0.1 port 22.",
+            fixes=["Install and start an SSH server: "
+                   "sudo apt install openssh-server && sudo systemctl enable --now ssh",
+                   "Then run this command again."])
+    return LOOPBACK_ADDRESSES[0], user or getpass.getuser()
 
 
 def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform=None):
