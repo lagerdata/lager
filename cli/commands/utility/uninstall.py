@@ -431,9 +431,16 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     elif ip is None:
         # Neither --box nor --ip: uninstall from this machine. A remote
         # uninstall, everything below, is untouched by this branch.
-        from ._local_install import uninstall_locally
-        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
-        return
+        from ._local_install import uninstall_locally, local_ssh_target
+        # On Linux this machine is a Box like any other, reached over SSH
+        # at its own loopback address: the steps below run unchanged.
+        local_target = local_ssh_target(user)
+        if local_target is None:
+            uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
+            return
+        ip, user = local_target
+        click.echo(f"No --box or --ip: uninstalling from this machine, "
+                   f"over SSH as {user}@{ip}.")
     else:
         if user is None:
             user = "lagerdata"
