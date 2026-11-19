@@ -53,6 +53,7 @@ CLI 总是知道该用哪个文件。`lager boxes` 和 `lager defaults` 之类�
 | `net_watt_meter` | `--watt-meter-net` | 默认功率计 Net。`lager watt` 目前不读取这个键（[#836](https://github.com/lagerdata/lager/issues/836)）；请参阅 [`lager watt`](/source/zh/reference/cli/watt#默认-net) |
 | `net_thermocouple` | `--thermocouple-net` | 默认热电偶 Net |
 | `net_dmm` | `--dmm-net` | 默认万用表 Net |
+| `net_ble_sniffer` | `--ble-sniffer-net` | 默认 BLE 嗅探器 Net |
 | `net_uart` | `--uart-net` | 默认 UART Net |
 | `net_arm` | `--arm-net` | 默认机械臂 Net |
 | `user` | `--user` | 记录在 Box 锁上的用户名 |
@@ -149,7 +150,7 @@ lager boxes import boxes.json        # Import boxes from JSON
 | 字段 | 必填 | 说明 |
 |-------|----------|-------------|
 | `name` | 是 | 该 Net 的唯一名称（例如 `"VDD_MAIN"`、`"SWD"`） |
-| `role` | 是 | Net 类型，按原样精确匹配：`power-supply`、`battery`、`solar`、`eload`、`adc`、`dac`、`gpio`、`debug`、`scope`、`scope-channel`、`logic`、`uart`、`i2c`、`spi`、`usb`、`watt-meter`、`energy-analyzer`、`thermocouple`、`dmm`、`webcam`、`arm`、`hsm` |
+| `role` | 是 | Net 类型，按原样精确匹配：`power-supply`、`battery`、`solar`、`eload`、`adc`、`dac`、`gpio`、`debug`、`scope`、`scope-channel`、`logic`、`uart`、`i2c`、`spi`、`usb`、`watt-meter`、`energy-analyzer`、`thermocouple`、`dmm`、`ble-sniffer`、`webcam`、`arm`、`hsm` |
 | `instrument` | 是 | 仪器型号名称（例如 `"Rigol_DP831"`、`"LabJack_T7"`） |
 | `address` | 是 | 仪器地址（USB 或网络路径） |
 | `pin` | 是 | 仪器上的通道或引脚号 |

@@ -22,6 +22,7 @@ __all__ = [
     'USBBackendError',
     'ThermocoupleBackendError',
     'DMMBackendError',
+    'BleSnifferBackendError',
     'WattBackendError',
     'ADCBackendError',
     'DACBackendError',
@@ -163,6 +164,12 @@ class DMMBackendError(LagerBackendError):
     """Exception for bench digital multimeter backend errors."""
     def __init__(self, message: str, device: str = None, backend: str = None):
         super().__init__(message, device=device, backend=backend or "DMM")
+
+
+class BleSnifferBackendError(LagerBackendError):
+    """Exception for Bluetooth LE sniffer backend errors."""
+    def __init__(self, message: str, device: str = None, backend: str = None):
+        super().__init__(message, device=device, backend=backend or "BleSniffer")
 
 
 class WattBackendError(LagerBackendError):

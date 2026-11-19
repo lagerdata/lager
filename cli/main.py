@@ -47,7 +47,7 @@ def terminal_cmd():
         raise SystemExit(1)
 
 # Communication commands (from cli.commands.communication)
-from .commands.communication import uart, ble, blufi, _wifi, usb, spi, i2c, router
+from .commands.communication import uart, ble, ble_sniffer, blufi, _wifi, usb, spi, i2c, router
 
 # Development commands (from cli.commands.development)
 from .commands.development import _debug, arm, python, devenv
@@ -140,8 +140,8 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
         ("Power", ["supply", "battery", "solar", "eload"]),
         ("Measurement & I/O", ["scope", "logic", "energy", "adc", "dac",
                                 "gpi", "gpo", "thermocouple", "dmm", "watt"]),
-        ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
-                            "router"]),
+        ("Communication", ["uart", "usb", "spi", "i2c", "ble", "ble-sniffer",
+                            "blufi", "router"]),
         ("Security", ["hsm"]),
         ("Box setup & management", ["hello", "boxes", "box-config", "dut",
                                     "nets", "instruments", "drivers", "custom",
@@ -237,6 +237,7 @@ def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=Non
 
 cli.add_command(adc)
 cli.add_command(ble)
+cli.add_command(ble_sniffer)
 cli.add_command(blufi)
 cli.add_command(_debug)
 cli.add_command(defaults)

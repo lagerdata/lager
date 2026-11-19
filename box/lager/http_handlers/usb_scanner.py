@@ -209,6 +209,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Yocto_Watt":        {"vid": "24e0", "pid": "002a", "net_type": ["watt-meter"]},
     "Joulescope_JS220":  {"vid": "16d0", "pid": "10ba", "net_type": ["watt-meter", "energy-analyzer"]},
     "Nordic_PPK2":       {"vid": "1915", "pid": "c00a", "net_type": ["watt-meter", "energy-analyzer"]},
+    # ble-sniffer: a Nordic board running the nRF Sniffer for Bluetooth LE
+    # firmware (nRF52840 Dongle), USB CDC ACM. The firmware is flashed outside
+    # Lager; see docs/source/supported-instruments.
+    "Nordic_nRF_Sniffer": {"vid": "1915", "pid": "522a", "net_type": ["ble-sniffer"]},
     # thermocouple
     "Phidget":           {"vid": "06c2", "pid": "0046", "net_type": ["thermocouple"]},
     # hsm
@@ -398,6 +402,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "Yocto_Watt":             {"watt-meter": ["0"]},
     "Joulescope_JS220":       {"watt-meter": ["0"], "energy-analyzer": ["0"]},
     "Nordic_PPK2":            {"watt-meter": ["0"], "energy-analyzer": ["0"]},
+    "Nordic_nRF_Sniffer":     {"ble-sniffer": ["0"]},
     "Phidget":                {"thermocouple": ["0", "1", "2", "3"]},
     "YubiHSM_2":              {"hsm": ["0"]},
     "Prolific_USB_Serial":    {"uart": ["0"]},

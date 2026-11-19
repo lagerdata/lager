@@ -91,7 +91,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 **Arguments:**
 - `NAME` - Unique name for the net (e.g., `supply1`, `debug_main`)
-- `ROLE` - The type of net. Valid roles: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `scope-channel`, `logic`, `eload`, `uart`, `usb`, `webcam`, `arm`, `watt-meter`, `energy-analyzer`, `thermocouple`, `dmm`, `i2c`, `spi`, `hsm`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
+- `ROLE` - The type of net. Valid roles: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `scope-channel`, `logic`, `eload`, `uart`, `usb`, `webcam`, `arm`, `watt-meter`, `energy-analyzer`, `thermocouple`, `dmm`, `ble-sniffer`, `i2c`, `spi`, `hsm`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
 - `CHANNEL` - Channel identifier, as `lager instruments` lists it (e.g., `1`, `AIN0`, `FIO0`, `I2C0`, `STM32F4`)
 - `ADDRESS` - VISA address or device path, as `lager instruments` lists it (e.g., `USB0::0x0CD5::0x0007::::INSTR`)
 
@@ -1035,6 +1035,7 @@ lager nets show battery1 --box my-lager-box
 | `energy-analyzer` | Energy and charge integration | Joulescope JS220, Nordic PPK2 |
 | `thermocouple` | Temperature sensor | Phidget thermocouples |
 | `dmm` | Bench multimeter | Siglent SDM3065X |
+| `ble-sniffer` | Bluetooth LE capture to pcap | nRF52840 Dongle with the nRF Sniffer for Bluetooth LE firmware |
 | `hsm` | Hardware security module | YubiHSM 2 |
 
 ## Debug Script Workflow

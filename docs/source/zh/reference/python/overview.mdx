@@ -37,6 +37,7 @@ from lager import Net, NetType  # Convenience import for Net and NetType
 | `NetType.DAC` | 数模转换器 | LabJack T7/U3/U6、MCC USB-202 |
 | `NetType.Thermocouple` | 温度传感器 | Phidget |
 | `NetType.DMM` | 台式万用表 | Siglent SDM3065X |
+| `NetType.BleSniffer` | 低功耗蓝牙嗅探器 | nRF52840 Dongle（nRF Sniffer 固件） |
 | `NetType.Rotation` | 旋转编码器（旧版，见下文） | Phidget 编码器 |
 | `NetType.WattMeter` | 功率计 | Yocto-Watt、Joulescope JS220、Nordic PPK2 |
 | `NetType.UART` | 串行通信 | USB 串口 |
@@ -224,6 +225,7 @@ print("Test complete")
 | [UART](/source/zh/reference/python/uart) | UART Net 串行通信 |
 | [Serial](./serial) | 原生 pyserial 支持 |
 | [BLE](/source/zh/reference/python/ble) | 低功耗蓝牙通信 |
+| [BLE Sniffer](/source/zh/reference/python/ble-sniffer) | 低功耗蓝牙抓包，保存为 pcap |
 | [WiFi](/source/zh/reference/python/wifi) | WiFi 配置 |
 | [BluFi](/source/zh/reference/python/blufi) | 通过 BLE 为 ESP32 配置 WiFi |
 | [路由器](/source/zh/reference/python/router) | MikroTik 路由器控制 |

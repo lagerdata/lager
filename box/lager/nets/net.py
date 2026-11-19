@@ -664,6 +664,10 @@ class Net:
                     from ..measurement.dmm.dispatcher import make_net
                     return make_net(name, item)
 
+                if role == NetType.BleSniffer:
+                    from ..protocols.ble_sniffer.dispatcher import make_net
+                    return make_net(name, item)
+
                 if role == NetType.Hsm:
                     from ..security.hsm.yubihsm2 import YubiHsm2
                     return YubiHsm2(name, item.get('address'))

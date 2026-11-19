@@ -109,6 +109,7 @@
                   "source/reference/cli/spi",
                   "source/reference/cli/usb",
                   "source/reference/cli/ble",
+                  "source/reference/cli/ble-sniffer",
                   "source/reference/cli/blufi",
                   "source/reference/cli/router"
                 ]
@@ -191,6 +192,7 @@
                   "source/reference/python/uart",
                   "source/reference/python/serial",
                   "source/reference/python/ble",
+                  "source/reference/python/ble-sniffer",
                   "source/reference/python/wifi",
                   "source/reference/python/blufi",
                   "source/reference/python/router"
@@ -629,6 +631,7 @@
                   "source/zh/reference/cli/spi",
                   "source/zh/reference/cli/usb",
                   "source/zh/reference/cli/ble",
+                  "source/zh/reference/cli/ble-sniffer",
                   "source/zh/reference/cli/blufi",
                   "source/zh/reference/cli/router"
                 ]
@@ -711,6 +714,7 @@
                   "source/zh/reference/python/uart",
                   "source/zh/reference/python/serial",
                   "source/zh/reference/python/ble",
+                  "source/zh/reference/python/ble-sniffer",
                   "source/zh/reference/python/wifi",
                   "source/zh/reference/python/blufi",
                   "source/zh/reference/python/router"

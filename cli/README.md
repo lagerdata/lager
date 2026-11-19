@@ -151,6 +151,9 @@ lager ble scan --timeout 5.0
 
 # Connect to device
 lager ble connect <address>
+
+# Capture 30 s of radio traffic to pcap with a BLE sniffer net (nRF52840 Dongle)
+lager ble-sniffer <net> capture --duration 30 --out cap.pcap
 ```
 
 ## Configuration

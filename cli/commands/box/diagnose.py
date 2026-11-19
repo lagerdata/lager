@@ -41,6 +41,7 @@ NET_ROLE_CHOICES = [
     'uart', 'webcam', 'adc', 'dac', 'gpio', 'thermocouple', 'i2c', 'spi',
     'watt-meter', 'energy-analyzer', 'router', 'rotation', 'arm', 'actuate',
     'power-supply-2q', 'wifi', 'analog', 'logic', 'waveform', 'hsm', 'dmm',
+    'ble-sniffer',
 ]
 
 

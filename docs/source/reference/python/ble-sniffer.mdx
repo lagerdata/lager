@@ -1,0 +1,94 @@
+---
+title: BLE Sniffer
+description: Capture Bluetooth LE radio traffic to pcap from Python
+---
+
+Capture Bluetooth LE radio traffic with a BLE sniffer net. The sniffer is an nRF52840 Dongle that runs Nordic's nRF Sniffer for Bluetooth LE firmware. A capture runs in the script's own process and blocks for its full duration.
+
+## Import
+
+```python
+from lager import Net, NetType
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `capture(duration=10.0, ...)` | Capture for a fixed time and write a pcap file |
+| `status()` | Report the sniffer's serial port and lock state |
+
+### `Net.get(name, type=NetType.BleSniffer)`
+
+```python
+sniffer = Net.get('sniffer1', type=NetType.BleSniffer)
+```
+
+### `capture(duration=10.0, follow=None, address_type=None, follow_by_name=None, only_advertising=False, coded=False, rssi_cut_off=None, out=None)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `duration` | `float` | Capture time in seconds, 1 to 86400 |
+| `follow` | `str` | Follow the device with this address, `AA:BB:CC:DD:EE:FF`, and its connections |
+| `address_type` | `str` | `public` or `random`, the type of the `follow` address. `None` takes it from the device's first advertisement |
+| `follow_by_name` | `str` | Follow the first device whose legacy advertising or scan response carries exactly this name. It cannot be combined with `follow` or `coded` |
+| `only_advertising` | `bool` | With `follow` or `follow_by_name`, record the device's advertising packets only, not its connections |
+| `coded` | `bool` | Scan and follow on the LE Coded PHY |
+| `rssi_cut_off` | `int` | Drop advertising packets weaker than this RSSI, -255 to -10 dBm. Packets of a followed connection are kept |
+| `out` | `str` or `Path` | Pcap file to write. The default is a new file in `lager.output_dir()` |
+
+An attached `lager python` run ends at 300 s, start-up included, so keep an attached capture under about 280 s and run longer ones detached. The pcap is first written to `<out>.part` and renamed to `out` when the capture ends. A capture that fails at the start leaves an existing `out` unchanged.
+
+**Returns:** a `dict` with these keys:
+
+| Key | Description |
+|-----|-------------|
+| `file` | Path of the pcap file on the Lager Box |
+| `bytes` | File size |
+| `packets` | Number of captured packets |
+| `duration` | Measured capture time in seconds |
+| `port` | The sniffer's serial port |
+| `firmware` | Firmware version the sniffer reported |
+| `followed` | Address a follow request was sent for, or `None`: no follow, or the device was never heard advertising |
+| `follow_seen` | Whether anything from the followed device was captured; `None` without a follow |
+| `stopped` | Whether the capture was stopped early. `lager ble-sniffer NET stop` stops only captures that `lager ble-sniffer capture` started, so from a script this is `False` |
+
+**Raises:**
+
+- `ValueError`: an option has the wrong type or is out of range, or two options conflict. The sniffer is not touched.
+- `BleSnifferBusyError` (from `lager.protocols.ble_sniffer`): another capture holds the sniffer.
+- `BleSnifferBackendError` (from `lager.exceptions`): the capture failed. The sniffer is not on USB, another program holds its port, or it did not answer within 2 s. Unplug and replug a sniffer that does not answer. When it stops answering mid-capture, the packets recorded before that stay in `out`, and the message gives their number.
+
+Under `lager python`, the default file is in the run's output folder, so `--download` brings it back to your computer.
+
+### `status()`
+
+Returns a `dict` with `serial`, `port` (`None` when the sniffer is not on USB), `present` and `busy`. It does not open the sniffer.
+
+## Example
+
+```python
+from lager import Net, NetType
+
+sniffer = Net.get('sniffer1', type=NetType.BleSniffer)
+
+# Advertising traffic for 10 seconds
+result = sniffer.capture(duration=10)
+assert result['packets'] > 0, 'No Bluetooth LE packets captured'
+print(f"{result['packets']} packets in {result['file']}")
+
+# Follow the DUT while it connects
+dut = sniffer.capture(duration=30, follow='C0:FF:EE:00:12:34')
+assert dut['follow_seen'], 'Nothing from the DUT was captured'
+```
+
+```bash
+lager python sniff.py --download --box my-lager-box
+```
+
+A capture longer than 300 seconds needs a detached run: `lager python sniff.py --detach`.
+
+## Notes
+
+- The pcap link type is `NORDIC_BLE` (272). Wireshark and `tshark` decode it.
+- See the [CLI reference](/source/reference/cli/ble-sniffer#setting-up-a-sniffer) to flash the dongle and add the net.

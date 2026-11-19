@@ -393,6 +393,51 @@ API_REFERENCE: dict[str, dict] = {
             'assert v is not None and 3.2 < v < 3.4, f"3V3 rail out of range: {v}"\n'
         ),
     },
+    "BleSniffer": {
+        "net_type_enum": "NetType.BleSniffer",
+        "get_pattern": 'sniffer = Net.get("sniffer1", type=NetType.BleSniffer)',
+        "methods": [
+            {"name": "capture",
+             "sig": "capture(duration=10.0, follow=None, address_type=None, "
+                    "follow_by_name=None, only_advertising=False, coded=False, "
+                    "rssi_cut_off=None, out=None) -> dict",
+             "desc": "Capture Bluetooth LE radio traffic for duration seconds (1-86400) to a "
+                     "pcap file. Returns file (a path on the box), bytes, packets, duration "
+                     "(measured), port, firmware, followed (address a follow request was sent "
+                     "for, or None), follow_seen (whether anything from it was captured; None "
+                     "without a follow) and stopped. out defaults to a new file in "
+                     "lager.output_dir()"},
+            {"name": "status", "sig": "status() -> dict",
+             "desc": "Report serial, port, present and busy without opening the sniffer"},
+        ],
+        "gotchas": [
+            "The sniffer runs Nordic's nRF Sniffer for Bluetooth LE firmware (USB 1915:522a).",
+            ("capture() blocks for its whole duration; a second capture on the same "
+             "sniffer raises BleSnifferBusyError (from lager.protocols.ble_sniffer)."),
+            ("An attached lager python run ends at 300 s including start-up: keep attached "
+             "captures under about 280 s and run longer ones with --detach."),
+            ("Without follow or follow_by_name the sniffer records advertising and connection "
+             "requests only, never connection traffic; follow the device before it connects."),
+            ("follow takes AA:BB:CC:DD:EE:FF. Leave address_type None to take it from the "
+             "device's advertising; a wrong type follows nothing. Check follow_seen."),
+            ("follow_by_name matches the exact name in legacy advertising or scan responses "
+             "only, and cannot be combined with coded."),
+            ("only_advertising needs follow or follow_by_name. rssi_cut_off drops advertising "
+             "packets only."),
+            "The pcap link type is NORDIC_BLE (272); Wireshark and tshark decode it.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'sniffer = Net.get("sniffer1", type=NetType.BleSniffer)\n'
+            'result = sniffer.capture(duration=10)\n'
+            'assert result["packets"] > 0, "No Bluetooth LE packets captured"\n'
+            '\n'
+            '# Follow the DUT while it connects\n'
+            'dut = sniffer.capture(duration=30, follow="C0:FF:EE:00:12:34")\n'
+            'assert dut["follow_seen"], "Nothing from the DUT was captured"\n'
+        ),
+    },
     "WattMeter": {
         "net_type_enum": "NetType.WattMeter",
         "get_pattern": 'watt = Net.get("watt1", type=NetType.WattMeter)',
@@ -704,6 +749,7 @@ _DRIVER_CLASSES: dict[str, str] = {
     "I2C":            "lager.protocols.i2c.i2c_net.I2CNet",
     "Thermocouple":   "lager.measurement.thermocouple.thermocouple_net.ThermocoupleBase",
     "DMM":            "lager.measurement.dmm.dmm_net.DMMNet",
+    "BleSniffer":     "lager.protocols.ble_sniffer.ble_sniffer_net.BleSnifferNet",
     "WattMeter":      "lager.measurement.watt.watt_net.WattMeterBase",
     "EnergyAnalyzer": "lager.measurement.energy_analyzer.energy_analyzer_net.EnergyAnalyzerBase",
     # USBNetWrapper is what ``Net.get(name, NetType.Usb)`` returns and what a

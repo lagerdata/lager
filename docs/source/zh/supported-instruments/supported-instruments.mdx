@@ -375,6 +375,7 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 | 协议 | 控制命令 | 能力 |
 |---|---|---|
 | 低功耗蓝牙（BLE） | `lager ble` | 扫描、连接、断开、服务发现。可通过 Python API 进行 GATT 读、写和通知 |
+| 低功耗蓝牙抓包 | `lager ble-sniffer` | 用运行 nRF Sniffer for Bluetooth LE 固件的 nRF52840 Dongle（USB `1915:522a`）抓取空口流量，保存为 pcap。可按地址或名称跟随设备，可只抓广播，支持 LE Coded PHY 和 RSSI 门限。参见[设置嗅探器](/source/zh/reference/cli/ble-sniffer#设置嗅探器) |
 | BluFi（通过 BLE 为 ESP32 配置 WiFi） | `lager blufi` | 扫描、连接、配置 WiFi 凭据、状态、WiFi 扫描 |
 | WiFi（Box 自身的接口） | Python API（`lager.protocols.wifi`） | 扫描、连接、断开、状态、删除已保存的连接 |
 

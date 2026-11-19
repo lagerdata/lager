@@ -327,6 +327,92 @@ def _dmm(netname, role, action, params):
     return result
 
 
+def _ble_sniffer(netname, role, action, params):
+    # A capture holds the sniffer for its whole duration, past hardware_
+    # service's 30 s deadline, so "start" runs it as a background job of this
+    # process (see lager.protocols.ble_sniffer.capture_jobs); the client polls
+    # "job", may "stop" it, then downloads the file from OUTPUT_ROOT through
+    # GET /download-file and deletes it. Files left there (--keep, a client
+    # that went away) are pruned after a day.
+    from lager.exceptions import BleSnifferBackendError
+    from lager.protocols.ble_sniffer import capture_jobs
+    from lager.protocols.ble_sniffer import dispatcher as sniffers
+    from lager.protocols.ble_sniffer.ble_sniffer_net import (
+        OUTPUT_ROOT,
+        BleSnifferBusyError,
+        CaptureOptions,
+        default_capture_path,
+        delete_capture,
+        prune_captures,
+        request_stop,
+    )
+
+    if action not in ("start", "job", "stop", "status", "delete"):
+        raise UnknownAction(action)
+    if action == "delete":
+        path = params.get("file")
+        if not isinstance(path, str) or not path:
+            raise ValueError("file (the capture path on the box) is required")
+        try:
+            deleted = delete_capture(path)
+        except FileNotFoundError:
+            return _ok(f"No capture at {path}", {"file": path, "deleted": False})
+        return _ok(f"Deleted {deleted}", {"file": str(deleted), "deleted": True})
+    if action == "job":
+        job_id = params.get("job")
+        if not isinstance(job_id, str) or not job_id:
+            raise ValueError("job (the ID 'start' returned) is required")
+        job = capture_jobs.get_job(job_id)
+        if job is None:
+            raise ValueError(f"No capture job {job_id} on this box; it may have restarted")
+        info = job.to_dict()
+        return _ok(f"Capture {job_id} {info['state']}: {info['packets']} packet(s) in "
+                   f"{info['elapsed']:.1f} of {info['duration']:g} s", info)
+
+    rec = _find_rec(netname, "ble-sniffer", BleSnifferBackendError)
+    driver = sniffers.make_driver(netname, rec)
+    if action == "status":
+        status = driver.status()
+        latest = capture_jobs.latest_job(status["serial"])
+        status["job"] = latest.to_dict() if latest is not None else None
+        if not status["present"]:
+            message = f"Sniffer {status['serial']} not found on USB"
+        elif status["busy"]:
+            message = f"Sniffer on {status['port']}, busy with a capture"
+        else:
+            message = f"Sniffer on {status['port']}, idle"
+        return _ok(message, status)
+    if action == "stop":
+        serial = driver.status()["serial"]
+        stopping = request_stop(serial)
+        if stopping is None:
+            return _ok(f"Sniffer {serial} has no capture from the box API to stop",
+                       {"stopped": False, "file": None, "job": None})
+        latest = capture_jobs.latest_job(serial)
+        return _ok(f"Stopping the capture on sniffer {serial}",
+                   {"stopped": True, "file": str(stopping),
+                    "job": latest.id if latest is not None else None})
+
+    # Types are checked by validate(), so a wrong one is a 400, not a 500.
+    options = CaptureOptions(
+        duration=params.get("duration", 10.0),
+        follow=params.get("follow") or None,
+        address_type=params.get("address_type") or None,
+        follow_by_name=params.get("follow_by_name") or None,
+        only_advertising=bool(params.get("only_advertising")),
+        coded=bool(params.get("coded")),
+        rssi_cut_off=params.get("rssi_cut_off"),
+    )
+    options.validate()
+    prune_captures()
+    try:
+        job = capture_jobs.start_job(netname, driver, options,
+                                     default_capture_path(OUTPUT_ROOT, netname))
+    except BleSnifferBusyError as e:
+        raise DriverBusy(str(e)) from e
+    return _ok(f"Capture {job.id} started for {options.duration:g} s", job.to_dict())
+
+
 _HSM_ACTIONS = ("info", "blink", "objects", "delete", "generate", "pubkey", "sign", "reset")
 
 
@@ -1725,6 +1811,7 @@ ROLE_ACTIONS = {
     "dac": _dac,
     "thermocouple": _thermocouple,
     "dmm": _dmm,
+    "ble-sniffer": _ble_sniffer,
     "watt-meter": _watt_meter,
     "eload": _eload,
     "solar": _solar,

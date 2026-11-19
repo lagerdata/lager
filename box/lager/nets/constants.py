@@ -35,6 +35,7 @@ class NetType(Enum):
     Router = auto()
     Hsm = auto()
     DMM = auto()
+    BleSniffer = auto()
 
     @classmethod
     def from_role(cls, role):
@@ -71,6 +72,7 @@ class NetType(Enum):
             'mikrotik': cls.Router,
             'hsm': cls.Hsm,
             'dmm': cls.DMM,
+            'ble-sniffer': cls.BleSniffer,
         }
         return mapping[role]
 
@@ -103,5 +105,6 @@ class NetType(Enum):
             self.Router: None,
             self.Hsm: None,
             self.DMM: None,
+            self.BleSniffer: None,
         }
         return mapping[self]
