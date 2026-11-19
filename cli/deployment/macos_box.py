@@ -43,6 +43,10 @@ except ImportError:  # run on a remote Mac by macos_remote.py, without the CLI
 LABEL = "com.lagerdata.lager-host"
 CONTAINER_NAME = "lager"
 ETC_DIR = "/etc/lager"
+# The name the CLI saved this Mac's Box under. Kept here, with the nets,
+# so a reinstall after an uninstall (which forgets the saved Box) brings
+# back the same name.
+BOX_NAME_FILE = os.path.join(ETC_DIR, "box-name")
 LOCAL_ADDRESS = "127.0.0.1"
 IMAGE_REPO = "ghcr.io/lagerdata/lager-box"
 # The only platform the Box image is published for today. It runs under the
@@ -408,7 +412,8 @@ def homebrew_prefix_with(relative: str) -> Optional[str]:
     return None
 
 
-def build_labjack_library(layout: Layout, run: Run = _run) -> Optional[str]:
+def build_labjack_library(layout: Layout, run: Run = _run,
+                          echo=lambda _line: None) -> Optional[str]:
     """Build LabJack's USB library from LabJack's source. A reason, or None.
 
     Optional: without it everything but LabJack U3/U6/UE9 devices works.
@@ -418,6 +423,7 @@ def build_labjack_library(layout: Layout, run: Run = _run) -> Optional[str]:
     prefix = homebrew_prefix_with("include/libusb-1.0/libusb.h")
     if prefix is None:
         return "libusb is not installed (brew install libusb)"
+    echo("Building the LabJack U3/U6 library...")
     if not (shutil.which("git") and shutil.which("make") and shutil.which("cc")):
         return "the command line developer tools are not installed (xcode-select --install)"
     source = layout.build_dir / "exodriver"
@@ -664,7 +670,8 @@ def ensure_rust(run: Run = _run, echo=print) -> Optional[str]:
     return None
 
 
-def build_scope_daemon(layout: Layout, source: Path, run: Run = _run) -> Optional[str]:
+def build_scope_daemon(layout: Layout, source: Path, run: Run = _run,
+                       echo=lambda _line: None) -> Optional[str]:
     """Build the oscilloscope daemon natively. A reason, or None.
 
     Optional: without it everything but oscilloscope nets works. PicoTech's
@@ -686,6 +693,7 @@ def build_scope_daemon(layout: Layout, source: Path, run: Run = _run) -> Optiona
         wanted = ".".join(str(n) for n in MIN_RUST)
         return f"Rust {wanted} or newer is needed (rustup update stable)"
     target = layout.build_dir / "scope-target"
+    echo("Building the oscilloscope daemon (a few minutes the first time)...")
     result = run([cargo, *toolchain, "build", "--release", "--target-dir", str(target)],
                  cwd=str(crate), timeout=3600,
                  env=dict(os.environ, LAGER_PICOSCOPE_INCLUDE=str(include)))
@@ -815,15 +823,16 @@ def start_container(docker: str, env: dict, image: str, source: Path,
         with open(nets, "w", encoding="utf-8") as fh:
             fh.write("[]")
     if run([docker, "image", "inspect", image], env=env, timeout=60).returncode != 0:
-        echo(f"Downloading {image} ...")
-        result = run([docker, "pull", "--platform", IMAGE_PLATFORM, image],
-                     env=env, timeout=3600, capture_output=False)
+        echo(f"Downloading the Box image {image} (several GB; this takes a while)...")
+        # Without a terminal Docker prints a line per layer event, hundreds.
+        pull = [docker, "pull", "--platform", IMAGE_PLATFORM,
+                *([] if sys.stdout.isatty() else ["--quiet"]), image]
+        result = run(pull, env=env, timeout=3600, capture_output=False)
         if result.returncode != 0:
             # Over SSH the login keychain is locked, and a Docker set up to
             # keep credentials there fails every pull, even of a public
             # image. Pull once more with no credential store at all.
-            result = run([docker, "pull", "--platform", IMAGE_PLATFORM, image],
-                         env=anonymous_env(docker, env, run), timeout=3600,
+            result = run(pull, env=anonymous_env(docker, env, run), timeout=3600,
                          capture_output=False)
         if result.returncode != 0:
             raise LagerError(
@@ -868,6 +877,23 @@ def wait_for_link(docker: str, env: dict, run: Run = _run, wait_s: float = 120.0
                "tail -50 ~/Library/Logs/Lager/host-agent.log"])
 
 
+def remembered_box_name() -> Optional[str]:
+    """The name this Mac's Box was last saved under, if one was recorded."""
+    try:
+        with open(BOX_NAME_FILE, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def remember_box_name(name: str) -> None:
+    try:
+        with open(BOX_NAME_FILE, "w", encoding="utf-8") as fh:
+            fh.write(name + "\n")
+    except OSError:
+        pass
+
+
 def write_state(box_version: str, cli_version: str, ref: str) -> None:
     """What `lager hello` and `lager boxes` report, as a Linux install writes."""
     for name, content in (("version", f"{box_version}|{cli_version}"), ("ref", ref)):
@@ -888,11 +914,13 @@ class Result:
     image: str
     box_version: str
     skipped: List[str] = field(default_factory=list)
+    ready: List[str] = field(default_factory=list)
 
 
 def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
             layout: Optional[Layout] = None, bind: str = LOCAL_ADDRESS,
-            source: Optional[Path] = None, confirm=None) -> Result:
+            source: Optional[Path] = None, confirm=None,
+            skip: Sequence[str] = ()) -> Result:
     """Provision the agent and the container on this Mac.
 
     ``bind`` is the address the Box's ports are published on: this Mac only
@@ -900,6 +928,7 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     ``source`` is a Box source tree already on this Mac, used instead of the
     checkout or a download. ``confirm`` asks the user a yes/no question
     before something is installed on their behalf (see :func:`ensure_docker`).
+    ``skip`` leaves out optional pieces: "jlink", "picoscope".
     """
     layout = layout or Layout()
     from_tree = source is not None or running_from_checkout() is not None
@@ -914,23 +943,27 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     box_version = source_version(source) or version.lstrip("v")
     image = image_for(box_version if from_tree else version)
 
-    echo("Installing the host agent...")
+    echo("Installing the host agent's Python packages...")
     skipped = ensure_agent_env(layout, run)
-    reason = build_labjack_library(layout, run)
-    if reason:
-        skipped.append(f"LabJack U3/U6 support: {reason}")
-    reason = ensure_rust(run, echo) or build_scope_daemon(layout, source, run)
-    if reason:
-        skipped.append(f"Oscilloscope support: {reason}")
-    reason = ensure_picoscope_app(run, echo)
-    if reason:
-        skipped.append(f"PicoScope support: {reason}")
-    reason = ensure_jlink(run, echo)
-    if reason:
-        skipped.append(f"J-Link debugging: {reason}")
-    reason = ensure_arm_gdb(run, echo)
-    if reason:
-        skipped.append(f"RTT auto-detection: {reason}")
+    ready = []
+
+    def optional(feature, step):
+        reason = step()
+        (skipped.append(f"{feature}: {reason}") if reason else ready.append(feature))
+
+    optional("LabJack U3/U6 support", lambda: build_labjack_library(layout, run, echo))
+    if "picoscope" in skip:
+        echo("Leaving out PicoScope support (--skip-picoscope).")
+    else:
+        optional("Oscilloscope support", lambda: ensure_rust(run, echo)
+                 or build_scope_daemon(layout, source, run, echo))
+        optional("PicoScope support", lambda: ensure_picoscope_app(run, echo))
+    if "jlink" in skip:
+        echo("Leaving out J-Link debugging (--skip-jlink).")
+    else:
+        optional("J-Link debugging", lambda: ensure_jlink(run, echo))
+    optional("RTT auto-detection", lambda: ensure_arm_gdb(run, echo))
+    echo("Starting the host agent...")
     start_agent(layout, source, run)
 
     echo("Starting the Box container...")
@@ -938,14 +971,18 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     wait_for_link(docker, env, run)
     ref = f"checkout:{source}" if from_tree else version
     write_state(box_version, cli_version, ref)
-    return Result(source=source, image=image, box_version=box_version, skipped=skipped)
+    return Result(source=source, image=image, box_version=box_version,
+                  skipped=skipped, ready=ready)
 
 
-def installed_pieces(layout: Optional[Layout] = None) -> List[str]:
+def installed_pieces(layout: Optional[Layout] = None,
+                     keep_images: bool = False) -> List[str]:
     """What an uninstall would remove, for a dry run."""
     layout = layout or Layout()
     pieces = [f"the Box container '{CONTAINER_NAME}'",
               f"the host agent's launchd job ({layout.plist})"]
+    if not keep_images:
+        pieces.append(f"the Box images ({IMAGE_REPO})")
     if layout.app_dir.exists():
         pieces.append(f"the host agent's files ({layout.app_dir})")
     return pieces
@@ -963,8 +1000,10 @@ def backup_config(layout: Optional[Layout] = None) -> Optional[Path]:
 
 
 def uninstall(*, purge_config: bool = False, echo=print, run: Run = _run,
-              layout: Optional[Layout] = None) -> None:
-    """Remove the container and the agent. Configuration is kept by default.
+              layout: Optional[Layout] = None, keep_images: bool = False) -> None:
+    """Remove the container, its images and the agent. Configuration is kept
+    by default. Images are removed as a Linux uninstall removes them, unless
+    ``keep_images``.
 
     ``/etc/lager`` itself stays even when purged: removing it would need
     administrator rights, and an empty directory is harmless.
@@ -977,6 +1016,13 @@ def uninstall(*, purge_config: bool = False, echo=print, run: Run = _run,
         echo("Docker is not running; the Box container was not removed.")
     if docker:
         run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
+        if not keep_images:
+            listed = run([docker, "images", "--format", "{{.Repository}}:{{.Tag}}",
+                          IMAGE_REPO], env=env, timeout=60).stdout or ""
+            images = [line for line in listed.split() if not line.endswith(":<none>")]
+            if images:
+                echo("Removing the Box images...")
+                run([docker, "rmi", "-f", *images], env=env, timeout=300)
     stop_agent(layout, run)
     if layout.plist.exists():
         layout.plist.unlink()

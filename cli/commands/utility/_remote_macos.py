@@ -166,7 +166,7 @@ def run_remote(ssh_host, identity_args, arguments, run=None):
 
 
 def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version, yes,
-                         fork=None):
+                         fork=None, skip_jlink=False, skip_picoscope=False):
     if fork:
         raise click.UsageError("--fork is not supported for a Box on a Mac yet.")
     from ... import __version__ as cli_version
@@ -181,7 +181,12 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
         click.echo(f"Installing Lager Box {version} on it.")
     click.echo("This sets up a background agent for the instruments plugged "
                "into that Mac and a container for the Box. The Mac's password "
-               f"is asked for once, to create {macos_box.ETC_DIR}.")
+               f"is asked for once, if {macos_box.ETC_DIR} does not exist there yet.")
+    from ._local_install import LINUX_ONLY_INSTALL_OPTIONS, ignored_options
+    # --user is the SSH user here, so it is not ignored.
+    for flag, why in ignored_options(ctx, [option for option in LINUX_ONLY_INSTALL_OPTIONS
+                                           if option[0] != "user"]):
+        click.secho(f"Ignoring {flag}: {why}.", fg='yellow')
     if not yes and not click.confirm("Continue?", default=True):
         click.secho("Installation cancelled.", fg='yellow')
         ctx.exit(1)
@@ -190,6 +195,10 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
     ship_installer(ssh_host, identity_args)
     arguments = (f"install --version {shlex.quote(version)} "
                  f"--cli-version {shlex.quote(cli_version)} --bind 0.0.0.0")
+    if skip_jlink:
+        arguments += " --skip jlink"
+    if skip_picoscope:
+        arguments += " --skip picoscope"
     if checkout is not None:
         ship_source(checkout, ssh_host, identity_args)
         arguments += f" --source {REMOTE_SOURCE_DIR}"
@@ -207,6 +216,8 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
             platform=PLATFORM)
 
     click.echo()
+    if outcome.get("ready"):
+        click.echo("Set up: " + ", ".join(outcome["ready"]) + ".")
     for line in outcome.get("skipped") or []:
         click.secho(f"Not set up -- {line}", fg='yellow')
     if outcome.get("skipped"):
@@ -232,9 +243,11 @@ def _connect(ip, user):
     return ssh_host, ssh_identity_args(identity)
 
 
-def uninstall_remote_macos(ctx, *, ip, user, purge_config, yes, dry_run):
-    click.echo(f"This removes from the Mac at {ip}: the Box container, the host "
-               "agent and its launchd job.")
+def uninstall_remote_macos(ctx, *, ip, user, purge_config, yes, dry_run,
+                           keep_docker_images=False):
+    click.echo(f"This removes from the Mac at {ip}: the Box container"
+               + ("" if keep_docker_images else ", the Box images")
+               + ", the host agent and its launchd job.")
     click.echo("Everything in /etc/lager on it is removed too, after a copy is "
                "left in that user's home directory." if purge_config
                else "/etc/lager on it (saved nets, Box configuration) is kept.")
@@ -247,7 +260,8 @@ def uninstall_remote_macos(ctx, *, ip, user, purge_config, yes, dry_run):
     ssh_host, identity_args = _connect(ip, user)
     ship_installer(ssh_host, identity_args)
     run_remote(ssh_host, identity_args,
-               "uninstall" + (" --purge-config" if purge_config else ""))
+               "uninstall" + (" --purge-config" if purge_config else "")
+               + (" --keep-images" if keep_docker_images else ""))
     name = get_box_name_by_ip(ip)
     if name and (yes or click.confirm(
             f"Remove '{name}' from local .lager configuration?", default=True)):
