@@ -1389,6 +1389,82 @@ def _validate_safety_limits(payload):
     return limits, None
 
 
+# Instruments whose gpio nets can declare a power-up level: the LabJacks that
+# keep an I/O configuration in flash. Matches the GPIO dispatcher's own tests.
+_POWER_UP_INSTRUMENT_RE = re.compile(r"labjack[_\-\s]*(t7|u3)", re.IGNORECASE)
+
+
+def _power_up_error(record, value):
+    """Why ``value`` cannot be the power-up level of ``record``, or None."""
+    from ..io.gpio.labjack_boot_config import normalize_level
+    try:
+        level = normalize_level(value)
+    except ValueError as e:
+        return str(e)
+    if level is None:
+        return None
+    if record.get('role') != 'gpio':
+        return ("power_up applies to gpio nets only; '%s' is a %s net"
+                % (record.get('name'), record.get('role')))
+    if not _POWER_UP_INSTRUMENT_RE.search(record.get('instrument') or ''):
+        return ("'%s' is on a %s, which has no stored power-up configuration; "
+                "power_up is supported on LabJack T7 and U3 gpio nets"
+                % (record.get('name'), record.get('instrument') or 'unknown instrument'))
+    return None
+
+
+def _power_up_report(mode, allow_undeclared):
+    """Check or write every LabJack's boot config from its declared nets.
+
+    Groups LabJack gpio nets by the same physical-device identity ``/invoke``
+    locks on, and runs one hardware_service call per LabJack, so the work
+    serialises against ordinary gpo/gpi/adc/dac calls on that device.
+    """
+    from ..nets.device import Device, DeviceError
+    from .net_command import _physical_device_id
+
+    groups = {}
+    undeclared = []
+    for rec in Net.get_local_nets():
+        if rec.get('role') != 'gpio':
+            continue
+        if not _POWER_UP_INSTRUMENT_RE.search(rec.get('instrument') or ''):
+            continue
+        if rec.get('power_up') is None:
+            undeclared.append(rec.get('name'))
+            continue
+        device_id = _physical_device_id('gpio', rec.get('instrument') or '', rec)
+        groups.setdefault(device_id, []).append(rec)
+
+    devices = []
+    for device_id, recs in sorted(groups.items()):
+        nets = [{'name': r.get('name'), 'power_up': r.get('power_up')} for r in recs]
+        entry = {'device_id': device_id, 'instrument': recs[0].get('instrument')}
+        try:
+            proxy = Device('labjack_boot_config_hs', {
+                'name': recs[0].get('name'),
+                'instrument': recs[0].get('instrument') or '',
+                'device_id': device_id,
+            }, timeout=60.0)
+            entry.update(proxy.run(mode=mode, nets=nets,
+                                   allow_undeclared=bool(allow_undeclared)))
+        except DeviceError as e:
+            payload = e.args[0] if e.args else str(e)
+            if isinstance(payload, dict):
+                payload = payload.get('error') or str(payload)
+            entry['error'] = str(payload)
+        except Exception as e:  # ConnectionFailed and anything else
+            entry['error'] = str(e)
+        devices.append(entry)
+
+    return {
+        'mode': mode,
+        'devices': devices,
+        'undeclared': sorted(n for n in undeclared if n),
+        'in_sync': all(d.get('in_sync') and not d.get('error') for d in devices),
+    }
+
+
 def register_nets_routes(app: Flask) -> None:
     """Register nets REST routes with the Flask app."""
 
@@ -1541,6 +1617,13 @@ def register_nets_routes(app: Flask) -> None:
         error = _ud_pin_span_error(data)
         if error:
             return jsonify({'error': error}), 400
+        if data.get('power_up') is not None:
+            error = _power_up_error(data, data['power_up'])
+            if error:
+                return jsonify({'error': error}), 400
+            data['power_up'] = str(data['power_up']).strip().lower()
+        else:
+            data.pop('power_up', None)
 
         # If the name is changing, delete the old entry first
         if data['name'] != name:
@@ -1596,6 +1679,52 @@ def register_nets_routes(app: Flask) -> None:
             name, limits or None, len(matched),
         )
         return jsonify({'ok': True, 'name': name, 'safety_limits': limits or None})
+
+    @app.route('/nets/<name>/power-up', methods=['PUT'])
+    def nets_set_power_up(name):
+        """Set or clear a gpio net's declared power-up level.
+
+        Body: ``{"power_up": "low" | "high" | null}``. Merges like
+        ``/safety-limits``, so no other field on the net is disturbed. This only
+        records the level; ``POST /nets/power-up`` writes it to the LabJack.
+        """
+        payload = request.get_json(force=True, silent=True)
+        if not isinstance(payload, dict) or 'power_up' not in payload:
+            return jsonify({'error': 'body must be {"power_up": "low" | "high" | null}'}), 400
+
+        nets = [dict(n) for n in Net.get_local_nets()]
+        matched = [n for n in nets if n.get('name') == name]
+        if not matched:
+            return jsonify({'error': "no saved net named '%s'" % name}), 404
+        value = payload['power_up']
+        for record in matched:
+            error = _power_up_error(record, value)
+            if error:
+                return jsonify({'error': error}), 400
+
+        level = None if value is None else str(value).strip().lower()
+        for record in matched:
+            if level:
+                record['power_up'] = level
+            else:
+                record.pop('power_up', None)
+        Net.save_local_nets(nets)
+        logger.info("power-up level for net '%s' set to %s", name, level)
+        return jsonify({'ok': True, 'name': name, 'power_up': level})
+
+    @app.route('/nets/power-up', methods=['POST'])
+    def nets_power_up():
+        """Check or write every LabJack's boot config from its declared nets.
+
+        Body: ``{"mode": "plan" | "apply", "allow_undeclared": false}``.
+        ``plan`` only reads. ``apply`` drives the declared pins and writes
+        flash on any LabJack whose stored config differs.
+        """
+        payload = request.get_json(force=True, silent=True) or {}
+        mode = payload.get('mode', 'plan')
+        if mode not in ('plan', 'apply'):
+            return jsonify({'error': "mode must be 'plan' or 'apply'"}), 400
+        return jsonify(_power_up_report(mode, payload.get('allow_undeclared', False)))
 
     @app.route('/nets', methods=['DELETE'])
     def nets_delete_all():
