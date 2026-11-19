@@ -1,0 +1,69 @@
+---
+title: "Version 0.65.0"
+description: "November 19, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **Update your boxes to use the `ble-sniffer` net.** The sniffer driver runs on the Lager Box.
+  Run `lager update --box <box-name>` after you upgrade the CLI.
+- **`lager ssh` now locks the box for the session.** An interactive shell or a one-shot remote
+  command takes an ephemeral box lock and releases it when the session ends. While the lock is
+  held, other users' `lager` commands that change the box fail with a "locked by" error.
+  `lager ssh` also fails on a box locked by another user. Set
+  `LAGER_AUTO_LOCK_DISABLE=1` to connect without the lock. A direct `ssh user@box` takes no
+  lock.
+
+## <u>Features</u>
+
+- **A `ble-sniffer` net captures Bluetooth LE radio traffic to pcap.** The net uses an nRF52840
+  Dongle that runs Nordic's nRF Sniffer for Bluetooth LE firmware.
+  `lager ble-sniffer <net> capture --duration 10 --out cap.pcap` records for the given time and
+  downloads the file. A script uses `Net.get(name, type=NetType.BleSniffer).capture()`.
+  - The capture can follow one device by address or by name, and can drop weak advertising
+    packets.
+  - The Lager Box speaks the sniffer's serial protocol itself, so the box host needs no extra
+    software. Only the dongle needs Nordic's firmware.
+  - Wireshark decodes the file with its `nordic_ble` dissector.
+
+  See [ble-sniffer](/source/reference/cli/ble-sniffer) for the commands and options.
+
+## <u>Bug Fixes</u>
+
+- **`lager scope NET cursor time` and `cursor volts` accept negative values.** The CLI read a
+  negative value such as `-0.001` as an option and failed before it reached the box. A negative
+  first or second value no longer needs a `--` separator.
+
+## <u>Improvements</u>
+
+- **`lager ssh` still connects to a box that cannot take a lock.** On a box image without the
+  lock API, `lager ssh` prints a warning and connects without the lock.
+
+## <u>Known Limitations</u>
+
+- **Two `lager ssh` sessions to one box share one lock.** When the first session ends, it
+  releases the lock while the second session is still open.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.65.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.65.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.65.0/)
