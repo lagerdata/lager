@@ -322,6 +322,23 @@ def test_a_missing_runtime_is_installed_with_brew_only_when_the_user_agrees(tmp_
     assert run.calls[0][1]["capture_output"] is False
 
 
+def test_an_arm_gdb_is_installed_with_brew_only_when_missing():
+    run = _Runner()
+    with mock.patch.object(macos_box, "homebrew_prefix_with",
+                           side_effect=lambda rel: "/opt/homebrew"):
+        assert macos_box.ensure_arm_gdb(run, echo=lambda *_: None) is None
+    assert run.calls == [], "already installed: nothing is run"
+
+    found = {"bin/brew": "/opt/homebrew"}
+    with mock.patch.object(macos_box, "homebrew_prefix_with", side_effect=found.get):
+        reason = macos_box.ensure_arm_gdb(run, echo=lambda *_: None)
+    assert run.calls[0][0] == ["/opt/homebrew/bin/brew", "install", "arm-none-eabi-gdb"]
+    assert "brew install arm-none-eabi-gdb" in reason, "still absent afterwards"
+
+    with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
+        assert "Homebrew" in macos_box.ensure_arm_gdb(_Runner(), echo=lambda *_: None)
+
+
 def test_jlink_is_installed_through_the_cask_only_when_missing(tmp_path):
     exe = tmp_path / "JLinkExe"
     exe.write_text("")

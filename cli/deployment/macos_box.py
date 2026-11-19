@@ -117,6 +117,9 @@ JLINK_EXE = "/Applications/SEGGER/JLink/JLinkExe"
 # Homebrew's cask runs SEGGER's own installer package, which needs sudo.
 JLINK_CASK = "segger-jlink"
 ORBSTACK_CASK = "orbstack"
+# A Linux Box has Debian's gdb-multiarch; the agent uses this instead, for
+# RTT auto-detection and target memory access over GDB.
+ARM_GDB = "arm-none-eabi-gdb"
 # Started, in this order, when Docker is installed but not running.
 RUNTIME_APPS = (("OrbStack", "/Applications/OrbStack.app"),
                 ("Docker", "/Applications/Docker.app"))
@@ -434,6 +437,25 @@ def build_labjack_library(layout: Layout, run: Run = _run) -> Optional[str]:
         shutil.copy2(path, layout.lib_dir / path.name)
     if not (layout.lib_dir / "liblabjackusb.dylib").exists():
         shutil.copy2(built[-1], layout.lib_dir / "liblabjackusb.dylib")
+    return None
+
+
+def ensure_arm_gdb(run: Run = _run, echo=print) -> Optional[str]:
+    """Install an ARM GDB through Homebrew. A reason, or None.
+
+    Optional: without it J-Link and OpenOCD work, but RTT auto-detection does
+    not.
+    """
+    if homebrew_prefix_with(f"bin/{ARM_GDB}") is not None:
+        return None
+    brew = homebrew_prefix_with("bin/brew")
+    if brew is None:
+        return f"{ARM_GDB} is not installed and Homebrew is not available to install it"
+    echo(f"Installing {ARM_GDB} (Homebrew)...")
+    result = run([os.path.join(brew, "bin", "brew"), "install", ARM_GDB], timeout=1800)
+    if result.returncode != 0 or homebrew_prefix_with(f"bin/{ARM_GDB}") is None:
+        return (f"`brew install {ARM_GDB}` did not install it "
+                f"({_last_line(result.stderr) or 'brew failed'})")
     return None
 
 
@@ -879,6 +901,9 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     reason = ensure_jlink(run, echo)
     if reason:
         skipped.append(f"J-Link debugging: {reason}")
+    reason = ensure_arm_gdb(run, echo)
+    if reason:
+        skipped.append(f"RTT auto-detection: {reason}")
     start_agent(layout, source, run)
 
     echo("Starting the Box container...")
