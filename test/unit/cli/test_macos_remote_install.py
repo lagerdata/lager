@@ -138,14 +138,15 @@ def test_the_runner_and_the_installer_import_nothing_from_the_cli(tmp_path):
 def test_the_runner_reports_an_install(runner):
     installer = mock.Mock(PYTHON_SERVICE_PORT=8301)
     installer.install.return_value = SimpleNamespace(
-        box_version="9.9.9", image="img", skipped=["Oscilloscope support: no Rust"])
+        box_version="9.9.9", image="img", skipped=["Oscilloscope support: no Rust"],
+        ready=["J-Link debugging"])
     args = runner.parse(["--result", "r", "install", "--version", "v9.9.9",
-                         "--cli-version", "9.9.9", "--source", "/src"])
+                         "--cli-version", "9.9.9", "--source", "/src", "--skip", "picoscope"])
     assert runner.run(args, installer) == {
         "ok": True, "box_version": "9.9.9", "image": "img", "python_port": 8301,
-        "skipped": ["Oscilloscope support: no Rust"]}
+        "skipped": ["Oscilloscope support: no Rust"], "ready": ["J-Link debugging"]}
     installer.install.assert_called_once_with("v9.9.9", "9.9.9", bind="0.0.0.0",
-                                              source=Path("/src"))
+                                              source=Path("/src"), skip=["picoscope"])
 
 
 def test_the_runner_keeps_an_error_structured(runner, tmp_path):
@@ -156,7 +157,7 @@ def test_the_runner_keeps_an_error_structured(runner, tmp_path):
     assert runner.run(args, installer) == {
         "ok": False, "problem": "Docker is installed but not running.",
         "cause": "why", "fixes": ["Start it."]}
-    installer.uninstall.assert_called_once_with(purge_config=True)
+    installer.uninstall.assert_called_once_with(purge_config=True, keep_images=False)
     installer.uninstall.side_effect = RuntimeError("boom")
     outcome = runner.run(args, installer)
     assert outcome["ok"] is False and "RuntimeError: boom" in outcome["cause"]
@@ -306,7 +307,7 @@ def test_no_python_and_no_outcome_are_explained():
 # ------------------------------------------------------------------ routing
 
 def _install_remote(lager_home, args, outcome):
-    ctx = mock.Mock()
+    ctx = mock.Mock(params={})
     with mock.patch.object(_remote_macos, "ship_installer") as installer, \
             mock.patch.object(_remote_macos, "ship_source") as source, \
             mock.patch.object(_remote_macos, "run_remote", return_value=outcome) as ran:
@@ -318,7 +319,7 @@ def test_a_remote_mac_is_always_saved_with_its_port_and_platform(lager_home, cap
     args = dict(ssh_host="me@10.0.0.6", ip="10.0.0.6", user="me", box=None,
                 identity_args=[], version="v9.9.9", yes=True)
     outcome = {"ok": True, "box_version": "9.9.9", "python_port": 8301,
-               "skipped": ["Oscilloscope support: no Rust"]}
+               "skipped": ["Oscilloscope support: no Rust"], "ready": ["J-Link debugging"]}
     installer, source, ran = _install_remote(lager_home, args, outcome)
     installer.assert_called_once()
     source.assert_called_once()  # the tests run from a checkout
@@ -330,6 +331,7 @@ def test_a_remote_mac_is_always_saved_with_its_port_and_platform(lager_home, cap
     assert box_storage.get_python_service_port("10.0.0.6") == 8301
     out = capsys.readouterr().out
     assert "Not set up -- Oscilloscope support: no Rust" in out
+    assert "Set up: J-Link debugging." in out
     assert "lager hello --box mac-10-0-0-6" in out
     # Installed again under the name it already has.
     _install_remote(lager_home, dict(args, box="mac-10-0-0-6"), dict(outcome, box_version="10.0.0"))

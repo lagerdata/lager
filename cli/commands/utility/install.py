@@ -410,7 +410,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
         local_target = local_ssh_target(user)
         if local_target is None:
             install_locally(ctx, version=version, version_defaulted=version_defaulted,
-                            yes=yes, fork=fork)
+                            yes=yes, fork=fork, skip_jlink=skip_jlink,
+                            skip_picoscope=skip_picoscope)
             return
         ip, user = local_target
         click.echo(f"No --box or --ip: installing onto this machine, "
@@ -435,7 +436,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
     if is_local_target(ip):
         from ._local_install import install_locally
         install_locally(ctx, version=version, version_defaulted=version_defaulted,
-                        yes=yes, fork=fork)
+                        yes=yes, fork=fork, skip_jlink=skip_jlink,
+                        skip_picoscope=skip_picoscope)
         return
 
     ssh_host = f"{user}@{ip}"
@@ -591,7 +593,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
         from ._remote_macos import install_remote_macos
         install_remote_macos(ctx, ssh_host=ssh_host, ip=ip, user=user, box=box,
                              identity_args=ssh_identity_args(identity),
-                             version=version, yes=yes, fork=fork)
+                             version=version, yes=yes, fork=fork,
+                             skip_jlink=skip_jlink, skip_picoscope=skip_picoscope)
         return
 
     # A gateway left with no configuration refuses every connection whatever

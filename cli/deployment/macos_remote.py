@@ -63,12 +63,15 @@ def run(args, installer=None):
         if args.command == "install":
             result = installer.install(
                 args.version, args.cli_version, bind=args.bind,
-                source=Path(args.source) if args.source else None)
+                source=Path(args.source) if args.source else None,
+                skip=args.skip or ())
             return {"ok": True, "box_version": result.box_version,
                     "image": result.image, "skipped": result.skipped,
+                    "ready": result.ready,
                     "python_port": installer.PYTHON_SERVICE_PORT}
         if args.command == "uninstall":
-            installer.uninstall(purge_config=args.purge_config)
+            installer.uninstall(purge_config=args.purge_config,
+                                keep_images=args.keep_images)
             return {"ok": True}
         return {"ok": True, "pieces": installer.installed_pieces()}
     except LagerError as exc:
@@ -88,8 +91,10 @@ def parse(argv):
     install.add_argument("--cli-version", required=True)
     install.add_argument("--bind", default="0.0.0.0")
     install.add_argument("--source", default=None)
+    install.add_argument("--skip", action="append", choices=("jlink", "picoscope"))
     uninstall = commands.add_parser("uninstall")
     uninstall.add_argument("--purge-config", action="store_true")
+    uninstall.add_argument("--keep-images", action="store_true")
     commands.add_parser("pieces")
     return parser.parse_args(argv)
 
