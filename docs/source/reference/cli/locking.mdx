@@ -35,6 +35,7 @@ turns both signals into a normal exit, so the release runs, and the command exit
 | Communication | `spi`, `i2c`, `uart`, `wifi`, `ble`, `blufi`, `usb`, `router` | Single command invocation | Bus/protocol transactions must not interleave across users. |
 | Power | `supply`, `battery`, `eload`, `solar` | Single command invocation (subcommands only, not listing) | Concurrent voltage/current changes are dangerous. |
 | Development | `debug` (flash/connect/erase/reset/etc.), `arm`, `webcam`, `hsm` | Single command invocation | Flashing or debug sessions must not collide. |
+| Access | `ssh` (interactive shell and one-shot remote command) | Full SSH session (acquire → heartbeat → release) | Other users' commands must not change the box during a shell session. A direct `ssh user@box` takes no lock. |
 | Custom drivers | `lager custom` and the commands of a custom driver | Single command invocation | A custom driver drives hardware like any built-in command. |
 | Admin | `install`, `uninstall`, `update`, `install-wheel` | Destructive section only | Container restart/mutation mid-test would kill the test. |
 

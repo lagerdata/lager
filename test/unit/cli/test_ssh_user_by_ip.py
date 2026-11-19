@@ -41,9 +41,20 @@ def saved_boxes(monkeypatch):
 
 
 def _ssh_destination(monkeypatch, argv, resolved_ip):
+    import contextlib
+
     calls = []
+
+    @contextlib.contextmanager
+    def _noop_lock(*_a, **_k):
+        yield ("test", "disabled")
+
     monkeypatch.setattr(ssh_mod.subprocess, "call", lambda cmd, **kw: calls.append(cmd) or 0)
-    monkeypatch.setattr(ssh_mod, "resolve_and_validate_box", lambda ctx, box: resolved_ip)
+    monkeypatch.setattr(
+        ssh_mod, "resolve_and_validate_box",
+        lambda ctx, box, **_kw: resolved_ip,
+    )
+    monkeypatch.setattr(ssh_mod, "auto_lock_around_command", _noop_lock)
     monkeypatch.setattr(ssh_mod, "get_default_box", lambda ctx: resolved_ip)
     result = CliRunner().invoke(ssh_mod.ssh, argv)
     assert result.exit_code == 0, result.output

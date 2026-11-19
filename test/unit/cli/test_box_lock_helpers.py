@@ -310,6 +310,38 @@ class TestAcquireBoxLock:
             )
         assert exc.value.code == 1
 
+    @pytest.mark.parametrize('status', [404, 500])
+    def test_no_lock_api_exits_1_by_default(self, monkeypatch, status):
+        # The admin commands keep refusing a box that cannot take a lock.
+        monkeypatch.setattr(requests, 'post', lambda *a, **k: _FakeResp(status))
+        with pytest.raises(SystemExit) as exc:
+            box_storage.acquire_box_lock(
+                '10.0.0.1', 'lab-box', 'alice', wait_seconds=0, quiet=True,
+            )
+        assert exc.value.code == 1
+
+    @pytest.mark.parametrize('status', [404, 500])
+    def test_no_lock_api_with_fail_open_runs_unlocked(self, monkeypatch, capsys, status):
+        # `lager ssh` passes fail_open: an image without the lock API (404),
+        # or a lock server that errors, still gets a shell, with a warning.
+        monkeypatch.setattr(requests, 'post', lambda *a, **k: _FakeResp(status))
+        state, data = box_storage.acquire_box_lock(
+            '10.0.0.1', 'lab-box', 'alice', wait_seconds=0, fail_open=True,
+        )
+        assert (state, data) == ('unreachable', None)
+        assert 'continuing without a lock' in capsys.readouterr().err
+
+    def test_fail_open_still_refuses_a_foreign_lock(self, monkeypatch):
+        monkeypatch.setattr(requests, 'post', lambda *a, **k: _FakeResp(
+            409, {'error': 'locked', 'lock': {'user': 'bob'}},
+        ))
+        with pytest.raises(SystemExit) as exc:
+            box_storage.acquire_box_lock(
+                '10.0.0.1', 'lab-box', 'alice',
+                wait_seconds=0, quiet=True, fail_open=True,
+            )
+        assert exc.value.code == 1
+
     def test_409_then_200_with_wait(self, monkeypatch):
         responses = iter([
             _FakeResp(409, {'lock': {'user': 'bob'}}),
