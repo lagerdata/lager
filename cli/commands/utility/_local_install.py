@@ -9,6 +9,7 @@ Linux Box, over SSH to the machine's own loopback address: one deploy path,
 whichever machine the CLI runs on. A remote install does not come through here.
 """
 import getpass
+import os
 import socket
 import sys
 
@@ -19,6 +20,26 @@ from ...errors import LagerError
 
 DEFAULT_LOCAL_NAME = "local"
 LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+
+# `lager install` options that only mean something for a Linux Box, and why.
+LINUX_ONLY_INSTALL_OPTIONS = (
+    ("user", "--user", "this Mac's Box is installed as you, not over SSH"),
+    ("skip_firewall", "--skip-firewall", "the installer configures no firewall on a Mac"),
+    ("corporate_vpn", "--corporate-vpn", "the installer configures no firewall on a Mac"),
+    ("skip_verify", "--skip-verify", "the install always waits for the Box to answer"),
+    ("pull", "--pull", "a Mac always uses the pre-built image"),
+    ("no_pull", "--no-pull", "a Mac always uses the pre-built image"),
+    ("timeout", "--timeout", "nothing is built in the container on a Mac"),
+)
+
+
+def ignored_options(ctx, options=LINUX_ONLY_INSTALL_OPTIONS):
+    """The Linux-only options the user typed, each with why a Mac ignores it."""
+    from click.core import ParameterSource
+
+    typed = (ParameterSource.COMMANDLINE, ParameterSource.ENVIRONMENT)
+    return [(flag, why) for name, flag, why in options
+            if name in ctx.params and ctx.get_parameter_source(name) in typed]
 
 
 def is_local_target(ip, platform=None):
@@ -69,7 +90,8 @@ def local_ssh_target(user=None, platform=None, answers=None):
     return LOOPBACK_ADDRESSES[0], user or getpass.getuser()
 
 
-def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform=None):
+def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform=None,
+                    skip_jlink=False, skip_picoscope=False):
     platform = platform or sys.platform
     if platform != "darwin":
         raise _unsupported(platform)
@@ -85,8 +107,11 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
     else:
         click.echo(f"Installing Lager Box {version} on this Mac.")
     click.echo("This sets up a background agent for your instruments and a "
-               "container for the Box. Your password is asked for once, to "
-               f"create {macos_box.ETC_DIR}.")
+               "container for the Box.")
+    if not (os.path.isdir(macos_box.ETC_DIR) and os.access(macos_box.ETC_DIR, os.W_OK)):
+        click.echo(f"Your password is asked for once, to create {macos_box.ETC_DIR}.")
+    for flag, why in ignored_options(ctx):
+        click.secho(f"Ignoring {flag}: {why}.", fg='yellow')
     if not yes and not click.confirm("Continue?", default=True):
         click.secho("Installation cancelled.", fg='yellow')
         ctx.exit(1)
@@ -94,35 +119,40 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
     result = macos_box.install(
         version, cli_version, echo=click.echo,
         confirm=(lambda question: True) if yes
-        else (lambda question: click.confirm(question, default=True)))
+        else (lambda question: click.confirm(question, default=True)),
+        skip=[piece for piece, wanted in (("jlink", skip_jlink),
+                                          ("picoscope", skip_picoscope)) if wanted])
 
     name = get_box_name_by_ip(macos_box.LOCAL_ADDRESS)
     if name is None:
-        name = DEFAULT_LOCAL_NAME
+        name = macos_box.remembered_box_name() or DEFAULT_LOCAL_NAME
         if not yes:
-            name = click.prompt("Box name", type=str, default=DEFAULT_LOCAL_NAME).strip() \
-                or DEFAULT_LOCAL_NAME
-    add_box(name, macos_box.LOCAL_ADDRESS, version=result.box_version,
-            python_port=macos_box.PYTHON_SERVICE_PORT)
+            name = click.prompt("Box name", type=str, default=name).strip() or name
+    add_box(name, macos_box.LOCAL_ADDRESS, user=getpass.getuser(),
+            version=result.box_version, python_port=macos_box.PYTHON_SERVICE_PORT)
+    macos_box.remember_box_name(name)
 
     click.echo()
+    if result.ready:
+        click.echo("Set up: " + ", ".join(result.ready) + ".")
     for line in result.skipped:
         click.secho(f"Not set up -- {line}", fg='yellow')
     if result.skipped:
         click.echo("Install what is missing and run `lager install` again to add it.")
         click.echo()
     click.secho("Installation complete!", fg='green', bold=True)
-    click.secho(f"You can now use: lager hello --box {name}", fg='cyan')
+    click.secho(f"Saved as '{name}'. You can now use: lager hello --box {name}", fg='cyan')
 
 
-def uninstall_locally(ctx, *, purge_config, yes, dry_run, platform=None):
+def uninstall_locally(ctx, *, purge_config, yes, dry_run, platform=None,
+                      keep_docker_images=False):
     platform = platform or sys.platform
     if platform != "darwin":
         raise _unsupported(platform)
     from ...deployment import macos_box
 
     click.echo("This removes from this Mac:")
-    for piece in macos_box.installed_pieces():
+    for piece in macos_box.installed_pieces(keep_images=keep_docker_images):
         click.echo(f"  - {piece}")
     if purge_config:
         click.echo(f"  - everything in {macos_box.ETC_DIR} (saved nets, Box "
@@ -136,7 +166,8 @@ def uninstall_locally(ctx, *, purge_config, yes, dry_run, platform=None):
         click.secho("Uninstall cancelled.", fg='yellow')
         ctx.exit(1)
 
-    macos_box.uninstall(purge_config=purge_config, echo=click.echo)
+    macos_box.uninstall(purge_config=purge_config, echo=click.echo,
+                        keep_images=keep_docker_images)
 
     name = get_box_name_by_ip(macos_box.LOCAL_ADDRESS)
     if name and (yes or click.confirm(

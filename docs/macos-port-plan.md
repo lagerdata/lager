@@ -1382,22 +1382,32 @@ loopback, J-Link connect/reset, all 14 scope measurements).
 - `rtt_defmt` not run (needs the firmware's ELF).
 - Install UX, below.
 
-**Install UX on a Mac:**
-1. `lager install --help` lists Linux options (`--skip-jlink`,
-   `--skip-picoscope`, `--skip-firewall`, `--skip-verify`,
-   `--corporate-vpn`, `--pull/--no-pull`, `--timeout`) that a Mac install
-   silently ignores.
-2. "Installing the host agent..." is silent for over a minute while pip
-   runs and the LabJack library and scope daemon compile.
-3. The install does not say which optional pieces it found or installed,
-   only what it skipped.
-4. "Your password is asked for once, to create /etc/lager" is printed even
-   when `/etc/lager` exists and nothing is asked.
-5. `lager uninstall` keeps the Box image (5 GB), where a Linux uninstall
-   removes images unless `--keep-docker-images` is given.
-6. `lager uninstall` forgets the saved Box and `lager install` saves it as
-   `local`, so a Box the user had saved under another name changes name.
-   `lager boxes` shows its user as `lagerdata`, which means nothing on a
-   Mac.
-7. Without a TTY the image pull prints one line per layer event, several
-   hundred lines.
+**Install UX on a Mac**, found on the clean reinstall and fixed the same
+day (local and `--ip` installs alike, except where noted):
+1. Linux-only options were silently ignored. Now `--skip-jlink` and
+   `--skip-picoscope` are honoured, and `--skip-firewall`,
+   `--corporate-vpn`, `--skip-verify`, `--pull`, `--no-pull`, `--timeout`
+   (and `--user`, for this Mac) print "Ignoring <option>: <why>." The help
+   text, shared with Linux, is unchanged.
+2. "Installing the host agent..." was silent for over a minute. Each slow
+   step now prints a line: the agent's Python packages, the LabJack build,
+   the scope daemon build, the agent start.
+3. The install now ends with "Set up: ..." listing every optional piece
+   that is ready, before the "Not set up" lines.
+4. The password line is printed only when `/etc/lager` does not exist yet
+   (on a remote Mac, which the CLI cannot check, it says "if").
+5. `lager uninstall` removes the Box images, as on Linux, unless
+   `--keep-docker-images`; the dry run lists them.
+6. The name the Box is saved under is kept in `/etc/lager/box-name`, which
+   an uninstall keeps, so a reinstall brings back the same name. The saved
+   Box records the Mac user instead of falling back to `lagerdata`. Local
+   install only.
+7. Without a terminal the image download runs `docker pull --quiet`; the
+   line before it says the image is several GB.
+
+Verified live: reinstall over the Box with `--skip-firewall` (the ignore
+line, the progress lines, the "Set up" line, no password line, 33 s),
+`lager uninstall --dry-run` (lists the images), then `lager hello`,
+`lager ssh -- uname -s`, YKUSH3 and CP2102 from a script. Not run live:
+the uninstall/reinstall name round trip, the quiet pull and the `--ip`
+path (unit tests only).

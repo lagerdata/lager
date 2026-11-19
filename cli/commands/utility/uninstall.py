@@ -436,7 +436,8 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
         # at its own loopback address: the steps below run unchanged.
         local_target = local_ssh_target(user)
         if local_target is None:
-            uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
+            uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run,
+                              keep_docker_images=keep_docker_images)
             return
         ip, user = local_target
         click.echo(f"No --box or --ip: uninstalling from this machine, "
@@ -459,7 +460,8 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     from ._local_install import is_local_target
     if is_local_target(ip):
         from ._local_install import uninstall_locally
-        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run)
+        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run,
+                          keep_docker_images=keep_docker_images)
         return
 
     # A saved Box recorded as a Mac at install is removed by its own steps.
@@ -468,7 +470,8 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     if saved_macos_box(ip):
         from ._remote_macos import uninstall_remote_macos
         uninstall_remote_macos(ctx, ip=ip, user=user, purge_config=purge_config,
-                               yes=yes, dry_run=dry_run)
+                               yes=yes, dry_run=dry_run,
+                               keep_docker_images=keep_docker_images)
         return
 
     ssh_host = f"{user}@{ip}"

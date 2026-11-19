@@ -10,6 +10,7 @@ the routing that sends "no --box/--ip" and loopback addresses on a Mac to the
 local path while leaving every other platform on SSH, and the saved Box
 keeping its script-service port. No Docker, launchd, sudo or network is used.
 """
+import contextlib
 import hashlib
 import io
 import json
@@ -443,6 +444,64 @@ def test_uninstall_keeps_config_unless_purged_and_backs_it_up(layout, tmp_path):
     assert len(backups) == 1 and (backups[0] / "saved_nets.json").read_text() == "[1]"
 
 
+def test_uninstall_removes_the_box_images_unless_asked_to_keep_them(layout, tmp_path):
+    listed = "ghcr.io/lagerdata/lager-box:v0.64.0\nghcr.io/lagerdata/lager-box:<none>\n"
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
+            mock.patch.object(macos_box, "find_docker", return_value=("docker", {})):
+        run = _Runner([(lambda a, k: a[1] == "images", _done(0, listed))])
+        macos_box.uninstall(run=run, layout=layout, echo=lambda *_: None)
+        assert ["docker", "rmi", "-f", "ghcr.io/lagerdata/lager-box:v0.64.0"] \
+            in [c[0] for c in run.calls]
+        kept = _Runner([(lambda a, k: a[1] == "images", _done(0, listed))])
+        macos_box.uninstall(run=kept, layout=layout, echo=lambda *_: None, keep_images=True)
+        assert not any(c[0][1] in ("images", "rmi") for c in kept.calls)
+    assert any("images" in piece for piece in macos_box.installed_pieces(layout))
+    assert not any("images" in piece
+                   for piece in macos_box.installed_pieces(layout, keep_images=True))
+
+
+def test_the_image_download_is_quiet_without_a_terminal(tmp_path):
+    missing = _Runner([(lambda a, k: a[1:3] == ["image", "inspect"], _done(1))])
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
+            mock.patch.object(macos_box.sys.stdout, "isatty", return_value=False):
+        macos_box.start_container("docker", {}, "img:v1", tmp_path, missing)
+    pulls = [a for a, _ in missing.calls if a[1] == "pull"]
+    assert pulls == [["docker", "pull", "--platform", "linux/amd64", "--quiet", "img:v1"]]
+    shown = _Runner([(lambda a, k: a[1:3] == ["image", "inspect"], _done(1))])
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
+            mock.patch.object(macos_box.sys.stdout, "isatty", return_value=True):
+        macos_box.start_container("docker", {}, "img:v1", tmp_path, shown)
+    assert "--quiet" not in [a for a, _ in shown.calls if a[1] == "pull"][0]
+
+
+def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, tmp_path):
+    steps = {name: mock.patch.object(macos_box, name, return_value=None)
+             for name in ("build_labjack_library", "ensure_rust", "build_scope_daemon",
+                          "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb",
+                          "start_agent", "start_container", "check_platform",
+                          "ensure_config_dir", "write_state")}
+    others = (mock.patch.object(macos_box, "ensure_docker", return_value=("docker", {})),
+              mock.patch.object(macos_box, "ensure_source", return_value=tmp_path),
+              mock.patch.object(macos_box, "source_version", return_value="9.9.9"),
+              mock.patch.object(macos_box, "ensure_agent_env", return_value=[]),
+              mock.patch.object(macos_box, "wait_for_link", return_value=""))
+    lines = []
+    with contextlib.ExitStack() as stack:
+        called = {name: stack.enter_context(patch) for name, patch in steps.items()}
+        for patch in others:
+            stack.enter_context(patch)
+        called["ensure_arm_gdb"].return_value = "no Homebrew"
+        result = macos_box.install("v9.9.9", "9.9.9", echo=lines.append, layout=layout,
+                                   source=tmp_path, skip=["jlink", "picoscope"])
+    assert result.ready == ["LabJack U3/U6 support"]
+    assert result.skipped == ["RTT auto-detection: no Homebrew"]
+    for left_out in ("ensure_jlink", "ensure_picoscope_app", "ensure_rust",
+                     "build_scope_daemon"):
+        called[left_out].assert_not_called()
+    assert "Leaving out J-Link debugging (--skip-jlink)." in lines
+    assert "Leaving out PicoScope support (--skip-picoscope)." in lines
+
+
 # ------------------------------------------------------------------ routing
 
 def test_loopback_is_local_only_on_a_mac():
@@ -482,6 +541,8 @@ def test_this_machine_is_an_ssh_target_only_on_linux():
 def lager_home(tmp_path, monkeypatch):
     monkeypatch.setenv("LAGER_CONFIG_FILE_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(macos_box, "BOX_NAME_FILE", str(tmp_path / "box-name"))
+    monkeypatch.setattr(_local_install.getpass, "getuser", lambda: "me")
     return tmp_path
 
 
@@ -492,7 +553,8 @@ def _saved(home):
 def test_install_without_a_target_provisions_and_registers_the_port(lager_home):
     from cli.commands.utility.install import install
     result_value = macos_box.Result(source=Path("/src"), image="img", box_version="9.9.9",
-                                    skipped=["Oscilloscope support: no Rust"])
+                                    skipped=["Oscilloscope support: no Rust"],
+                                    ready=["J-Link debugging"])
     with mock.patch.object(_local_install.sys, "platform", "darwin"), \
             mock.patch.object(macos_box, "install", return_value=result_value) as provision, \
             mock.patch("subprocess.run") as ssh:
@@ -501,8 +563,9 @@ def test_install_without_a_target_provisions_and_registers_the_port(lager_home):
     provision.assert_called_once()
     ssh.assert_not_called()
     assert "Not set up -- Oscilloscope support: no Rust" in result.output
-    assert _saved(lager_home) == {"local": {"ip": "127.0.0.1", "version": "9.9.9",
-                                            "python_port": 8301}}
+    assert "Set up: J-Link debugging." in result.output
+    assert _saved(lager_home) == {"local": {"ip": "127.0.0.1", "user": "me",
+                                            "version": "9.9.9", "python_port": 8301}}
     assert box_storage.get_python_service_port("127.0.0.1") == 8301
 
 
@@ -566,8 +629,8 @@ def test_a_saved_loopback_box_goes_local_on_a_mac_for_install_and_uninstall(lage
         result = CliRunner().invoke(install, ["--box", "mac", "--yes"], obj={})
         assert result.exit_code == 0, result.output
         provision.assert_called_once()
-        assert _saved(lager_home)["mac"] == {"ip": "127.0.0.1", "version": "2.0.0",
-                                             "python_port": 8301}
+        assert _saved(lager_home)["mac"] == {"ip": "127.0.0.1", "user": "me",
+                                             "version": "2.0.0", "python_port": 8301}
         dry = CliRunner().invoke(uninstall, ["--box", "mac", "--dry-run"], obj={})
         assert dry.exit_code == 0 and "nothing was changed" in dry.output
         remove.assert_not_called()
@@ -575,6 +638,57 @@ def test_a_saved_loopback_box_goes_local_on_a_mac_for_install_and_uninstall(lage
         assert result.exit_code == 0, result.output
         remove.assert_called_once()
     assert _saved(lager_home) == {}
+
+
+def test_a_reinstall_after_an_uninstall_keeps_the_box_name(lager_home):
+    from cli.commands.utility.install import install
+    from cli.commands.utility.uninstall import uninstall
+    value = macos_box.Result(source=Path("/src"), image="img", box_version="2.0.0")
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "install", return_value=value), \
+            mock.patch.object(macos_box, "uninstall"), \
+            mock.patch.object(macos_box, "installed_pieces", return_value=["the container"]):
+        first = CliRunner().invoke(install, ["--yes"], obj={}, input="")
+        assert "Saved as 'local'" in first.output
+        box_storage.delete_box("local")
+        box_storage.add_box("bench", "127.0.0.1", version="2.0.0", python_port=8301)
+        macos_box.remember_box_name("bench")
+        CliRunner().invoke(uninstall, ["--yes"], obj={})
+        assert _saved(lager_home) == {}
+        again = CliRunner().invoke(install, ["--yes"], obj={})
+    assert again.exit_code == 0, again.output
+    assert list(_saved(lager_home)) == ["bench"]
+    assert "lager hello --box bench" in again.output
+
+
+def test_linux_only_options_are_named_as_ignored_and_the_skips_are_passed(lager_home):
+    from cli.commands.utility.install import install
+    value = macos_box.Result(source=Path("/src"), image="img", box_version="2.0.0")
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "install", return_value=value) as provision:
+        result = CliRunner().invoke(install, ["--yes", "--skip-firewall", "--timeout", "5",
+                                              "--skip-jlink"], obj={})
+        plain = CliRunner().invoke(install, ["--yes"], obj={})
+    assert result.exit_code == 0, result.output
+    assert "Ignoring --skip-firewall" in result.output
+    assert "Ignoring --timeout" in result.output
+    assert "Ignoring" not in plain.output
+    assert provision.call_args_list[0].kwargs["skip"] == ["jlink"]
+    assert provision.call_args_list[1].kwargs["skip"] == []
+
+
+def test_the_password_is_mentioned_only_when_it_will_be_asked(lager_home, tmp_path):
+    from cli.commands.utility.install import install
+    value = macos_box.Result(source=Path("/src"), image="img", box_version="2.0.0")
+    etc = tmp_path / "etc"
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "install", return_value=value), \
+            mock.patch.object(macos_box, "ETC_DIR", str(etc)):
+        absent = CliRunner().invoke(install, ["--yes"], obj={})
+        etc.mkdir()
+        present = CliRunner().invoke(install, ["--yes"], obj={})
+    assert "password" in absent.output
+    assert "password" not in present.output
 
 
 def test_update_of_the_local_box_is_the_install_again():
