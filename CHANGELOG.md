@@ -12,6 +12,16 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **A `ble-sniffer` net captures Bluetooth LE radio traffic to pcap.**
+  `lager ble-sniffer <net> capture --duration 10 --out cap.pcap` records what an
+  nRF52840 Dongle running Nordic's nRF Sniffer firmware hears, optionally
+  following one device, and downloads the file; scripts use
+  `Net.get(name, type=NetType.BleSniffer).capture()`. The box speaks the
+  sniffer's serial protocol itself, so nothing is installed on the box host;
+  only the dongle needs Nordic's firmware.
+
 ### Changed
 
 - **`lager ssh` locks the box for the length of the session.** An interactive
@@ -24,13 +34,6 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 - **`lager scope NET cursor time` and `cursor volts` accept negative values.** A
   negative first or second value no longer needs a `--` separator.
-- **A `ble-sniffer` net captures Bluetooth LE radio traffic to pcap.**
-  `lager ble-sniffer <net> capture --duration 10 --out cap.pcap` records what an
-  nRF52840 Dongle running Nordic's nRF Sniffer firmware hears, optionally
-  following one device, and downloads the file; scripts use
-  `Net.get(name, type=NetType.BleSniffer).capture()`. The box speaks the
-  sniffer's serial protocol itself, so nothing is installed on the box host;
-  only the dongle needs Nordic's firmware.
 
 ## [0.64.0] - 2026-11-13
 
