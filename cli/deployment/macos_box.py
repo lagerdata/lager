@@ -18,6 +18,8 @@ the steps can be exercised without a Mac, Docker or launchd.
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import platform
 import plistlib
@@ -26,7 +28,9 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
@@ -94,6 +98,24 @@ MIN_PYTHON = (3, 10)
 # The oscilloscope daemon does not build with an older Rust.
 MIN_RUST = (1, 89)
 PICO_SDK_HEADERS = Path("/Library/Frameworks/PicoSDK.framework/Headers")
+# PicoTech's apt repository, which a Linux Box installs its drivers from. Its
+# packages carry the C headers the daemon's build needs; they are the same on
+# every architecture. PicoTech's macOS SDK has them too but is behind a form.
+PICO_APT_URL = "https://labs.picotech.com/picoscope7/debian"
+PICO_APT_INDEX = PICO_APT_URL + "/dists/picoscope/main/binary-amd64/Packages"
+PICO_HEADER_PACKAGES = ("libps2000", "libps2000a", "libps3000a", "libps4000a",
+                        "libps5000a", "libps6000a", "libpsospa")
+PICO_HEADER_PREFIX = "opt/picoscope/include/"
+# The drivers the daemon loads come from the PicoScope 7 application.
+PICOSCOPE_APP = "/Applications/PicoScope 7 T&M.app"
+PICOSCOPE_CASK = "picoscope"
+JLINK_EXE = "/Applications/SEGGER/JLink/JLinkExe"
+# Homebrew's cask runs SEGGER's own installer package, which needs sudo.
+JLINK_CASK = "segger-jlink"
+ORBSTACK_CASK = "orbstack"
+# Started, in this order, when Docker is installed but not running.
+RUNTIME_APPS = (("OrbStack", "/Applications/OrbStack.app"),
+                ("Docker", "/Applications/Docker.app"))
 HOMEBREW_PREFIXES = ("/opt/homebrew", "/usr/local")
 DOCKER_SOCKETS = ("~/.orbstack/run/docker.sock", "~/.docker/run/docker.sock")
 DOCKER_PATHS = ("/usr/local/bin/docker", "/opt/homebrew/bin/docker",
@@ -168,6 +190,10 @@ def check_platform(system: Optional[str] = None, machine: Optional[str] = None) 
                    "lager install --ip <address>"])
 
 
+class DockerMissing(LagerError):
+    """No Docker runtime is installed, as opposed to one that is not running."""
+
+
 def find_docker(run: Run = _run, environ=None) -> tuple:
     """``(docker, env)`` for a running Docker Desktop or OrbStack daemon.
 
@@ -180,7 +206,7 @@ def find_docker(run: Run = _run, environ=None) -> tuple:
     binaries += [os.path.expanduser(p) for p in DOCKER_PATHS]
     binaries = [b for b in dict.fromkeys(binaries) if b and os.path.exists(b)]
     if not binaries:
-        raise LagerError(
+        raise DockerMissing(
             "Docker is not installed on this Mac.",
             cause="A Lager Box runs in a container.",
             fixes=["Install OrbStack (https://orbstack.dev) or Docker Desktop "
@@ -199,6 +225,48 @@ def find_docker(run: Run = _run, environ=None) -> tuple:
         "Docker is installed but not running.",
         fixes=["Start OrbStack or Docker Desktop, wait until it reports "
                "running, then run `lager install` again."])
+
+
+def ensure_docker(run: Run = _run, echo=print, confirm=None,
+                  wait_s: float = 180.0) -> tuple:
+    """:func:`find_docker`, starting the runtime when it is installed but
+    stopped, and offering to install OrbStack when none is installed.
+
+    ``confirm`` asks the user a yes/no question; without it nothing is
+    installed and a missing runtime is an error.
+    """
+    try:
+        return find_docker(run)
+    except DockerMissing:
+        # An app never opened may not have put its `docker` in place yet.
+        if not any(os.path.isdir(path) for _, path in RUNTIME_APPS):
+            brew = homebrew_prefix_with("bin/brew")
+            if confirm is None or brew is None or not confirm(
+                    f"Docker is not installed. Install OrbStack with Homebrew "
+                    f"(brew install --cask {ORBSTACK_CASK})?"):
+                raise
+            echo(f"Installing OrbStack (Homebrew cask {ORBSTACK_CASK})...")
+            result = run([os.path.join(brew, "bin", "brew"), "install", "--cask",
+                          ORBSTACK_CASK], capture_output=False, timeout=1800)
+            if result.returncode != 0 or not os.path.isdir(RUNTIME_APPS[0][1]):
+                raise LagerError("Homebrew did not install OrbStack.",
+                                 fixes=[f"brew install --cask {ORBSTACK_CASK}",
+                                        "Then run `lager install` again."])
+    except LagerError:
+        pass  # installed but not running: started below
+    app = next((name for name, path in RUNTIME_APPS if os.path.isdir(path)), None)
+    if app is None:
+        return find_docker(run)  # raises the "not running" error
+    echo(f"Starting {app}; its first start can take a minute...")
+    run(["open", "-a", app], timeout=60)
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            return find_docker(run)
+        except LagerError:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(3.0)
 
 
 def running_from_checkout() -> Optional[Path]:
@@ -365,8 +433,30 @@ def build_labjack_library(layout: Layout, run: Run = _run) -> Optional[str]:
     return None
 
 
-def pico_include_tree(layout: Layout, sdk_headers: Path = PICO_SDK_HEADERS) -> Optional[Path]:
-    """PicoTech's headers laid out the way the daemon's build expects.
+def ensure_jlink(run: Run = _run, echo=print) -> Optional[str]:
+    """Install SEGGER's J-Link software through Homebrew. A reason, or None.
+
+    Optional: without it everything but J-Link debugging works.
+    """
+    if os.path.exists(JLINK_EXE):
+        return None
+    brew = homebrew_prefix_with("bin/brew")
+    if brew is None:
+        return ("SEGGER's J-Link software is not installed and Homebrew is not "
+                "available to install it (https://www.segger.com/downloads/jlink)")
+    echo("Installing SEGGER's J-Link software (Homebrew cask "
+         f"{JLINK_CASK}, under SEGGER's terms of use)...")
+    # Inherit the terminal: SEGGER's installer asks sudo for the password.
+    result = run([os.path.join(brew, "bin", "brew"), "install", "--cask", JLINK_CASK],
+                 capture_output=False, timeout=1800)
+    if result.returncode != 0 or not os.path.exists(JLINK_EXE):
+        return (f"`brew install --cask {JLINK_CASK}` did not install it; run that, "
+                "then `lager install` again")
+    return None
+
+
+def sdk_include_tree(layout: Layout, sdk_headers: Path = PICO_SDK_HEADERS) -> Optional[Path]:
+    """PicoTech's macOS SDK headers laid out the way the daemon's build expects.
 
     The macOS SDK keeps the headers every family shares in ``shared/``; the
     build looks for them beside each family's own. This makes a tree of
@@ -386,6 +476,114 @@ def pico_include_tree(layout: Layout, sdk_headers: Path = PICO_SDK_HEADERS) -> O
             if not link.exists():
                 link.symlink_to(header)
     return tree
+
+
+def _apt_packages(index: str) -> dict:
+    """``{package: (filename, sha256)}`` from an apt Packages index; the last
+    entry for a package wins, as the index lists versions oldest first."""
+    found = {}
+    for stanza in index.split("\n\n"):
+        fields = dict(line.split(": ", 1) for line in stanza.splitlines()
+                      if ": " in line and not line.startswith(" "))
+        if {"Package", "Filename", "SHA256"} <= fields.keys():
+            found[fields["Package"]] = (fields["Filename"], fields["SHA256"])
+    return found
+
+
+def _deb_data(deb: bytes) -> tarfile.TarFile:
+    """The data archive inside a .deb (an ar archive)."""
+    if not deb.startswith(b"!<arch>\n"):
+        raise ValueError("not a .deb")
+    offset = 8
+    while offset + 60 <= len(deb):
+        name = deb[offset:offset + 16].decode().strip().rstrip("/")
+        size = int(deb[offset + 48:offset + 58].decode().strip())
+        body = deb[offset + 60:offset + 60 + size]
+        if name.startswith("data.tar"):
+            return tarfile.open(fileobj=io.BytesIO(body), mode="r:*")
+        offset += 60 + size + (size % 2)
+    raise ValueError("no data archive in the .deb")
+
+
+def _fetch(url: str) -> bytes:
+    # PicoTech's server refuses Python's default User-Agent with 403.
+    request = urllib.request.Request(url, headers={"User-Agent": "lager-install"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
+
+
+def apt_include_tree(layout: Layout, fetch=_fetch) -> Optional[str]:
+    """Download PicoTech's headers from its apt repository. A reason, or None.
+
+    Each package is checked against the SHA-256 in PicoTech's index, and only
+    its headers are kept, under the build directory: nothing is installed.
+    """
+    tree = layout.build_dir / "picoscope-include"
+    try:
+        listed = _apt_packages(fetch(PICO_APT_INDEX).decode("utf-8", "replace"))
+        missing = [p for p in PICO_HEADER_PACKAGES if p not in listed]
+        if missing:
+            return f"PicoTech's repository does not list {', '.join(missing)}"
+        staging = layout.build_dir / "picoscope-include.new"
+        shutil.rmtree(staging, ignore_errors=True)
+        for package in PICO_HEADER_PACKAGES:
+            filename, sha256 = listed[package]
+            deb = fetch(f"{PICO_APT_URL}/{filename}")
+            if hashlib.sha256(deb).hexdigest() != sha256.lower():
+                return f"{package} from PicoTech's repository did not match its checksum"
+            with _deb_data(deb) as data:
+                for member in data.getmembers():
+                    name = member.name.lstrip("./")
+                    relative = name[len(PICO_HEADER_PREFIX):]
+                    if (not member.isfile() or not name.startswith(PICO_HEADER_PREFIX)
+                            or not relative.endswith(".h")
+                            or ".." in Path(relative).parts):
+                        continue
+                    target = staging / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data.extractfile(member).read())
+    except (OSError, ValueError, tarfile.TarError) as exc:
+        if tree.is_dir():
+            return None  # offline: the headers from the last install still build
+        return f"PicoTech's headers could not be downloaded ({exc})"
+    shutil.rmtree(tree, ignore_errors=True)
+    staging.rename(tree)
+    return None
+
+
+def pico_include_tree(layout: Layout, fetch=_fetch) -> tuple:
+    """``(tree, None)`` with PicoTech's headers, or ``(None, reason)``.
+
+    The macOS SDK's when it is installed, otherwise PicoTech's apt packages'.
+    """
+    tree = sdk_include_tree(layout)
+    if tree is not None:
+        return tree, None
+    reason = apt_include_tree(layout, fetch)
+    return (None, reason) if reason else (layout.build_dir / "picoscope-include", None)
+
+
+def ensure_picoscope_app(run: Run = _run, echo=print) -> Optional[str]:
+    """Install the PicoScope 7 application through Homebrew. A reason, or None.
+
+    Its arm64 drivers are what the daemon loads. Optional: without it
+    everything but PicoScope oscilloscopes works.
+    """
+    if os.path.isdir(PICOSCOPE_APP):
+        return None
+    brew = homebrew_prefix_with("bin/brew")
+    if brew is None:
+        return ("the PicoScope 7 application is not installed and Homebrew is not "
+                "available to install it (https://www.picotech.com/downloads)")
+    echo(f"Installing PicoScope 7 for its drivers (Homebrew cask {PICOSCOPE_CASK}, "
+         "under PicoTech's terms of use)...")
+    # Inherit the terminal: PicoTech's installer asks sudo for the password.
+    result = run([os.path.join(brew, "bin", "brew"), "install", "--cask", PICOSCOPE_CASK],
+                 capture_output=False, timeout=1800)
+    if result.returncode != 0 or not os.path.isdir(PICOSCOPE_APP):
+        return (f"`brew install --cask {PICOSCOPE_CASK}` did not install it; run that, "
+                "then `lager install` again")
+    return None
 
 
 def _version(text: str) -> tuple:
@@ -415,18 +613,21 @@ def build_scope_daemon(layout: Layout, source: Path, run: Run = _run) -> Optiona
 
     Optional: without it everything but oscilloscope nets works. PicoTech's
     licence keeps its headers and drivers out of Lager, so they come from
-    PicoTech's own installers.
+    PicoTech: the headers from its apt repository (or its macOS SDK), the
+    drivers from its PicoScope 7 application.
     """
     crate = source / "box" / "oscilloscope-daemon"
-    cargo = shutil.which("cargo") or os.path.expanduser("~/.cargo/bin/cargo")
+    cargo = (shutil.which("cargo") or next(
+        (c for c in [os.path.expanduser("~/.cargo/bin/cargo")]
+         + [f"{p}/bin/cargo" for p in HOMEBREW_PREFIXES] if os.path.exists(c)),
+        os.path.expanduser("~/.cargo/bin/cargo")))
     if not os.path.exists(cargo):
         return "Rust is not installed (https://rustup.rs)"
     if not crate.exists():
         return "this version of Lager has no oscilloscope daemon source"
-    include = pico_include_tree(layout)
+    include, reason = pico_include_tree(layout)
     if include is None:
-        return ("PicoTech's PicoSDK is not installed "
-                "(https://www.picotech.com/downloads; install PicoSDK and PicoScope 7)")
+        return reason
     toolchain = rust_toolchain(cargo, run)
     if toolchain is None:
         wanted = ".".join(str(n) for n in MIN_RUST)
@@ -638,19 +839,20 @@ class Result:
 
 def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
             layout: Optional[Layout] = None, bind: str = LOCAL_ADDRESS,
-            source: Optional[Path] = None) -> Result:
+            source: Optional[Path] = None, confirm=None) -> Result:
     """Provision the agent and the container on this Mac.
 
     ``bind`` is the address the Box's ports are published on: this Mac only
     by default, every interface for a Box that other machines must reach.
     ``source`` is a Box source tree already on this Mac, used instead of the
-    checkout or a download.
+    checkout or a download. ``confirm`` asks the user a yes/no question
+    before something is installed on their behalf (see :func:`ensure_docker`).
     """
     layout = layout or Layout()
     from_tree = source is not None or running_from_checkout() is not None
     check_platform()
     echo("Checking Docker...")
-    docker, env = find_docker(run)
+    docker, env = ensure_docker(run, echo, confirm)
 
     echo("Preparing the Box configuration directory...")
     ensure_config_dir(run)
@@ -667,9 +869,12 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     reason = build_scope_daemon(layout, source, run)
     if reason:
         skipped.append(f"Oscilloscope support: {reason}")
-    if not os.path.exists("/Applications/SEGGER/JLink/JLinkExe"):
-        skipped.append("J-Link debugging: SEGGER's J-Link software is not installed "
-                       "(https://www.segger.com/downloads/jlink)")
+    reason = ensure_picoscope_app(run, echo)
+    if reason:
+        skipped.append(f"PicoScope support: {reason}")
+    reason = ensure_jlink(run, echo)
+    if reason:
+        skipped.append(f"J-Link debugging: {reason}")
     start_agent(layout, source, run)
 
     echo("Starting the Box container...")

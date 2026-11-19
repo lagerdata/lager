@@ -10,10 +10,13 @@ the routing that sends "no --box/--ip" and loopback addresses on a Mac to the
 local path while leaving every other platform on SSH, and the saved Box
 keeping its script-service port. No Docker, launchd, sudo or network is used.
 """
+import hashlib
+import io
 import json
 import os
 import plistlib
 import subprocess
+import tarfile
 from pathlib import Path
 from unittest import mock
 
@@ -153,14 +156,100 @@ def test_rust_toolchain_prefers_the_default_then_the_newest_installed(tmp_path):
 
 def test_pico_headers_are_laid_out_with_the_shared_ones_beside_each_family(layout, tmp_path):
     sdk = tmp_path / "Headers"
-    assert macos_box.pico_include_tree(layout, sdk) is None
+    assert macos_box.sdk_include_tree(layout, sdk) is None
     (sdk / "shared").mkdir(parents=True)
     (sdk / "libps2000").mkdir()
     (sdk / "shared" / "PicoStatus.h").write_text("s")
     (sdk / "libps2000" / "ps2000.h").write_text("f")
-    tree = macos_box.pico_include_tree(layout, sdk)
+    tree = macos_box.sdk_include_tree(layout, sdk)
     assert sorted(p.name for p in (tree / "libps2000").iterdir()) == ["PicoStatus.h", "ps2000.h"]
     assert (tree / "libps2000" / "PicoStatus.h").read_text() == "s"
+
+
+def _deb(files):
+    """A .deb (ar archive) whose data.tar.xz holds ``{path: bytes}``."""
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:xz") as tar:
+        for name, body in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    out = b"!<arch>\n"
+    for name, body in ((b"debian-binary", b"2.0\n"), (b"data.tar.xz", data.getvalue())):
+        out += (name.ljust(16) + b"0".ljust(12) + b"0".ljust(6) + b"0".ljust(6)
+                + b"100644".ljust(8) + str(len(body)).encode().ljust(10) + b"`\n")
+        out += body + (b"\n" if len(body) % 2 else b"")
+    return out
+
+
+class _PicoRepo:
+    """Stands in for PicoTech's apt repository."""
+
+    def __init__(self, debs, index_sha=None):
+        self.files, stanzas = {}, []
+        for package, deb in debs.items():
+            path = f"pool/main/{package}_1_amd64.deb"
+            self.files[f"{macos_box.PICO_APT_URL}/{path}"] = deb
+            sha = (index_sha or {}).get(package) or hashlib.sha256(deb).hexdigest()
+            stanzas.append(f"Package: {package}\nVersion: 1\nFilename: {path}\nSHA256: {sha}")
+        self.files[macos_box.PICO_APT_INDEX] = "\n\n".join(stanzas).encode()
+
+    def __call__(self, url):
+        if url not in self.files:
+            raise OSError(f"404 {url}")
+        return self.files[url]
+
+
+def _family_debs(extra=None):
+    debs = {p: _deb({f"./opt/picoscope/include/{p}/{p}.h": p.encode(),
+                     f"./opt/picoscope/lib/{p}.so": b"elf"})
+            for p in macos_box.PICO_HEADER_PACKAGES}
+    debs.update(extra or {})
+    return debs
+
+
+def test_pico_headers_come_from_the_apt_packages_and_nothing_else(layout):
+    evil = _deb({"./opt/picoscope/include/../../../escape.h": b"x",
+                 "./opt/picoscope/include/libps2000/ps2000.h": b"real"})
+    assert macos_box.apt_include_tree(layout, _PicoRepo(_family_debs({"libps2000": evil}))) is None
+    tree = layout.build_dir / "picoscope-include"
+    headers = sorted(str(p.relative_to(tree)) for p in tree.rglob("*") if p.is_file())
+    assert "libps2000/ps2000.h" in headers and len(headers) == len(macos_box.PICO_HEADER_PACKAGES)
+    assert (tree / "libps2000" / "ps2000.h").read_bytes() == b"real"
+    assert not any(layout.home.rglob("escape.h")), "a path out of the tree is skipped"
+    assert not list(tree.rglob("*.so")), "only headers are kept"
+
+
+def test_a_pico_package_with_the_wrong_checksum_is_refused(layout):
+    repo = _PicoRepo(_family_debs(), index_sha={"libps4000a": "0" * 64})
+    assert "checksum" in macos_box.apt_include_tree(layout, repo)
+    assert not (layout.build_dir / "picoscope-include").exists()
+
+
+def test_offline_the_headers_of_the_last_install_are_reused(layout):
+    def offline(url):
+        raise OSError("network is unreachable")
+    assert "could not be downloaded" in macos_box.apt_include_tree(layout, offline)
+    assert macos_box.apt_include_tree(layout, _PicoRepo(_family_debs())) is None
+    assert macos_box.apt_include_tree(layout, offline) is None
+    with mock.patch.object(macos_box, "sdk_include_tree", return_value=None):
+        tree, reason = macos_box.pico_include_tree(layout, offline)
+    assert reason is None and (tree / "libps5000a" / "libps5000a.h").exists()
+
+
+def test_the_picoscope_app_is_installed_through_the_cask_only_when_missing(tmp_path):
+    app = tmp_path / "PicoScope 7 T&M.app"
+    app.mkdir()
+    run = _Runner()
+    with mock.patch.object(macos_box, "PICOSCOPE_APP", str(app)):
+        assert macos_box.ensure_picoscope_app(run, echo=lambda *_: None) is None
+    assert run.calls == []
+    with mock.patch.object(macos_box, "PICOSCOPE_APP", str(tmp_path / "absent")), \
+            mock.patch.object(macos_box, "homebrew_prefix_with", return_value="/opt/homebrew"):
+        reason = macos_box.ensure_picoscope_app(run, echo=lambda *_: None)
+    assert run.calls[0][0] == ["/opt/homebrew/bin/brew", "install", "--cask", "picoscope"]
+    assert run.calls[0][1]["capture_output"] is False
+    assert "brew install --cask picoscope" in reason
 
 
 def test_optional_steps_give_a_reason_instead_of_failing(layout, tmp_path):
@@ -174,6 +263,86 @@ def test_optional_steps_give_a_reason_instead_of_failing(layout, tmp_path):
     run = _Runner()
     assert macos_box.build_labjack_library(layout, run) is None
     assert run.calls == [], "already built: nothing is run"
+
+
+def _docker_answers(states):
+    """find_docker stand-in: raises or returns from ``states`` in turn."""
+    def find(run):
+        state = states.pop(0) if len(states) > 1 else states[0]
+        if isinstance(state, Exception):
+            raise state
+        return state
+    return find
+
+
+def test_a_stopped_runtime_is_started_and_waited_for(tmp_path):
+    app = tmp_path / "OrbStack.app"
+    app.mkdir()
+    stopped = LagerError("Docker is installed but not running.")
+    run = _Runner()
+    with mock.patch.object(macos_box, "RUNTIME_APPS", (("OrbStack", str(app)),)), \
+            mock.patch.object(macos_box, "find_docker",
+                              _docker_answers([stopped, stopped, ("docker", {})])), \
+            mock.patch.object(macos_box.time, "sleep"):
+        assert macos_box.ensure_docker(run, echo=lambda *_: None) == ("docker", {})
+    assert [argv for argv, _ in run.calls] == [["open", "-a", "OrbStack"]]
+
+
+def test_a_missing_runtime_is_installed_with_brew_only_when_the_user_agrees(tmp_path):
+    app = tmp_path / "OrbStack.app"
+    missing = macos_box.DockerMissing("Docker is not installed on this Mac.")
+
+    def brew_installs(argv, kwargs):
+        if argv[1:] == ["install", "--cask", "orbstack"]:
+            app.mkdir()
+            return True
+        return False
+
+    run = _Runner([(brew_installs, _done())])
+    patches = (mock.patch.object(macos_box, "RUNTIME_APPS", (("OrbStack", str(app)),)),
+               mock.patch.object(macos_box, "homebrew_prefix_with",
+                                 return_value="/opt/homebrew"),
+               mock.patch.object(macos_box.time, "sleep"))
+    with patches[0], patches[1], patches[2], \
+            mock.patch.object(macos_box, "find_docker", _docker_answers([missing])):
+        with pytest.raises(macos_box.DockerMissing):
+            macos_box.ensure_docker(run, echo=lambda *_: None, confirm=lambda q: False)
+        with pytest.raises(macos_box.DockerMissing):
+            macos_box.ensure_docker(run, echo=lambda *_: None)  # no one to ask
+    assert run.calls == [], "declined or unasked: nothing is installed"
+
+    with patches[0], patches[1], patches[2], \
+            mock.patch.object(macos_box, "find_docker",
+                              _docker_answers([missing, ("docker", {})])):
+        assert macos_box.ensure_docker(run, echo=lambda *_: None,
+                                       confirm=lambda q: True) == ("docker", {})
+    argv = [a for a, _ in run.calls]
+    assert argv == [["/opt/homebrew/bin/brew", "install", "--cask", "orbstack"],
+                    ["open", "-a", "OrbStack"]]
+    assert run.calls[0][1]["capture_output"] is False
+
+
+def test_jlink_is_installed_through_the_cask_only_when_missing(tmp_path):
+    exe = tmp_path / "JLinkExe"
+    exe.write_text("")
+    run = _Runner()
+    with mock.patch.object(macos_box, "JLINK_EXE", str(exe)):
+        assert macos_box.ensure_jlink(run, echo=lambda *_: None) is None
+    assert run.calls == [], "already installed: nothing is run"
+
+    absent = str(tmp_path / "absent")
+    with mock.patch.object(macos_box, "JLINK_EXE", absent), \
+            mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
+        assert "Homebrew" in macos_box.ensure_jlink(run, echo=lambda *_: None)
+    assert run.calls == []
+
+    with mock.patch.object(macos_box, "JLINK_EXE", absent), \
+            mock.patch.object(macos_box, "homebrew_prefix_with", return_value="/opt/homebrew"):
+        reason = macos_box.ensure_jlink(run, echo=lambda *_: None)
+    argv, kwargs = run.calls[0]
+    assert argv == ["/opt/homebrew/bin/brew", "install", "--cask", "segger-jlink"]
+    assert kwargs["capture_output"] is False, "sudo must be able to ask on the terminal"
+    assert "brew install --cask segger-jlink" in reason, "still absent afterwards"
 
 
 def test_an_optional_driver_package_that_fails_is_reported_not_fatal(layout):
