@@ -21,7 +21,7 @@ box/
     measurement/          # Oscilloscope, DMM, thermocouple, watt meter
     nets/                 # Net/device/mux framework (hardware abstraction)
     power/                # Power supply, battery emulator, solar sim, eload
-    protocols/            # UART, BLE, WiFi, I2C, SPI
+    protocols/            # UART, BLE, BLE sniffer, WiFi, I2C, SPI
     python/               # User script executor (lager python)
     scripts/              # Utility scripts
     testing/              # On-box test helpers

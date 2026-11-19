@@ -1,0 +1,94 @@
+---
+title: BLE Sniffer
+description: 在 Python 中抓取低功耗蓝牙空口流量，保存为 pcap
+---
+
+用 BLE 嗅探器 Net 抓取低功耗蓝牙空口流量。嗅探器是一个运行 Nordic nRF Sniffer for Bluetooth LE 固件的 nRF52840 Dongle。抓包在脚本自己的进程中运行，并在整个时长内阻塞。
+
+## 导入
+
+```python
+from lager import Net, NetType
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `capture(duration=10.0, ...)` | 抓取固定时长，并写入 pcap 文件 |
+| `status()` | 报告嗅探器的串口和锁状态 |
+
+### `Net.get(name, type=NetType.BleSniffer)`
+
+```python
+sniffer = Net.get('sniffer1', type=NetType.BleSniffer)
+```
+
+### `capture(duration=10.0, follow=None, address_type=None, follow_by_name=None, only_advertising=False, coded=False, rssi_cut_off=None, out=None)`
+
+| 参数 | 类型 | 说明 |
+|-----------|------|-------------|
+| `duration` | `float` | 抓包时长，单位为秒，范围 1 到 86400 |
+| `follow` | `str` | 跟随该地址的设备及其连接，地址格式为 `AA:BB:CC:DD:EE:FF` |
+| `address_type` | `str` | `public` 或 `random`，即 `follow` 地址的类型。`None` 表示从该设备的第一条广播中取得 |
+| `follow_by_name` | `str` | 跟随第一个在传统广播或扫描响应中带有完全相同名称的设备。不能与 `follow` 或 `coded` 同时使用 |
+| `only_advertising` | `bool` | 与 `follow` 或 `follow_by_name` 一起使用时，只记录该设备的广播包，不记录其连接 |
+| `coded` | `bool` | 在 LE Coded PHY 上扫描和跟随 |
+| `rssi_cut_off` | `int` | 丢弃 RSSI 低于此值的广播包，范围 -255 到 -10 dBm。被跟随连接的包会保留 |
+| `out` | `str` 或 `Path` | 要写入的 pcap 文件。默认是 `lager.output_dir()` 中的一个新文件 |
+
+附加运行的 `lager python` 在 300 秒时结束（包括启动时间），所以附加运行中的抓包应少于约 280 秒，更长的抓包请分离运行。pcap 先写到 `<out>.part`，抓包结束时再重命名为 `out`。在开始阶段就失败的抓包不会改动已有的 `out`。
+
+**返回：** 一个 `dict`，包含以下键：
+
+| 键 | 说明 |
+|-----|-------------|
+| `file` | pcap 文件在 Lager Box 上的路径 |
+| `bytes` | 文件大小 |
+| `packets` | 抓到的包数 |
+| `duration` | 实测抓包时长，单位为秒 |
+| `port` | 嗅探器的串口 |
+| `firmware` | 嗅探器报告的固件版本 |
+| `followed` | 发送了跟随请求的地址，或 `None`：没有跟随，或从未听到该设备的广播 |
+| `follow_seen` | 是否抓到了被跟随设备的包；不跟随时为 `None` |
+| `stopped` | 抓包是否被提前停止。`lager ble-sniffer NET stop` 只停止 `lager ble-sniffer capture` 启动的抓包，所以在脚本中为 `False` |
+
+**异常：**
+
+- `ValueError`：某个选项类型错误或超出范围，或两个选项冲突。此时不会访问嗅探器。
+- `BleSnifferBusyError`（来自 `lager.protocols.ble_sniffer`）：另一次抓包占用着嗅探器。
+- `BleSnifferBackendError`（来自 `lager.exceptions`）：抓包失败。嗅探器不在 USB 上、另一个程序占用了其串口，或在 2 秒内没有应答。没有应答的嗅探器需要拔下并重新插入。抓包中途停止应答时，之前记录的包保留在 `out` 中，消息会给出包数。
+
+在 `lager python` 下，默认文件位于本次运行的输出文件夹中，所以 `--download` 会把它取回你的电脑。
+
+### `status()`
+
+返回一个 `dict`，包含 `serial`、`port`（嗅探器不在 USB 上时为 `None`）、`present` 和 `busy`。它不会打开嗅探器。
+
+## 示例
+
+```python
+from lager import Net, NetType
+
+sniffer = Net.get('sniffer1', type=NetType.BleSniffer)
+
+# Advertising traffic for 10 seconds
+result = sniffer.capture(duration=10)
+assert result['packets'] > 0, 'No Bluetooth LE packets captured'
+print(f"{result['packets']} packets in {result['file']}")
+
+# Follow the DUT while it connects
+dut = sniffer.capture(duration=30, follow='C0:FF:EE:00:12:34')
+assert dut['follow_seen'], 'Nothing from the DUT was captured'
+```
+
+```bash
+lager python sniff.py --download --box my-lager-box
+```
+
+超过 300 秒的抓包需要分离运行：`lager python sniff.py --detach`。
+
+## 说明
+
+- pcap 的链路类型是 `NORDIC_BLE`（272）。Wireshark 和 `tshark` 都能解码。
+- 刷写 Dongle 和添加 Net 的方法参见 [CLI 参考](/source/zh/reference/cli/ble-sniffer#设置嗅探器)。

@@ -30,6 +30,7 @@ This component provides the core Python functionality for box devices, including
 - **`protocols/spi/`** - SPI communication (LabJack T7)
 - **`protocols/uart/`** - Serial/UART communication
 - **`protocols/ble/`** - Bluetooth Low Energy client
+- **`protocols/ble_sniffer/`** - Bluetooth LE over-the-air capture to pcap (nRF Sniffer firmware on an nRF52840 Dongle, driven over its serial protocol)
 - **`protocols/wifi/`** - WiFi management and provisioning
 
 ### Automation (automation/)

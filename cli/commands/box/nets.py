@@ -522,6 +522,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # these instruments.
     "Joulescope_JS220": ["watt-meter", "energy-analyzer"],
     "Nordic_PPK2": ["watt-meter", "energy-analyzer"],
+    "Nordic_nRF_Sniffer": ["ble-sniffer"],
     "Yocto_Watt": ["watt-meter"],
 
     # scope
@@ -1987,9 +1988,11 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
 # Name prefixes for roles whose first hyphenated word is not the prefix. A
 # `scope` net stands for the whole instrument and would otherwise share the
 # `scope` prefix with its `scope-channel` nets; the channels keep `scope<N>`.
+# A `ble-sniffer` net would otherwise take `ble`, which reads as a BLE device.
 _NET_NAME_PREFIX = {
     "power-supply": "supply",
     "scope": "oscilloscope",
+    "ble-sniffer": "sniffer",
 }
 
 

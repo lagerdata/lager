@@ -1,0 +1,130 @@
+---
+title: BLE Sniffer
+description: 抓取低功耗蓝牙空口流量，保存为 pcap 文件
+---
+
+抓取 BLE 嗅探器 Net 收到的低功耗蓝牙空口流量，并在你的电脑上保存为 pcap 文件。嗅探器是一个运行 Nordic nRF Sniffer for Bluetooth LE 固件的 nRF52840 Dongle。Wireshark 和 `tshark` 都可以打开这个文件。
+
+## 语法
+
+```bash
+lager ble-sniffer [NETNAME] [COMMAND] [OPTIONS]
+```
+
+不带命令时，`lager ble-sniffer --box <BOX>` 会列出 BLE 嗅探器 Net。
+
+## 命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `capture` | 抓取固定时长，并保存为 pcap 文件 |
+| `stop` | 停止嗅探器上的抓包 |
+| `status` | 显示嗅探器的串口，以及是否有抓包占用它 |
+
+## 命令参考
+
+### `capture`
+
+```bash
+lager ble-sniffer [NETNAME] capture [--duration S] [--out FILE] [OPTIONS] --box BOX
+```
+
+Lager Box 在后台任务中抓包，并把文件写到 `/tmp/lager-output/ble-sniffer` 下。CLI 大约每秒查询一次任务状态，随后下载该文件，并删除 Box 上的副本。
+
+| 选项 | 说明 |
+|--------|-------------|
+| `--duration`, `-d` `S` | 抓包时长，单位为秒，范围 1 到 86400（默认 10） |
+| `--out`, `-o` `FILE` | 本地 pcap 文件（默认 `<NET>-<UTC 时间>.pcap`） |
+| `--follow ADDRESS` | 跟随该地址的设备及其连接，地址格式为 `AA:BB:CC:DD:EE:FF` |
+| `--public` / `--random` | `--follow` 地址的类型。两者都不给时，从该设备的第一条广播中取得类型 |
+| `--follow-by-name NAME` | 跟随第一个在传统广播或扫描响应中带有完全相同名称的设备。不能与 `--follow` 或 `--coded` 同时使用 |
+| `--only-advertising` | 与 `--follow` 或 `--follow-by-name` 一起使用时，只记录该设备的广播包，不记录其连接 |
+| `--coded` | 在 LE Coded PHY 上扫描和跟随 |
+| `--rssi-cut-off DBM` | 丢弃 RSSI 低于此值的广播包，范围 -255 到 -10 dBm。被跟随连接的包会保留 |
+| `--keep` | 下载后在 Lager Box 上保留抓包文件。Box 会删除超过一天的抓包 |
+| `--json` | 输出 JSON 对象，而不是格式化文本 |
+| `--box TEXT` | Lager Box 名称或 IP 地址 |
+
+嗅探器总是跟随扫描响应和辅助广播包，与 Wireshark 插件的做法相同。不带 `--follow` 或 `--follow-by-name` 时，它停留在广播信道上：记录广播和连接请求，但不记录连接中的流量。要抓取一个连接，请在设备连接之前跟随其中一个设备。
+
+要求了跟随但没有抓到该设备的任何包时，命令会打印警告，`--json` 中为 `"follow_seen": false`。错误的 `--public`/`--random` 会让嗅探器什么都跟随不到。
+
+Ctrl+C 会停止 Box 上的抓包，然后下载已记录的内容，并以状态码 130 退出。一次抓包在整个时长内占用嗅探器。对同一嗅探器的第二次抓包会立即失败并报告忙。可以在另一个终端用 `stop` 结束第一次抓包。嗅探器在 2 秒内没有应答时，抓包失败；请拔下并重新插入嗅探器。嗅探器在抓包中途停止应答时，CLI 会保存已记录的包，并以状态码 1 退出。错误会被打印，`--json` 在 `error` 中给出。
+
+### `stop`
+
+```bash
+lager ble-sniffer [NETNAME] stop [--json] --box BOX
+```
+
+停止 `capture` 在此嗅探器上启动的抓包。抓包在一秒内结束，其文件在 Box 上保留一天。`lager python` 脚本中的抓包不能用这种方式停止。
+
+### `status`
+
+```bash
+lager ble-sniffer [NETNAME] status [--json] --box BOX
+```
+
+报告嗅探器在 Lager Box 上的串口，以及是否有抓包占用它。它还会显示 `capture` 最近一次启动的抓包：状态、包数、已用时间及其在 Box 上的文件。它不会打开嗅探器。
+
+## 输出
+
+```bash
+$ lager ble-sniffer sniffer1 capture -d 10 -o adv.pcap --box my-lager-box
+Capturing on 'sniffer1' for 10 s (Ctrl+C stops early)...
+Saved adv.pcap (48210 bytes, 912 packets, 10 s)
+
+$ lager ble-sniffer sniffer1 capture -d 5 --json --box my-lager-box
+{"netname": "sniffer1", "job": "3f2a9c41d0b7", "file": "sniffer1-20261108T051500Z.pcap", "box_file": null, "bytes": 23814, "packets": 451, "duration": 5.0, "port": "/dev/ttyACM1", "firmware": "5.0.0", "followed": null, "follow_seen": null, "stopped": false, "error": null}
+```
+
+`duration` 是实测的抓包时长。`followed` 是发送了跟随请求的地址，`follow_seen` 表示是否抓到了该设备的包（不跟随时为 `null`）。pcap 的链路类型是 `NORDIC_BLE`（272）。Wireshark 用它的 `nordic_ble` 解析器解码。包的时间来自嗅探器的微秒时钟。
+
+## 设置嗅探器
+
+Lager Box 直接与 nRF Sniffer 固件通信，所以 Box 上无需安装任何东西。Lager 已在 5.0.0 固件上测试。在任意一台电脑上刷写一次固件：
+
+1. 从 Nordic 的 [`nrfutil-ble-sniffer` 软件包](https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/packages/nrfutil-ble-sniffer/)中取得固件。Nordic 的许可证不允许再分发它。在 Linux x86-64 上：
+
+   ```bash
+   pkg=nrfutil-ble-sniffer-x86_64-unknown-linux-gnu-0.22.0
+   curl -fLO https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/packages/nrfutil-ble-sniffer/$pkg.tar.gz
+   tar -xzf $pkg.tar.gz --wildcards '*sniffer_nrf52840dongle_nrf52840_*.zip'
+   ```
+
+2. 按下 Dongle 侧面的 RESET 按钮。引导程序运行时，红色 LED 会渐亮渐暗。
+3. 用 `nrfutil device program --firmware <zip>` 或 nRF Connect Programmer 写入该软件包。
+
+刷写后，Dongle 枚举为 USB `1915:522a`，名称为 "nRF Sniffer for Bluetooth LE"。5.x 固件提供两个串口，嗅探器运行在第二个串口上，Lager 会自动选用它。Dongle 在 `lager instruments` 中显示为 `Nordic_nRF_Sniffer`。用列表中的地址添加 Net：
+
+```bash
+lager nets add sniffer1 ble-sniffer 0 USB0::0x1915::0x522A::<serial>::INSTR --box my-lager-box
+```
+
+## 示例
+
+```bash
+# Ten seconds of advertising traffic
+lager ble-sniffer sniffer1 capture --box my-lager-box
+
+# Follow one device for 30 seconds while it connects
+lager ble-sniffer sniffer1 capture -d 30 --follow C0:FF:EE:00:12:34 --out dut.pcap --box my-lager-box
+
+# Only nearby devices
+lager ble-sniffer sniffer1 capture --rssi-cut-off -60 --box my-lager-box
+
+# Read the capture
+tshark -r dut.pcap
+
+# Sniffer state, and stopping a capture from another shell
+lager ble-sniffer sniffer1 status --box my-lager-box
+lager ble-sniffer sniffer1 stop --box my-lager-box
+
+# List BLE sniffer nets
+lager ble-sniffer --box my-lager-box
+```
+
+## 说明
+
+- 默认 Net 来自 `lager defaults add --ble-sniffer-net <NET>`。
+- CLI 暂不支持解密密钥（IRK、LTK）。

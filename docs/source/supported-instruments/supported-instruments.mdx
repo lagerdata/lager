@@ -472,6 +472,7 @@ echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
 | Protocol | Control Command | Capabilities |
 |---|---|---|
 | Bluetooth Low Energy (BLE) | `lager ble` | Scan, connect, disconnect, service discovery. GATT read, write and notify from the Python API |
+| Bluetooth LE sniffing | `lager ble-sniffer` | Over-the-air capture to pcap with an nRF52840 Dongle that runs the nRF Sniffer for Bluetooth LE firmware (USB `1915:522a`). Follow a device by address or name, advertising only, LE Coded PHY, RSSI cut-off. See [setting up a sniffer](/source/reference/cli/ble-sniffer#setting-up-a-sniffer) |
 | BluFi (ESP32 WiFi provisioning over BLE) | `lager blufi` | Scan, connect, provision WiFi credentials, status, WiFi scan |
 | WiFi (the box's own interface) | Python API (`lager.protocols.wifi`) | Scan, connect, disconnect, status, delete a saved connection |
 

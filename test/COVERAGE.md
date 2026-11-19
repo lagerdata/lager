@@ -55,7 +55,7 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | `unit (box)` | `test/unit/box/` | 5332 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 417 |
+| `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
 | | **Total gated** | **10101** |
 
@@ -506,7 +506,7 @@ test/
 
 ### Local Unit Tests (`test/unit/` -- 349 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 188 files)
+#### Box Unit Tests (`test/unit/box/` -- 189 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -525,6 +525,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
 | `test_ble_central_loop.py` | The box BLE `Central()` makes its own event loop when none is passed: no `DeprecationWarning` with no current loop, a working loop off the main thread, and a passed-in `loop` is used |
 | `test_ble_session.py` | Held BLE GATT session actions on `POST /ble/command`: session open/pair/read/write/notify/close, single-session and adapter-ownership rules (one-shot BLE and BluFi refuse while open), idempotent and forced close, lifetime and idle reaping, per-characteristic sequence numbers, draining buffered notifications after peer disconnect or expiry, and connecting via BlueZ's device record; Bleak is faked |
+| `test_ble_sniffer.py` | The `ble-sniffer` role: the `BleSnifferBase` template (lock, `.part` file, stop, a device lost with and without records, the driver's missing-device message) through a minimal stub driver; background capture jobs (start returning once recording begins, progress, stop, busy/missing/silent sniffers failing the start, a device lost after the start, trimming); and the nRF Sniffer serial-protocol driver against a fake firmware with a fake clock, using frames from a real capture: option types, ranges and conflicts checked before the device is touched (the HTTP limit of 300 s and the script limit of a day), SLIP framing, escapes and overlong frames, protocol-1 requests and protocol-1/2/3 frame parsing, pcap records matching the Nordic tool's layout (S1 byte removed, coded-PHY CI kept), record times from the firmware clock and its wrap, protocol-2 advertising told by access address, the request sequence (go idle, version, hop sequence, scan flags, temporary key, go idle), follow with a given or advertised address type, follow-by-name once a good-CRC name is seen, `follow_seen`, data PDUs kept by the RSSI cut-off, `request_stop` ending a capture, an unplug mid-capture keeping the recorded packets and releasing the port and lock, an unresponsive sniffer leaving an existing file untouched, an unknown protocol version, a port that cannot be opened or is held by another program, a missing dongle, the per-device `flock` refusing a second capture, status without opening the port, the data tty taken from the highest USB interface (firmware 5.x has two), pcap record counting, delete limited to `.pcap` files under the output root, pruning captures older than a day, `Net.get` routing and the catalog entry, and `/net/command` start/job/stop/status/delete replies with wrong types as 400 and busy as 409 |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
 | `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure. Also the `network-mode` verbs and `apply`'s host-networking path: the pre-flight refusing before anything mutates, exit codes 0/3/1, the SSH fallback that keeps a stranded box recoverable, `--skip-restart` refusing a pending switch to host, and only `apply`'s bounce confirming that switch to the box |
@@ -711,6 +712,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_arm_command.py` | `lager arm` CLI: `read-and-save-position` and `disable-motor` send nothing until confirmed (or `--yes` is passed), `move`/`move-by` reject a `--timeout` past the box's 25 s cap before any request, listing arm nets takes no box lock, `get-acceleration` and `set-acceleration` (an omitted `--retract` is left to the arm; a readback mismatch exits non-zero), and the net name may be omitted before the subcommand |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, worker thread offloading, exit teardown, Ctrl+C |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
+| `test_ble_sniffer_command.py` | `lager ble-sniffer`: the capture payload with every option, the pcap downloaded from `/download-file` and the box copy deleted unless `--keep`, `--json` output, the start/poll/download sequence, follow results and warnings, Ctrl+C stopping the box capture and saving it (exit 130) and a second Ctrl+C giving up, a failed job with and without saved packets, `stop`, `status` with the last capture, bad options and combinations refused locally with nothing sent, an unknown net, a failed download that keeps the box copy, and `status` |
 | `test_bluez_unavailable_hint.py` | A box host with no BlueZ: the raw `org.bluez` ServiceUnknown error an older box image sends is rewritten into the one remedy line, any other error is shown as sent, and the CLI and box copies of that line are pinned together |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning. Also the no-expiry sentinel: `--timeout 0` asks for a lock that never expires, and the auto-lock boundary tells that apart from a caller that states no TTL at all, which used to collapse into the 1800 s default |

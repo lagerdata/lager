@@ -142,7 +142,7 @@ For the detailed component and directory layout, see
 | Debug probes | SEGGER J-Link, ST-Link, Raspberry Pi Debug Probe, FTDI (FT232H, FT2232H, FT4232H), CMSIS-DAP |
 | USB hubs | Acroname, Yepkit YKUSH, Plugable |
 | Serial adapters | Prolific, Silicon Labs, FTDI, Espressif |
-| Wireless | Bluetooth Low Energy |
+| Wireless | Bluetooth Low Energy, Nordic nRF52840 Dongle as a BLE sniffer |
 | Cameras | Logitech |
 | Network routers | MikroTik |
 | Robot arms | Rotrics |

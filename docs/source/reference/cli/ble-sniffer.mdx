@@ -1,0 +1,130 @@
+---
+title: BLE Sniffer
+description: Capture Bluetooth LE radio traffic to a pcap file
+---
+
+Capture the Bluetooth LE radio traffic that a sniffer net hears, and save it as a pcap file on your computer. The sniffer is an nRF52840 Dongle that runs Nordic's nRF Sniffer for Bluetooth LE firmware. Wireshark and `tshark` open the file.
+
+## Syntax
+
+```bash
+lager ble-sniffer [NETNAME] [COMMAND] [OPTIONS]
+```
+
+With no command, `lager ble-sniffer --box <BOX>` lists the BLE sniffer nets.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `capture` | Capture for a fixed time and save a pcap file |
+| `stop` | Stop the capture on the sniffer |
+| `status` | Show the sniffer's serial port and whether a capture holds it |
+
+## Command Reference
+
+### `capture`
+
+```bash
+lager ble-sniffer [NETNAME] capture [--duration S] [--out FILE] [OPTIONS] --box BOX
+```
+
+The Lager Box records in a background job and writes the capture under `/tmp/lager-output/ble-sniffer`. The CLI polls the job about once a second, then downloads the file and deletes the box copy.
+
+| Option | Description |
+|--------|-------------|
+| `--duration`, `-d` `S` | Capture time in seconds, 1 to 86400 (default 10) |
+| `--out`, `-o` `FILE` | Local pcap file (default `<NET>-<UTC time>.pcap`) |
+| `--follow ADDRESS` | Follow the device with this address, `AA:BB:CC:DD:EE:FF`, and its connections |
+| `--public` / `--random` | Address type of `--follow`. Without either, the type is taken from the device's first advertisement |
+| `--follow-by-name NAME` | Follow the first device whose legacy advertising or scan response carries exactly this name. It cannot be combined with `--follow` or `--coded` |
+| `--only-advertising` | With `--follow` or `--follow-by-name`, record the device's advertising packets only, not its connections |
+| `--coded` | Scan and follow on the LE Coded PHY |
+| `--rssi-cut-off DBM` | Drop advertising packets weaker than this RSSI, -255 to -10 dBm. Packets of a followed connection are kept |
+| `--keep` | Keep the capture file on the Lager Box after the download. The box deletes captures older than a day |
+| `--json` | Emit a JSON object instead of formatted text |
+| `--box TEXT` | Lager Box name or IP address |
+
+The sniffer always follows scan responses and auxiliary advertising packets, as the Wireshark plugin does. Without `--follow` or `--follow-by-name`, it stays on the advertising channels: it records advertising and connection requests, but not the traffic of the connections. To capture a connection, follow one of its devices before it connects.
+
+When a follow was asked for and nothing from that device was captured, the command prints a warning, and `--json` has `"follow_seen": false`. A wrong `--public`/`--random` makes the sniffer follow nothing.
+
+Ctrl+C stops the capture on the box, then downloads what was recorded and exits with status 130. A capture holds the sniffer for its full duration. A second capture on the same sniffer fails at once with a busy error. `stop` ends the first one from another shell. A sniffer that does not answer within 2 s fails the capture; unplug and replug it. If the sniffer stops answering mid-capture, the CLI saves the packets recorded so far and exits with status 1. The error is printed, and `--json` carries it in `error`.
+
+### `stop`
+
+```bash
+lager ble-sniffer [NETNAME] stop [--json] --box BOX
+```
+
+Stops a capture that `capture` started on this sniffer. The capture ends within a second, and its file stays on the box for a day. A capture from a `lager python` script cannot be stopped this way.
+
+### `status`
+
+```bash
+lager ble-sniffer [NETNAME] status [--json] --box BOX
+```
+
+Reports the sniffer's serial port on the Lager Box and whether a capture holds it. It also shows the last capture that `capture` started: its state, packets, elapsed time and file on the box. It does not open the sniffer.
+
+## Output
+
+```bash
+$ lager ble-sniffer sniffer1 capture -d 10 -o adv.pcap --box my-lager-box
+Capturing on 'sniffer1' for 10 s (Ctrl+C stops early)...
+Saved adv.pcap (48210 bytes, 912 packets, 10 s)
+
+$ lager ble-sniffer sniffer1 capture -d 5 --json --box my-lager-box
+{"netname": "sniffer1", "job": "3f2a9c41d0b7", "file": "sniffer1-20261108T051500Z.pcap", "box_file": null, "bytes": 23814, "packets": 451, "duration": 5.0, "port": "/dev/ttyACM1", "firmware": "5.0.0", "followed": null, "follow_seen": null, "stopped": false, "error": null}
+```
+
+`duration` is the measured capture time. `followed` is the address a follow request was sent for, and `follow_seen` says whether anything from it was captured (`null` without a follow). The pcap link type is `NORDIC_BLE` (272). Wireshark decodes it with its `nordic_ble` dissector. Packet times come from the sniffer's microsecond clock.
+
+## Setting up a sniffer
+
+The Lager Box talks to the nRF Sniffer firmware directly, so nothing is installed on the box. Lager is tested with firmware 5.0.0. Flash the firmware once, from any computer:
+
+1. Get the firmware from Nordic's [`nrfutil-ble-sniffer` package](https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/packages/nrfutil-ble-sniffer/). Nordic's license does not allow redistributing it. On Linux x86-64:
+
+   ```bash
+   pkg=nrfutil-ble-sniffer-x86_64-unknown-linux-gnu-0.22.0
+   curl -fLO https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/packages/nrfutil-ble-sniffer/$pkg.tar.gz
+   tar -xzf $pkg.tar.gz --wildcards '*sniffer_nrf52840dongle_nrf52840_*.zip'
+   ```
+
+2. Press the dongle's side RESET button. The red LED fades in and out while its bootloader runs.
+3. Program the package with `nrfutil device program --firmware <zip>`, or with nRF Connect Programmer.
+
+After the flash, the dongle enumerates as USB `1915:522a`, "nRF Sniffer for Bluetooth LE". Firmware 5.x exposes two serial ports, and the sniffer runs on the second one. Lager picks that port itself. The dongle shows up in `lager instruments` as `Nordic_nRF_Sniffer`. Add the net with its address from that list:
+
+```bash
+lager nets add sniffer1 ble-sniffer 0 USB0::0x1915::0x522A::<serial>::INSTR --box my-lager-box
+```
+
+## Examples
+
+```bash
+# Ten seconds of advertising traffic
+lager ble-sniffer sniffer1 capture --box my-lager-box
+
+# Follow one device for 30 seconds while it connects
+lager ble-sniffer sniffer1 capture -d 30 --follow C0:FF:EE:00:12:34 --out dut.pcap --box my-lager-box
+
+# Only nearby devices
+lager ble-sniffer sniffer1 capture --rssi-cut-off -60 --box my-lager-box
+
+# Read the capture
+tshark -r dut.pcap
+
+# Sniffer state, and stopping a capture from another shell
+lager ble-sniffer sniffer1 status --box my-lager-box
+lager ble-sniffer sniffer1 stop --box my-lager-box
+
+# List BLE sniffer nets
+lager ble-sniffer --box my-lager-box
+```
+
+## Notes
+
+- The default net comes from `lager defaults add --ble-sniffer-net <NET>`.
+- Decryption keys (IRK, LTK) are not available from the CLI yet.

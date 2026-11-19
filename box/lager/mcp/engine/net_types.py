@@ -179,6 +179,12 @@ NET_TYPES: dict[str, NetTypeInfo] = {
         directionality="input", controllable=False, phase=PHASE_MEASUREMENT,
         reference="DMM",
     ),
+    "ble-sniffer": NetTypeInfo(
+        net_type="BleSniffer", electrical_type="other",
+        capabilities=((_R.CAPTURE_PROTOCOL, 1.0), (_R.OBSERVE, 0.8)),
+        directionality="input", controllable=False, phase=PHASE_PROTOCOL_TESTS,
+        reference="BleSniffer",
+    ),
     "watt-meter": NetTypeInfo(
         net_type="WattMeter", electrical_type="analog",
         capabilities=((_R.OBSERVE, 1.0), (_R.MEASURE, 1.0)),

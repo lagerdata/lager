@@ -37,6 +37,7 @@ The SDK supports various net types for different hardware:
 | `NetType.DAC` | Digital-to-analog converter | LabJack T7/U3/U6, MCC USB-202 |
 | `NetType.Thermocouple` | Temperature sensor | Phidget |
 | `NetType.DMM` | Bench multimeter | Siglent SDM3065X |
+| `NetType.BleSniffer` | Bluetooth LE sniffer | nRF52840 Dongle (nRF Sniffer firmware) |
 | `NetType.Rotation` | Rotary encoder (legacy, see below) | Phidget encoder |
 | `NetType.WattMeter` | Power meter | Yocto-Watt, Joulescope JS220, Nordic PPK2 |
 | `NetType.UART` | Serial communication | USB Serial |
@@ -225,6 +226,7 @@ print("Test complete")
 | [UART](./uart) | UART net serial communication |
 | [Serial](./serial) | Native pyserial support |
 | [BLE](./ble) | Bluetooth Low Energy communication |
+| [BLE Sniffer](./ble-sniffer) | Bluetooth LE capture to pcap |
 | [WiFi](./wifi) | WiFi configuration |
 | [BluFi](./blufi) | WiFi provisioning of an ESP32 over BLE |
 | [Router](./router) | MikroTik router control |

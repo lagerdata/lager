@@ -7,6 +7,7 @@ Communication Commands Package
 This package groups communication-related CLI commands:
 - uart: UART serial port connection and communication
 - ble: Bluetooth Low Energy scanning and device interaction
+- ble_sniffer: Bluetooth LE over-the-air capture to pcap with a sniffer net
 - wifi: WiFi network management and configuration
 - usb: USB hub port control (enable/disable/toggle)
 - spi: SPI (Serial Peripheral Interface) communication
@@ -18,6 +19,7 @@ connected to the Lager box.
 
 from .uart import uart
 from .ble import ble
+from .ble_sniffer import ble_sniffer
 from .blufi import blufi
 from .wifi import _wifi
 from .usb import usb
@@ -28,6 +30,7 @@ from .router import router
 __all__ = [
     "uart",
     "ble",
+    "ble_sniffer",
     "blufi",
     "_wifi",
     "usb",
