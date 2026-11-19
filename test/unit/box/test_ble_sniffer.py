@@ -473,6 +473,21 @@ class TestProtocol:
         assert stamps[2] == pytest.approx(100.0 + (0x1000 + 0xF00) / 1e6)
         assert stamps[3] == pytest.approx(stamps[2] - 0x100 / 1e6)  # reordered, not a wrap
 
+    @pytest.mark.parametrize("gap_s", [40 * 60, 75 * 60, 3 * 3600 + 17])
+    def test_clock_keeps_a_long_quiet_gap(self, monkeypatch, gap_s):
+        # A gap past half the 71.6 min wrap read as a step back, and a full
+        # wrap vanished; the host clock now picks the wrap. The host clock
+        # runs 0.2 s behind the firmware to show a small skew is absorbed.
+        host = [100.0]
+        monkeypatch.setattr(nrf, "time", SimpleNamespace(time=lambda: host[0]))
+        clock = nrf._Clock()
+        first_ts = 0x12345678
+        assert clock.stamp(_parsed(_adv_event("11:22:33:44:55:66", ts_us=first_ts))) == 100.0
+        host[0] = 100.0 + gap_s - 0.2
+        ts = (first_ts + gap_s * 1_000_000) & 0xFFFFFFFF
+        later = clock.stamp(_parsed(_adv_event("11:22:33:44:55:66", ts_us=ts)))
+        assert later == pytest.approx(100.0 + gap_s)
+
     def test_open_serial_failure_is_a_backend_error(self, tmp_path):
         with pytest.raises(BleSnifferBackendError, match="Cannot open sniffer port"):
             nrf.open_serial(str(tmp_path / "ttyACM0"))

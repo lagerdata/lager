@@ -279,3 +279,73 @@ def test_stop_command(lager, sniffer_box):
                                 "role": "ble-sniffer", "params": {}}
     assert json.loads(result.output) == {"netname": "sniffer1", "stopped": True,
                                          "file": BOX_FILE, "job": "j1"}
+
+
+def test_start_waits_longer_than_the_box_does(lager, sniffer_box, monkeypatch):
+    # The box waits up to 10 s for the sniffer to record before it answers
+    # "start"; a client timeout at or under that abandons a capture that
+    # still starts.
+    timeouts = {}
+    base_post = sniffer_box.post
+
+    def post(url, json=None, **kwargs):
+        timeouts.setdefault(json["action"], kwargs.get("timeout"))
+        return base_post(url, json=json, **kwargs)
+
+    monkeypatch.setattr("requests.post", post)
+    result = lager("ble-sniffer", "sniffer1", "capture", "-d", "2")
+    assert result.exit_code == 0, result.output
+    assert timeouts["start"] >= 30
+    assert timeouts["job"] == 10
+
+
+def test_ctrl_c_during_start_stops_the_capture(lager, sniffer_box):
+    _replace(sniffer_box, "start", [KeyboardInterrupt()])
+    _replace(sniffer_box, "stop", [{"success": True, "message": "Stopping",
+                                    "value": {"stopped": True, "file": BOX_FILE, "job": "j1"}}])
+    result = lager("ble-sniffer", "sniffer1", "capture", "-d", "3600")
+    assert result.exit_code == 130
+    assert _actions(sniffer_box) == ["start", "stop"]
+    assert "ends it" not in result.stderr
+
+
+def test_ctrl_c_during_start_retries_the_stop_then_says_how(lager, sniffer_box):
+    # The box may not have registered the capture yet when the first stop
+    # lands, so the stop is retried before the command gives up.
+    nothing = {"success": True, "message": "No capture",
+               "value": {"stopped": False, "file": None, "job": None}}
+    _replace(sniffer_box, "start", [KeyboardInterrupt()])
+    _replace(sniffer_box, "stop", [nothing, nothing, nothing])
+    result = lager("ble-sniffer", "sniffer1", "capture", "-d", "3600")
+    assert result.exit_code == 130
+    assert _actions(sniffer_box) == ["start", "stop", "stop", "stop"]
+    assert "'lager ble-sniffer sniffer1 stop' ends it" in result.stderr
+
+
+def test_ctrl_c_during_the_download_says_where_the_file_is(lager, sniffer_box, monkeypatch):
+    base_get = __import__("requests").get
+
+    def get(url, params=None, **kwargs):
+        if url.endswith("/download-file"):
+            raise KeyboardInterrupt()
+        return base_get(url, params=params, **kwargs)
+
+    monkeypatch.setattr("requests.get", get)
+    result = lager("ble-sniffer", "sniffer1", "capture", "-d", "2")
+    assert result.exit_code == 130
+    assert "shows the file on the box" in result.stderr
+    assert "delete" not in _actions(sniffer_box)
+
+
+def test_stop_takes_the_box_lock(lager, sniffer_box, monkeypatch):
+    # Stopping ends a capture, so it is locked like capture: a box another
+    # user holds refuses it instead of printing a read-only note.
+    import cli.box_storage as box_storage
+
+    locked = []
+    monkeypatch.delenv("LAGER_AUTO_LOCK_DISABLE", raising=False)
+    monkeypatch.setattr(box_storage, "auto_lock_acquire_for_command",
+                        lambda ip, label, name, **k: locked.append(name) or (lambda: None))
+    result = lager("ble-sniffer", "sniffer1", "stop")
+    assert result.exit_code == 0, result.output
+    assert locked == ["ble-sniffer"]

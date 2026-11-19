@@ -338,26 +338,31 @@ def pcap_frame(frame: Frame) -> bytes:
 class _Clock:
     """Record times: the firmware's microsecond clock anchored to host time at the first packet.
 
-    The firmware clock is 32 bits and wraps every 71.6 minutes; a step back
-    of up to half the range is taken as a small reordering, not a wrap.
+    The firmware clock is 32 bits and wraps every 71.6 minutes. The firmware
+    clock gives the time within a wrap, and the host clock picks the wrap:
+    the one that puts the packet nearest the host's elapsed time. So a quiet
+    stretch of any length, with no packet between wraps, keeps its true
+    length, and a packet a little out of order stays a small step back.
     """
+
+    _WRAP_US = 0x100000000
 
     def __init__(self) -> None:
         self._host: float | None = None
-        self._last = 0
-        self._elapsed_us = 0
+        self._first = 0
 
     def stamp(self, frame: Frame) -> float:
         ts = firmware_timestamp_us(frame)
+        now = time.time()
         if ts is None:
-            return time.time()
+            return now
         if self._host is None:
-            self._host, self._last = time.time(), ts
+            self._host, self._first = now, ts
             return self._host
-        delta = (ts - self._last) & 0xFFFFFFFF
-        self._elapsed_us += delta if delta < 0x80000000 else delta - 0x100000000
-        self._last = ts
-        return self._host + self._elapsed_us / 1_000_000
+        within = (ts - self._first) & (self._WRAP_US - 1)
+        host_us = (now - self._host) * 1_000_000
+        wraps = round((host_us - within) / self._WRAP_US)
+        return self._host + (within + wraps * self._WRAP_US) / 1_000_000
 
 
 def find_sniffer_tty(serial: str) -> str | None:

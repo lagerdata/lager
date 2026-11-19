@@ -48,6 +48,14 @@ _POLL_S = 1.0
 _MIN_POLL_S = 0.2
 # (connect, read) timeout for the pcap download.
 _DOWNLOAD_TIMEOUT_S = (7, 120)
+# HTTP timeout for "start". The box waits up to 10 s for the sniffer to begin
+# recording (_START_TIMEOUT_S in capture_jobs.py), after locking and scanning
+# USB, then returns the job. A client timeout at or under that gives up on a
+# job that still starts, and nothing would stop or download it.
+_START_HTTP_TIMEOUT_S = 30.0
+# After Ctrl+C during "start": how many times, a second apart, to send "stop"
+# while the box may still be registering the capture.
+_STOP_AFTER_START_TRIES = 3
 
 
 def _require_netname(ctx: click.Context) -> str | None:
@@ -166,6 +174,35 @@ def _give_up(netname: str) -> NoReturn:
     raise click.exceptions.Exit(130)
 
 
+def _stop_after_interrupted_start(ctx, box_ip: str, netname: str) -> NoReturn:
+    """Ctrl+C while "start" was in flight: stop whatever capture it began, then exit 130.
+
+    The box keeps handling a request the client gave up on, so the capture
+    can start after the Ctrl+C. Without a stop it would hold the sniffer for
+    its whole duration with no client to end it or download the file.
+    """
+    click.secho("Stopping the capture on the Lager Box...", fg="yellow", err=True)
+    stopped = False
+    try:
+        for attempt in range(_STOP_AFTER_START_TRIES):
+            if attempt:
+                time.sleep(1.0)
+            try:
+                value = post_net_command(ctx, box_ip, netname, "stop", role=SNIFFER_ROLE,
+                                         quiet=True).get("value") or {}
+            except SystemExit:
+                continue
+            if value.get("stopped"):
+                stopped = True
+                break
+    except KeyboardInterrupt:
+        pass
+    if not stopped:
+        click.secho(f"If a capture started, 'lager ble-sniffer {netname} stop' ends it.",
+                    fg="yellow", err=True)
+    raise click.exceptions.Exit(130)
+
+
 def _poll(ctx, box_ip: str, netname: str, job_id: str, duration: float) -> tuple[dict, bool]:
     """Poll a capture job until it ends; ``(job, interrupted)``.
 
@@ -236,12 +273,16 @@ def capture(ctx, box, duration, out_path, follow, address_type, follow_by_name,
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    started = post_net_command(
-        ctx, box_ip, netname, "start", role=SNIFFER_ROLE, quiet=True,
-        duration=duration, follow=follow, address_type=address_type,
-        follow_by_name=follow_by_name, only_advertising=only_advertising,
-        coded=coded, rssi_cut_off=rssi_cut_off,
-    ).get("value") or {}
+    try:
+        started = post_net_command(
+            ctx, box_ip, netname, "start", role=SNIFFER_ROLE, quiet=True,
+            http_timeout=_START_HTTP_TIMEOUT_S,
+            duration=duration, follow=follow, address_type=address_type,
+            follow_by_name=follow_by_name, only_advertising=only_advertising,
+            coded=coded, rssi_cut_off=rssi_cut_off,
+        ).get("value") or {}
+    except KeyboardInterrupt:
+        _stop_after_interrupted_start(ctx, box_ip, netname)
     job_id = started.get("job")
     if not job_id:
         raise click.ClickException("The Lager Box returned no capture job")
@@ -255,7 +296,11 @@ def capture(ctx, box, duration, out_path, follow, address_type, follow_by_name,
         raise click.ClickException(job.get("error") or "The capture failed")
     value = job.get("result") or {}
     box_path = value.get("file") or job.get("file")
-    data = _download(box_ip, box_path)
+    try:
+        data = _download(box_ip, box_path)
+    except KeyboardInterrupt:
+        # The capture has ended; only the download stopped. Say where the file is.
+        _give_up(netname)
     out.write_bytes(data)
     packets = value.get("packets", _count_records(data))
 
@@ -336,7 +381,9 @@ def _count_records(data: bytes) -> int:
               help="Emit a machine-readable JSON object instead of formatted text")
 @click.pass_context
 def stop(ctx, box, as_json):
-    resolved = _resolve_net(ctx, box, lock=False)
+    # Locked like capture: stopping ends a capture, so it must not reach one
+    # running on a box another user has locked.
+    resolved = _resolve_net(ctx, box, lock=True)
     if resolved is None:
         return
     box_ip, netname = resolved
