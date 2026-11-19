@@ -132,8 +132,42 @@ def create_app(endpoint: config.Endpoint) -> Flask:
     return install(hardware_service.app, endpoint)
 
 
+def _log_native_crashes() -> None:
+    """Write every thread's Python stack to the log when a driver's native code
+    kills the worker. On Apple silicon a native assertion arrives as SIGTRAP,
+    which faulthandler does not watch by default; the signal is passed on
+    afterwards, so the worker still dies and is restarted as before."""
+    import faulthandler
+    import signal
+
+    faulthandler.enable(all_threads=True)
+    faulthandler.register(signal.SIGTRAP, all_threads=True, chain=True)
+
+
+def _start_hidapi_on_main_thread() -> None:
+    """Make the worker's first hidapi call from the main thread.
+
+    On macOS hidapi schedules its one IOHIDManager on the run loop of the
+    thread that first calls it. Requests are served on short-lived threads, so
+    without this the manager is left on a run loop that is freed when that
+    request ends, and a later hidapi call (a YKUSH open, or hid_exit at exit)
+    crashes the worker in CoreFoundation. The main thread lives as long as
+    the worker.
+    """
+    try:
+        import hid
+    except ImportError:
+        return
+    try:
+        hid.enumerate(0, 0)
+    except Exception:
+        logger.exception("hidapi did not start; YKUSH hubs are unavailable")
+
+
 def serve(config_dir: str) -> None:
     """Run the worker until it exits or the hardware service restarts it."""
+    _log_native_crashes()
+    _start_hidapi_on_main_thread()
     endpoint = config.load_endpoint(config.endpoint_path(config_dir))
     app = create_app(endpoint)
     logger.info("Lager host agent %s (%s) serving hardware on %s:%s, config %s",

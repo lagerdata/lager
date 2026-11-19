@@ -22,6 +22,7 @@ import stat
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import requests
@@ -416,6 +417,29 @@ class RelayTests(unittest.TestCase):
             for n in range(5):
                 resp = session.post(self.url + "/invoke", json={"function": "f", "n": n}, timeout=10)
                 self.assertEqual(resp.json()["echo"]["n"], n)
+
+
+class WorkerHidapiTests(unittest.TestCase):
+    """hidapi must first be called from the worker's main thread (macOS keeps
+    its HID manager on the run loop of the thread that first calls it)."""
+
+    def test_the_first_call_is_made_on_the_calling_thread(self):
+        threads = []
+        fake = unittest.mock.Mock()
+        fake.enumerate.side_effect = lambda *a: threads.append(threading.current_thread())
+        with unittest.mock.patch.dict("sys.modules", {"hid": fake}):
+            worker._start_hidapi_on_main_thread()
+        fake.enumerate.assert_called_once_with(0, 0)
+        self.assertEqual(threads, [threading.current_thread()])
+
+    def test_without_hidapi_or_with_a_failing_one_the_worker_still_starts(self):
+        with unittest.mock.patch.dict("sys.modules", {"hid": None}):
+            worker._start_hidapi_on_main_thread()  # ImportError: nothing to do
+        broken = unittest.mock.Mock()
+        broken.enumerate.side_effect = OSError("no HID access")
+        with unittest.mock.patch.dict("sys.modules", {"hid": broken}), \
+                self.assertLogs(worker.logger, "ERROR"):
+            worker._start_hidapi_on_main_thread()
 
 
 if __name__ == "__main__":
