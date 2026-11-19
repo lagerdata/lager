@@ -179,9 +179,17 @@ def test_ctrl_c_stops_the_box_capture_and_saves_it(lager, sniffer_box, tmp_path)
 def test_second_ctrl_c_gives_up(lager, sniffer_box):
     _replace(sniffer_box, "job", [KeyboardInterrupt(), KeyboardInterrupt()])
     result = lager("ble-sniffer", "sniffer1", "capture", "-d", "60")
-    assert result.exit_code == 1
-    assert "Aborted" in result.output
+    assert result.exit_code == 130
+    assert "'lager ble-sniffer sniffer1 status' shows the file" in result.stderr
     assert _actions(sniffer_box) == ["start", "job", "stop", "job"]
+
+
+def test_ctrl_c_during_the_stop_request_gives_up(lager, sniffer_box):
+    _replace(sniffer_box, "job", [KeyboardInterrupt()])
+    _replace(sniffer_box, "stop", [KeyboardInterrupt()])
+    result = lager("ble-sniffer", "sniffer1", "capture", "-d", "60")
+    assert result.exit_code == 130
+    assert "shows the file on the box" in result.stderr
 
 
 def test_failed_job_without_a_file(lager, sniffer_box):
@@ -250,6 +258,15 @@ def test_status_shows_the_last_capture(lager, sniffer_box):
     result = lager("ble-sniffer", "sniffer1", "status")
     assert result.exit_code == 0, result.output
     assert f"Last capture: running, 0 packets in 2 of 2 s, {BOX_FILE}" in result.output
+
+
+def test_status_marks_a_stopped_capture(lager, sniffer_box):
+    job = _job("done", {**CAPTURE_VALUE, "stopped": True})["value"]
+    _replace(sniffer_box, "status", [{"success": True, "message": "Sniffer on /dev/ttyACM0, idle",
+                                      "value": {"busy": False, "job": job}}])
+    result = lager("ble-sniffer", "sniffer1", "status")
+    assert result.exit_code == 0, result.output
+    assert "Last capture: done (stopped early), 0 packets" in result.output
 
 
 def test_stop_command(lager, sniffer_box):

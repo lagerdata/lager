@@ -67,6 +67,7 @@ class CaptureJob:
     error_kind: str | None = None
     _ctx: CaptureContext | None = field(default=None, repr=False)
     _final_elapsed: float | None = field(default=None, repr=False)
+    _exc: Exception | None = field(default=None, repr=False)
     _ready: threading.Event = field(default_factory=threading.Event, repr=False)
     _done: threading.Event = field(default_factory=threading.Event, repr=False)
 
@@ -98,6 +99,7 @@ class CaptureJob:
         except Exception as e:
             logger.exception("ble-sniffer: capture job %s failed", self.id)
             self._fail("backend", e)
+            self._exc = BleSnifferBackendError(str(e))
         finally:
             if self._ctx is not None:
                 self._final_elapsed = (self.result or {}).get("duration", self._ctx.elapsed)
@@ -111,6 +113,7 @@ class CaptureJob:
 
     def _fail(self, kind: str, error: Exception) -> None:
         self.error, self.error_kind, self.state = str(error), kind, "failed"
+        self._exc = error
 
 
 def start_job(net: str, driver: BleSnifferBase, options: CaptureOptions,
@@ -136,11 +139,9 @@ def start_job(net: str, driver: BleSnifferBase, options: CaptureOptions,
     if job.state == "failed":
         with _jobs_lock:
             _jobs.pop(job.id, None)
-        if job.error_kind == "busy":
-            raise BleSnifferBusyError(job.error)
-        if job.error_kind == "invalid":
-            raise ValueError(job.error)
-        raise BleSnifferBackendError(job.error)
+        # The original exception: rebuilding one from job.error would repeat
+        # the "[BleSniffer]" prefix that LagerBackendError adds.
+        raise job._exc
     return job
 
 

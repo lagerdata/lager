@@ -18,6 +18,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NoReturn
 
 import click
 
@@ -159,11 +160,18 @@ def _check_options(duration, follow, address_type, follow_by_name, only_advertis
                                  param_hint="--rssi-cut-off")
 
 
+def _give_up(netname: str) -> NoReturn:
+    click.secho(f"Not downloaded. 'lager ble-sniffer {netname} status' shows "
+                "the file on the box, which is kept for a day.", fg="yellow", err=True)
+    raise click.exceptions.Exit(130)
+
+
 def _poll(ctx, box_ip: str, netname: str, job_id: str, duration: float) -> tuple[dict, bool]:
     """Poll a capture job until it ends; ``(job, interrupted)``.
 
     The first Ctrl+C asks the box to stop the capture and keeps polling, so
-    what was recorded is still downloaded; a second one gives up.
+    what was recorded is still downloaded; a second one exits with status
+    130 and leaves the file on the box.
     """
     interrupted = False
     started = time.monotonic()
@@ -175,10 +183,13 @@ def _poll(ctx, box_ip: str, netname: str, job_id: str, duration: float) -> tuple
                                    job=job_id).get("value") or {}
         except KeyboardInterrupt:
             if interrupted:
-                raise click.Abort() from None
+                _give_up(netname)
             interrupted = True
             click.secho("Stopping the capture on the Lager Box...", fg="yellow", err=True)
-            post_net_command(ctx, box_ip, netname, "stop", role=SNIFFER_ROLE, quiet=True)
+            try:
+                post_net_command(ctx, box_ip, netname, "stop", role=SNIFFER_ROLE, quiet=True)
+            except KeyboardInterrupt:
+                _give_up(netname)
             continue
         if job.get("state") in ("done", "failed"):
             return job, interrupted
@@ -358,5 +369,8 @@ def status(ctx, box, as_json):
     click.echo(result.get("message", ""))
     job = value.get("job")
     if job:
-        click.echo(f"Last capture: {job['state']}, {job['packets']} packets in "
+        state = job["state"]
+        if (job.get("result") or {}).get("stopped"):
+            state += " (stopped early)"
+        click.echo(f"Last capture: {state}, {job['packets']} packets in "
                    f"{job['elapsed']:g} of {job['duration']:g} s, {job['file']}")

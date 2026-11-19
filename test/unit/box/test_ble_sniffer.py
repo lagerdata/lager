@@ -311,8 +311,10 @@ class TestCaptureJobs:
 
     def test_busy_fails_the_start(self, locks, tmp_path):
         drv = StubDriver()
-        with ble_sniffer_net.device_lock(drv.identity), pytest.raises(BleSnifferBusyError):
+        with ble_sniffer_net.device_lock(drv.identity), \
+                pytest.raises(BleSnifferBusyError) as info:
             capture_jobs.start_job("s", drv, CaptureOptions(duration=5), tmp_path / "j.pcap")
+        assert str(info.value).count("[BleSniffer]") == 1
         assert capture_jobs.latest_job(drv.identity) is None
 
     @pytest.mark.parametrize("drv, match", [
@@ -320,8 +322,9 @@ class TestCaptureJobs:
         (StubDriver(fail_before="did not answer a version request"), "did not answer"),
     ])
     def test_a_sniffer_that_cannot_start_fails_the_start(self, locks, tmp_path, drv, match):
-        with pytest.raises(BleSnifferBackendError, match=match):
+        with pytest.raises(BleSnifferBackendError, match=match) as info:
             capture_jobs.start_job("s", drv, CaptureOptions(duration=5), tmp_path / "j.pcap")
+        assert str(info.value).count("[BleSniffer]") == 1
         assert not (tmp_path / "j.pcap").exists()
 
     def test_invalid_options_fail_the_start(self, locks, tmp_path):

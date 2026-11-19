@@ -49,7 +49,7 @@ The sniffer always follows scan responses and auxiliary advertising packets, as 
 
 When a follow was asked for and nothing from that device was captured, the command prints a warning, and `--json` has `"follow_seen": false`. A wrong `--public`/`--random` makes the sniffer follow nothing.
 
-Ctrl+C stops the capture on the box, then downloads what was recorded and exits with status 130. A capture holds the sniffer for its full duration. A second capture on the same sniffer fails at once with a busy error. `stop` ends the first one from another shell. A sniffer that does not answer within 2 s fails the capture; unplug and replug it. If the sniffer stops answering mid-capture, the CLI saves the packets recorded so far and exits with status 1. The error is printed, and `--json` carries it in `error`.
+Ctrl+C stops the capture on the box, then downloads what was recorded and exits with status 130. A second Ctrl+C exits at once with status 130 and leaves the file on the box. A capture holds the sniffer for its full duration. A second capture on the same sniffer fails at once with a busy error. `stop` ends the first one from another shell. A sniffer that does not answer within 2 s fails the capture; unplug and replug it. If the sniffer stops answering mid-capture, the CLI saves the packets recorded so far and exits with status 1. The error is printed, and `--json` carries it in `error`.
 
 ### `stop`
 
