@@ -1,7 +1,10 @@
 # Lager macOS Port — Phase 0 Audit and Plan
 
-Status: **draft for architecture review**. No implementation has started.
-Audited at `v0.64.0` (`a6f7899b`) on branch `ad/macosport`.
+Status: **in progress on branch `ad/macosport`.** Sections 0 to 6 are the
+original Phase 0 audit (at `v0.64.0`, `a6f7899b`) and are kept as written;
+what has been built and run since is in section 7 onward, in date order. The
+current state of every instrument is the parity matrix near the end
+("Parity matrix"), last updated 2026-11-19.
 
 Conventions used in this document:
 
@@ -1212,10 +1215,11 @@ A parity matrix (every net type and instrument family, how a script and the
 CLI reach it, and its macOS state) is being compiled and will be added
 here; it is the list this work is tracked against from now on.
 
-### Parity matrix (compiled 2026-11-18)
+### Parity matrix (compiled 2026-11-18, updated 2026-11-19)
 
 Compiled by reading the code, not by running it; rows not marked "bench"
-have never been exercised on a Mac. "CLI" is a `lager <command>`; "script"
+have never been exercised on a Mac. The 2026-11-19 update records the
+second bench Mac (section "Second bench Mac (2026-11-19)"). "CLI" is a `lager <command>`; "script"
 is `Net.get(...)` or a module-level helper inside `lager python`.
 
 States: **bench** = verified on the bench Mac; **built** = hand-off exists,
@@ -1232,16 +1236,19 @@ hardware service) but never run on a Mac; **gap** = does not work yet.
 | Scope | PicoScope 2000 | bench | bench |
 | Scope, logic | Rigol MSO5000 / DS1000Z | gap: per-scope daemon is started from the container; `/proc`, binary path | gap |
 | GPIO, ADC, DAC | LabJack U3 | bench | bench |
-| GPIO, ADC, DAC | LabJack T7, U6, MCC USB-202, FT232H, Aardvark, YKUSH3 | built | built |
+| GPIO, ADC, DAC | LabJack T7 | bench | bench |
+| GPIO | YKUSH3, FT4232H | bench | bench |
+| GPIO, ADC, DAC | LabJack U6, MCC USB-202, FT232H, Aardvark | built | built |
 | SPI, I2C | LabJack U3 | bench (SPI loopback; I2C no slave) | bench |
-| SPI, I2C | LabJack T7, Aardvark, FT232H | built | built |
-| Debug | J-Link | bench | bench (connect, reset, halt, flash, erase, read, status, RTT) |
+| SPI | LabJack T7, FT4232H | bench (no slave wired: reads only) | bench |
+| SPI, I2C | Aardvark, FT232H; I2C on T7 and FT4232H | built | built |
+| Debug | J-Link | bench (and erase/flash/verify on an nRF52840) | bench (connect, reset, halt, flash, erase, read, status, RTT); `rtt_defmt` not run |
 | Debug | OpenOCD probes (ST-Link, CMSIS-DAP, FTDI, picoprobe) | gap: fixed Linux paths | gap |
 | Debug | remaining `DebugNet` methods in scripts | n/a | gap: not on the stand-in |
 | USB hub | Acroname | bench | bench |
-| USB hub | YKUSH | built | built |
+| USB hub | YKUSH3 | bench | bench |
 | USB hub | Plugable | gap: driver reads sysfs | gap |
-| UART | USB-serial by `ttyUSBn`/`ttyACMn` | bench | bench |
+| UART | USB-serial by `ttyUSBn`/`ttyACMn` (CP2102, J-Link VCOM) | bench | bench |
 | UART | pinned by `/dev/serial/by-id` or `by-path` | gap | gap |
 | Thermocouple | Phidget | likely | built |
 | Rotation | Phidget encoder | no command exists | built |
@@ -1313,3 +1320,84 @@ and runs its real `_make_driver`, and the helper gets a stand-in for the
 result. The agent refuses any class that is not a `BaseDispatcher` subclass
 in the `lager` package. Unit tested; not run on hardware.
 
+
+### Second bench Mac (2026-11-19)
+
+A different Apple silicon Mac from the 2026-11-16/17 bench, made a Box with
+`lager install` from a `pip install -e` checkout of the CLI. Instruments:
+Keysight E36312A, PicoScope 2405A, LabJack T7 and U3, YKUSH3, Acroname
+8-port, FT4232H, CP2102, and a J-Link on an nRF52840 running Embassy
+firmware.
+
+**Installer additions.** Each is optional: when it cannot be done the
+install finishes and lists what was skipped and why.
+- Docker: when neither OrbStack nor Docker Desktop is installed, it asks,
+  then runs `brew install --cask orbstack`. When one is installed but not
+  running, it opens the app and waits up to 3 minutes for `docker`.
+- J-Link: `brew install --cask segger-jlink`. PicoScope 7 T&M (for its
+  drivers): `brew install --cask picoscope`. ARM GDB (for RTT
+  auto-detection): `brew install arm-none-eabi-gdb`. Rust (to build the
+  scope daemon): `brew install rust`, only when no `cargo` is found; an old
+  Rust is reported, not replaced, since it may be rustup's. Casks run with
+  the terminal attached, so macOS's own password prompt can appear.
+- Pico headers: PicoTech's licence keeps them out of Lager and its macOS
+  SDK is no longer published, so the installer reads PicoTech's apt
+  repository index, downloads the `libps*` .deb files, checks each against
+  the index's SHA-256, and keeps only the `.h` files. The last good copy is
+  reused when offline. The daemon is built against those and loads the
+  arm64 drivers from the PicoScope 7 app.
+- Agent packages: hidapi and pykush (YKUSH), uldaq (MCC USB-202).
+
+**Fixes.** The agent's worker crashed (SIGTRAP in CoreFoundation) on the
+second YKUSH call: hidapi schedules its IOHIDManager on the run loop of the
+first thread to call it, and that was a request thread that had exited.
+The worker now makes the first hidapi call on its main thread, and logs
+every thread's stack on a native crash.
+
+**Verified on hardware, CLI and script:** Keysight state; PicoScope
+frequency and all 14 measurements (959 Hz, 0.384 V from the DUT); T7 ADC,
+DAC (1.25 V read back 1.2499), GPIO, SPI; U3 ADC and SPI loopback; YKUSH3
+ports and GPIO; FT4232H GPIO and SPI; Acroname port state; CP2102 UART
+loopback; J-Link connect, status, memory read, reset, halt, RTT, and
+erase/flash/verify of the DUT's own firmware (byte-identical after a range
+erase that kept the UICR). The J-Link VCOM opens as `/dev/ttyACM0` (the
+agent maps `/dev/cu.usbmodem…`), but this firmware sends nothing on it.
+
+**Clean reinstall.** `lager uninstall --yes`, the 5 GB image deleted by
+hand, then `lager install --yes`: 2 min 23 s, nothing skipped, saved nets
+kept. One call per instrument passed again afterwards (supply, both
+LabJacks, U3 SPI loopback, FT4232H, YKUSH3 GPIO and port, CP2102
+loopback, J-Link connect/reset, all 14 scope measurements).
+
+**Found, not Mac-specific:**
+- After `flash` (default `--no-halt`) the nRF52840 stays halted until a
+  reset: the code assumes J-Link resumes the core after programming, and
+  J-Link 9.96a does not. A Linux Box downloads the same J-Link.
+- A memory read over 8 KB fails with "Memory read returned no data"
+  (JLinkExe `mem32`); the error is not logged.
+
+**Open, Mac-specific:**
+- LabJack T7 and PicoScope addresses have no serial
+  (`USB0::0x0CD5::0x0007::::INSTR`), so two of either cannot be told apart.
+- `rtt_defmt` not run (needs the firmware's ELF).
+- Install UX, below.
+
+**Install UX on a Mac:**
+1. `lager install --help` lists Linux options (`--skip-jlink`,
+   `--skip-picoscope`, `--skip-firewall`, `--skip-verify`,
+   `--corporate-vpn`, `--pull/--no-pull`, `--timeout`) that a Mac install
+   silently ignores.
+2. "Installing the host agent..." is silent for over a minute while pip
+   runs and the LabJack library and scope daemon compile.
+3. The install does not say which optional pieces it found or installed,
+   only what it skipped.
+4. "Your password is asked for once, to create /etc/lager" is printed even
+   when `/etc/lager` exists and nothing is asked.
+5. `lager uninstall` keeps the Box image (5 GB), where a Linux uninstall
+   removes images unless `--keep-docker-images` is given.
+6. `lager uninstall` forgets the saved Box and `lager install` saves it as
+   `local`, so a Box the user had saved under another name changes name.
+   `lager boxes` shows its user as `lagerdata`, which means nothing on a
+   Mac.
+7. Without a TTY the image pull prints one line per layer event, several
+   hundred lines.
