@@ -1208,3 +1208,68 @@ A parity matrix (every net type and instrument family, how a script and the
 CLI reach it, and its macOS state) is being compiled and will be added
 here; it is the list this work is tracked against from now on.
 
+### Parity matrix (compiled 2026-11-18)
+
+Compiled by reading the code, not by running it; rows not marked "bench"
+have never been exercised on a Mac. "CLI" is a `lager <command>`; "script"
+is `Net.get(...)` or a module-level helper inside `lager python`.
+
+States: **bench** = verified on the bench Mac; **built** = hand-off exists,
+not verified; **likely** = no hand-off needed (the object already calls the
+hardware service) but never run on a Mac; **gap** = does not work yet.
+
+| Area | Instruments | CLI | Script |
+|---|---|---|---|
+| Power supply | Keysight E36000 | bench | bench |
+| Power supply | Rigol DP800, Siglent SPD1000X, Keithley 2281S | likely | likely |
+| Power supply | Rigol DP700 (serial), EA PSB | gap: Linux tty names opened in the agent | same |
+| Battery, e-load, DMM | Keithley 2281S, Rigol DL3021, Siglent SDM3065X | likely | likely |
+| Solar | EA PSB | gap (tty names) | gap: helpers build the driver in the script |
+| Scope | PicoScope 2000 | bench | bench |
+| Scope, logic | Rigol MSO5000 / DS1000Z | gap: per-scope daemon is started from the container; `/proc`, binary path | gap |
+| GPIO, ADC, DAC | LabJack U3 | bench | bench |
+| GPIO, ADC, DAC | LabJack T7, U6, MCC USB-202, FT232H, Aardvark, YKUSH3 | built | built |
+| SPI, I2C | LabJack U3 | bench (SPI loopback; I2C no slave) | bench |
+| SPI, I2C | LabJack T7, Aardvark, FT232H | built | built |
+| Debug | J-Link | bench | bench (connect, reset, halt, flash, erase, read, status, RTT) |
+| Debug | OpenOCD probes (ST-Link, CMSIS-DAP, FTDI, picoprobe) | gap: fixed Linux paths | gap |
+| Debug | remaining `DebugNet` methods in scripts | n/a | gap: not on the stand-in |
+| USB hub | Acroname | bench | bench |
+| USB hub | YKUSH | built | built |
+| USB hub | Plugable | gap: driver reads sysfs | gap |
+| UART | USB-serial by `ttyUSBn`/`ttyACMn` | bench | bench |
+| UART | pinned by `/dev/serial/by-id` or `by-path` | gap | gap |
+| Thermocouple | Phidget | likely | gap |
+| Rotation | Phidget encoder | no command exists | gap |
+| Watt meter | Yocto-Watt, Joulescope JS220, Nordic PPK2 | likely | gap |
+| Energy analyzer | Joulescope JS220, Nordic PPK2 | likely | gap |
+| HSM | YubiHSM 2 | likely | gap |
+| Arm, actuate | Rotrics Dexarm | gap (tty names, port discovery) | gap |
+| Webcam, HDMI capture | UVC cameras, capture cards | gap | gap |
+| BLE, BluFi | host Bluetooth | gap | gap |
+| WiFi (`lager wifi`) | host WiFi | gap (was "not supported") | gap |
+| Routers | MikroTik, ASUS | likely (network only) | likely |
+| DFU, `/usb/devices`, `lager diagnose` | host USB | gap: run in the container | n/a |
+| Module-level helpers | `lager.power.supply.voltage(...)`, `lager.io.adc.read(...)` and the like | n/a | gap: build real drivers in the script; only SPI/I2C and USB hub are covered |
+| GPIO/ADC/DAC from `LAGER_MUXES` (legacy net definition) | — | n/a | gap |
+| pyvisa, raw USB, pyftdi, bleak used directly in a script | any | n/a | gap |
+| Custom driver bundles, customer binaries | user code | reach hardware only through nets that have a hand-off | same |
+| MCP tools | `debug_probe_status`, hub USB listing | gap: read container sysfs | n/a |
+| Box management | install, update, uninstall, ssh, dut, box-config edit | bench | n/a |
+| Box management | box-config apply, update --check, logs docker | gap | n/a |
+
+Also unverified for every non-bench row: that the vendor library the driver
+needs has a macOS build the installer provides (LJM, libuldaq, libphidget22,
+aardvark, hidapi/pykush, joulescope, yoctopuce, OpenOCD, dfu-util).
+
+Not macOS-specific, found on the way: `Waveform` and `PowerSupply2Q` nets
+cannot be constructed from saved nets on Linux either.
+
+Order of work: (1) script stand-ins for the roles that already have a
+hardware-service adapter (thermocouple, watt, energy, HSM) and the
+module-level helpers; (2) tty-name translation inside the agent (DP700, EA,
+Dexarm, by-id pins); (3) OpenOCD, Rigol scope daemons, Plugable hub;
+(4) DFU, USB listing, diagnose, MCP tools; (5) pyvisa and raw USB from
+scripts; (6) cameras; (7) BLE/BluFi and WiFi; (8) box-config apply, arm64
+image, packaging.
+
