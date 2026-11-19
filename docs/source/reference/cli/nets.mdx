@@ -27,6 +27,8 @@ lager nets [OPTIONS] [COMMAND]
 | `delete-all` | Delete all saved nets (dangerous) |
 | `rename` | Rename an existing net |
 | `set-capture` | Pair a Rigol scope with the HDMI capture card its live view comes from |
+| `set-power-up` | Declare the level a LabJack `gpio` net powers up at |
+| `apply-power-up` | Write each LabJack's power-up levels from its `gpio` nets, or check them |
 | `add` | Add a new net |
 | `add-all` | Auto-create all available nets from connected instruments |
 | `add-batch` | Create multiple nets from a JSON file |
@@ -102,6 +104,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 - `--sda PIN` / `--scl PIN` - Custom LabJack pins for `i2c` nets
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets
 - `--interface A|B|C|D` - FTDI channel for a `gpio`, `i2c` or `spi` net on an FT2232H or FT4232H. The default is `A`. See **Multi-channel FTDI debug adapters** below.
+- `--power-up low|high` - Level a LabJack T7 or U3 `gpio` net powers up at. See [`set-power-up`](#set-power-up)
 
 Pin values accept LabJack DIO names or raw DIO numbers. The two LabJack families accept different pins:
 
@@ -418,6 +421,8 @@ An optional `params` object sets what the `lager nets add` options set:
 - `sda_pin` and `scl_pin` for a LabJack `i2c` net, or `cs_pin`, `clk_pin`, `mosi_pin` and `miso_pin` for a LabJack `spi` net. Each value is a pin name or a DIO number. Name the `instrument` in the record, because the pins depend on the model.
 - `interface` (`A`-`D`) for an FTDI FT2232H or FT4232H net.
 
+An optional top-level `power_up` key (`low` or `high`) declares the power-up level of a LabJack `gpio` net, as `--power-up` does.
+
 The command checks these values as `lager nets add` checks its options. It refuses any other key in a record or in `params`. To give a debug net a script, add the net first, then use [`set-script`](#set-script).
 
 ```json
@@ -678,6 +683,74 @@ Give at most one of `--port`, `--device`, `--screen` and `--clear`.
 
 ```bash
 lager nets set-capture rigol1 --port 1-1.3 --box my-lager-box
+```
+
+### `set-power-up`
+
+Declare the level that LabJack `gpio` nets power up at. Only LabJack T7 and U3 nets accept a level, because these LabJacks keep an I/O configuration in flash.
+
+A LabJack keeps the levels that `lager gpo` sets in RAM, so they are lost when the LabJack loses power. At power-on, a LabJack from the factory makes every digital pin an input with a pull-up to 3.3 V. A load with a high-impedance input sees HIGH until lager next drives the pin. Relay modules, MOSFET gates and driver enables are examples. The box can take tens of seconds to boot, so the load can stay on for that long.
+
+```bash
+lager nets set-power-up NET... LEVEL [OPTIONS]
+```
+
+**Arguments:**
+- `NET...` - One or more `gpio` nets on a LabJack T7 or U3
+- `LEVEL` - `low`, `high`, or `none` to clear the declaration
+
+There is no default level, and you must give one. LOW switches an active-high load off. On an active-low line, such as a reset or a chip select, LOW asserts the line. Leave input nets undeclared, because a declared pin becomes an output.
+
+This command only records the level on the box. To write it to the LabJack, run [`apply-power-up`](#apply-power-up).
+
+**Options:**
+- `--box TEXT` - Lager Box name or IP
+
+**Example:**
+
+```bash
+lager nets set-power-up PUMP_EN FAN_EN low --box my-lager-box
+lager nets apply-power-up --box my-lager-box
+```
+
+### `apply-power-up`
+
+Write the power-up levels of each LabJack from the levels that its `gpio` nets declare. The command groups the declared nets by LabJack and compares them with the configuration that the LabJack stores. Then it writes the configuration of each LabJack that differs. It drives the declared pins immediately, and writes flash only when something changed.
+
+```bash
+lager nets apply-power-up [OPTIONS]
+```
+
+**Options:**
+- `--dry-run` - Show the changes, and write nothing
+- `--check` - Read only. Exit with status 1 if the stored levels of a LabJack differ from its nets. Use it in CI or in a nightly job
+- `--yes` - Do not ask before driving pins and writing flash
+- `--allow-undeclared` - On a T7, save outputs that no net declares at their current level
+- `--json` - Print the report as JSON
+- `--box TEXT` - Lager Box name or IP
+
+The report lists each LabJack with its declared nets, the level each net declares, and the level that the LabJack stores. It also lists LabJack `gpio` nets that declare no level, because these pins still power up as pulled-up inputs.
+
+**How each LabJack stores the levels:**
+- **T7:** The T7 saves its whole current I/O configuration, not single pins. The save includes every digital pin, the DAC outputs and the analog input settings. So the command drives the declared pins first, then saves. If a pin that no net declares is an output, the command stops, because the save also freezes that pin. Declare a level for the pin, make it an input again, or use `--allow-undeclared`. The T7 cannot report the levels that it stores, so the box keeps a record of what it saved.
+- **U3:** The U3 stores power-up defaults separately from its live state. The command reads every default, changes only the bits of the declared pins, and writes all the defaults back. It also sets a declared pin to digital, because a pin that powers up analog ignores its direction and state.
+
+**Timing and hardware:**
+- The LabJack applies its stored levels a short time after power-on. Until then, every pin is a pulled-up input.
+- For a line that must never go HIGH, also connect an external pull-down of 10 k to GND. It holds the line low from the first moment of power-on.
+- Flash has a limited number of write cycles. The command writes only when a level changes, so you can run it again safely.
+
+**Example:**
+
+```bash
+# See what would change
+lager nets apply-power-up --dry-run --box my-lager-box
+
+# Write it
+lager nets apply-power-up --box my-lager-box
+
+# In CI: fail if a LabJack drifted from its nets
+lager nets apply-power-up --check --box my-lager-box
 ```
 
 ### `tui`

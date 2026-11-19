@@ -27,6 +27,8 @@ lager nets [OPTIONS] [COMMAND]
 | `delete-all` | 删除全部已保存的 Net（危险操作） |
 | `rename` | 重命名已有的 Net |
 | `set-capture` | 将 Rigol 示波器与提供其实时视图的 HDMI 采集卡配对 |
+| `set-power-up` | 声明 LabJack `gpio` Net 的上电电平 |
+| `apply-power-up` | 根据各 LabJack 的 `gpio` Net 写入或检查其上电电平 |
 | `add` | 添加一个新的 Net |
 | `add-all` | 根据已连接的仪器自动创建全部可用的 Net |
 | `add-batch` | 从 JSON 文件创建多个 Net |
@@ -102,6 +104,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 - `--sda PIN` / `--scl PIN` - `i2c` Net 的自定义 LabJack 引脚
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - `spi` Net 的自定义 LabJack 引脚
 - `--interface A|B|C|D` - FT2232H 或 FT4232H 上 `gpio`、`i2c` 或 `spi` Net 的 FTDI 通道。默认是 `A`。请参阅下面的**多通道 FTDI 调试适配器**。
+- `--power-up low|high` - LabJack T7 或 U3 `gpio` Net 的上电电平。请参阅 [`set-power-up`](#set-power-up)
 
 引脚值接受 LabJack 的 DIO 名称或原始 DIO 编号。两个 LabJack 系列接受的引脚不同：
 
@@ -422,6 +425,8 @@ lager nets add-batch JSON_FILE [OPTIONS]
 - LabJack `i2c` Net 的 `sda_pin` 和 `scl_pin`，或 LabJack `spi` Net 的 `cs_pin`、`clk_pin`、`mosi_pin` 和 `miso_pin`。每个值是引脚名称或 DIO 编号。请在记录中写明 `instrument`，因为可用引脚取决于型号。
 - FTDI FT2232H 或 FT4232H Net 的 `interface`（`A`-`D`）。
 
+可选的顶层 `power_up` 键（`low` 或 `high`）声明 LabJack `gpio` Net 的上电电平，作用与 `--power-up` 相同。
+
 命令会像 `lager nets add` 校验其选项那样校验这些值。记录或 `params` 中的任何其他键都会被拒绝。若要为调试 Net 设置脚本，请先添加该 Net，再使用 [`set-script`](#set-script)。
 
 ```json
@@ -660,6 +665,74 @@ lager nets set-capture NAME [OPTIONS]
 
 ```bash
 lager nets set-capture rigol1 --port 1-1.3 --box my-lager-box
+```
+
+### `set-power-up`
+
+声明 LabJack `gpio` Net 的上电电平。只有 LabJack T7 和 U3 的 Net 接受电平，因为这些 LabJack 会把 I/O 配置保存在闪存中。
+
+LabJack 把 `lager gpo` 设置的电平保存在 RAM 中，因此 LabJack 断电后电平就会丢失。上电时，出厂状态的 LabJack 会把每个数字引脚设为输入，并上拉到 3.3 V。高阻抗输入的负载在 lager 下一次驱动该引脚之前都会看到 HIGH。继电器模块、MOSFET 栅极和驱动器使能端都是这类负载。Box 启动可能需要几十秒，因此负载可能在这段时间内一直开启。
+
+```bash
+lager nets set-power-up NET... LEVEL [OPTIONS]
+```
+
+**参数：**
+- `NET...` - LabJack T7 或 U3 上的一个或多个 `gpio` Net
+- `LEVEL` - `low`、`high`，或用 `none` 清除声明
+
+没有默认电平，必须给出一个。LOW 会关闭高电平有效的负载。对于低电平有效的线路，例如复位或片选，LOW 会使该线路生效。输入 Net 请保持不声明，因为声明过的引脚会变成输出。
+
+此命令只在 Box 上记录电平。若要把它写入 LabJack，请运行 [`apply-power-up`](#apply-power-up)。
+
+**选项：**
+- `--box TEXT` - Lager Box 名称或 IP
+
+**示例：**
+
+```bash
+lager nets set-power-up PUMP_EN FAN_EN low --box my-lager-box
+lager nets apply-power-up --box my-lager-box
+```
+
+### `apply-power-up`
+
+根据各 LabJack 的 `gpio` Net 所声明的电平，写入该 LabJack 的上电电平。命令按 LabJack 对已声明的 Net 分组，并与 LabJack 存储的配置进行比较。然后它会写入每个存在差异的 LabJack 的配置。它会立即驱动已声明的引脚，并且只在有变化时才写入闪存。
+
+```bash
+lager nets apply-power-up [OPTIONS]
+```
+
+**选项：**
+- `--dry-run` - 显示将要改变的内容，不写入任何东西
+- `--check` - 只读。如果某个 LabJack 存储的电平与其 Net 不一致，则以状态 1 退出。可在 CI 或每晚任务中使用
+- `--yes` - 驱动引脚和写入闪存之前不询问
+- `--allow-undeclared` - 在 T7 上，把没有 Net 声明的输出按其当前电平保存
+- `--json` - 以 JSON 格式打印报告
+- `--box TEXT` - Lager Box 名称或 IP
+
+报告列出每个 LabJack 及其已声明的 Net、每个 Net 声明的电平以及 LabJack 存储的电平。它还会列出没有声明电平的 LabJack `gpio` Net，因为这些引脚上电时仍是上拉输入。
+
+**各 LabJack 如何存储电平：**
+- **T7：** T7 保存的是整个当前 I/O 配置，而不是单个引脚。保存内容包括每个数字引脚、DAC 输出和模拟输入设置。因此命令会先驱动已声明的引脚，再保存。如果某个没有 Net 声明的引脚是输出，命令会停止，因为保存也会冻结该引脚。请为该引脚声明电平、把它改回输入，或使用 `--allow-undeclared`。T7 无法报告它存储的电平，因此 Box 会记录它保存的内容。
+- **U3：** U3 把上电默认值与实时状态分开存储。命令会读取每个默认值，只改变已声明引脚的位，然后写回所有默认值。它还会把已声明的引脚设为数字模式，因为上电时为模拟模式的引脚会忽略其方向和状态。
+
+**时序和硬件：**
+- LabJack 会在上电后不久应用其存储的电平。在此之前，每个引脚都是上拉输入。
+- 对于绝不能变为 HIGH 的线路，还要连接一个 10 k 接 GND 的外部下拉电阻。它从上电的第一刻起就把线路保持在低电平。
+- 闪存的写入次数有限。命令只在电平改变时才写入，因此可以放心地再次运行。
+
+**示例：**
+
+```bash
+# See what would change
+lager nets apply-power-up --dry-run --box my-lager-box
+
+# Write it
+lager nets apply-power-up --box my-lager-box
+
+# In CI: fail if a LabJack drifted from its nets
+lager nets apply-power-up --check --box my-lager-box
 ```
 
 ### `tui`

@@ -456,6 +456,10 @@ def status():
             # says it should be there. A box predating the route omits the key
             # entirely, which reads as false.
             'safetyLimits': _has_nets,
+            # PUT /nets/<name>/power-up and POST /nets/power-up are served on
+            # :9000: a LabJack gpio net's declared power-up level, and the
+            # check/write of each LabJack's boot config from those levels.
+            'netPowerUp': _has_nets,
             # GET|PUT /nets/<name>/metadata and GET|PUT /box-metadata are
             # served on :9000. The control plane gates its metadata pushes on
             # these: without them it would PUT to a route that 404s on every

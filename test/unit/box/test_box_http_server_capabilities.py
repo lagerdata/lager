@@ -188,6 +188,18 @@ class StatusCapabilitiesTest(unittest.TestCase):
         finally:
             box_http_server._has_nets = orig
 
+    def test_net_power_up_capability_reflects_nets_registration(self):
+        # The power-up routes live in the nets routes, so the flag must track
+        # whether those registered, not whether the module exists on disk.
+        orig = box_http_server._has_nets
+        try:
+            box_http_server._has_nets = True
+            self.assertIs(self._capabilities()['netPowerUp'], True)
+            box_http_server._has_nets = False
+            self.assertIs(self._capabilities()['netPowerUp'], False)
+        finally:
+            box_http_server._has_nets = orig
+
     def test_custom_drivers_capability_and_roles(self):
         # The CLI builds `lager <type>` from GET /drivers and the control plane
         # gates driver pushes on this flag, so it must track registration. The
