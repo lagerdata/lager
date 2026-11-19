@@ -91,7 +91,10 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
         click.secho("Installation cancelled.", fg='yellow')
         ctx.exit(1)
 
-    result = macos_box.install(version, cli_version, echo=click.echo)
+    result = macos_box.install(
+        version, cli_version, echo=click.echo,
+        confirm=(lambda question: True) if yes
+        else (lambda question: click.confirm(question, default=True)))
 
     name = get_box_name_by_ip(macos_box.LOCAL_ADDRESS)
     if name is None:
