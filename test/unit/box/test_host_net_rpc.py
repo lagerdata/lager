@@ -108,7 +108,7 @@ def agent(monkeypatch):
     def post(url, data=None, headers=None, timeout=None):
         got = client.post(url.replace(net_proxy.BASE_URL, ""), data=data, headers=headers)
         text = got.get_data(as_text=True)
-        post.timeouts.append(timeout)
+        post.timeouts.append((url, timeout))
         return SimpleNamespace(ok=got.status_code < 400, text=text,
                                json=lambda: json.loads(text))
 
@@ -220,7 +220,9 @@ def test_a_long_measurement_gets_a_matching_http_timeout(agent):
     net = net_proxy.open_net("n", "energy-analyzer")
     net.read(duration=600)
     net.read(0.5)
-    assert agent.post.timeouts[-2:] == [720.0, 120.5]
+    # Only the calls: a stand-in left by an earlier test may close in between.
+    calls = [t for url, t in agent.post.timeouts if url == net_proxy.CALL_URL]
+    assert calls[-2:] == [720.0, 120.5]
     assert net_proxy._budget((True, 10 ** 9), {"timeout": -1}) == 120.0
 
 
