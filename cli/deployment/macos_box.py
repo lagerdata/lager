@@ -120,6 +120,7 @@ ORBSTACK_CASK = "orbstack"
 # A Linux Box has Debian's gdb-multiarch; the agent uses this instead, for
 # RTT auto-detection and target memory access over GDB.
 ARM_GDB = "arm-none-eabi-gdb"
+RUST_FORMULA = "rust"
 # Started, in this order, when Docker is installed but not running.
 RUNTIME_APPS = (("OrbStack", "/Applications/OrbStack.app"),
                 ("Docker", "/Applications/Docker.app"))
@@ -634,6 +635,35 @@ def rust_toolchain(cargo: str, run: Run = _run) -> Optional[list]:
     return [f"+{max(names, key=_version)}"] if names else None
 
 
+def find_cargo() -> str:
+    """The ``cargo`` to build with: on PATH, rustup's, or Homebrew's. The path
+    returned may not exist."""
+    return shutil.which("cargo") or next(
+        (c for c in [os.path.expanduser("~/.cargo/bin/cargo")]
+         + [f"{p}/bin/cargo" for p in HOMEBREW_PREFIXES] if os.path.exists(c)),
+        os.path.expanduser("~/.cargo/bin/cargo"))
+
+
+def ensure_rust(run: Run = _run, echo=print) -> Optional[str]:
+    """Install Rust through Homebrew when none is installed. A reason, or None.
+
+    Optional: Rust only builds the oscilloscope daemon. A Rust that is
+    already installed is left alone, even when too old: it may be rustup's,
+    which the user manages.
+    """
+    if os.path.exists(find_cargo()):
+        return None
+    brew = homebrew_prefix_with("bin/brew")
+    if brew is None:
+        return "Rust is not installed and Homebrew is not available to install it"
+    echo("Installing Rust (Homebrew)...")
+    result = run([os.path.join(brew, "bin", "brew"), "install", RUST_FORMULA], timeout=1800)
+    if result.returncode != 0 or not os.path.exists(find_cargo()):
+        return (f"`brew install {RUST_FORMULA}` did not install it "
+                f"({_last_line(result.stderr) or 'brew failed'})")
+    return None
+
+
 def build_scope_daemon(layout: Layout, source: Path, run: Run = _run) -> Optional[str]:
     """Build the oscilloscope daemon natively. A reason, or None.
 
@@ -643,10 +673,7 @@ def build_scope_daemon(layout: Layout, source: Path, run: Run = _run) -> Optiona
     drivers from its PicoScope 7 application.
     """
     crate = source / "box" / "oscilloscope-daemon"
-    cargo = (shutil.which("cargo") or next(
-        (c for c in [os.path.expanduser("~/.cargo/bin/cargo")]
-         + [f"{p}/bin/cargo" for p in HOMEBREW_PREFIXES] if os.path.exists(c)),
-        os.path.expanduser("~/.cargo/bin/cargo")))
+    cargo = find_cargo()
     if not os.path.exists(cargo):
         return "Rust is not installed (https://rustup.rs)"
     if not crate.exists():
@@ -892,7 +919,7 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     reason = build_labjack_library(layout, run)
     if reason:
         skipped.append(f"LabJack U3/U6 support: {reason}")
-    reason = build_scope_daemon(layout, source, run)
+    reason = ensure_rust(run, echo) or build_scope_daemon(layout, source, run)
     if reason:
         skipped.append(f"Oscilloscope support: {reason}")
     reason = ensure_picoscope_app(run, echo)
