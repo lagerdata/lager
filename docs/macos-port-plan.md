@@ -1199,10 +1199,14 @@ instrument family, script API and CLI command of the Linux Box is in scope,
 and the port is not done while any is unbuilt or unverified. It is still
 subordinate to section 0.1: the Linux Box must not regress.
 
-Earlier per-feature exceptions were agreed before this and now conflict
-with it; each needs the owner's confirmation rather than an assumption:
-WiFi control, host network mode, and raw USB / pyftdi / direct bleak in
-scripts returning "not supported on macOS".
+Three exceptions were confirmed by the owner on 2026-11-18, after setting
+this bar: WiFi control stays "not supported" on macOS; raw USB, pyftdi and
+bleak used directly in a script keep failing loudly; host network mode
+stays refused. Everything else is in scope.
+
+Hardware the owner can put on a bench for verification, beyond the current
+bench: YKUSH, LabJack T7, Keysight supplies, OpenOCD probes, Rotrics arm,
+4-port Acroname.
 
 A parity matrix (every net type and instrument family, how a script and the
 CLI reach it, and its macOS state) is being compiled and will be added
@@ -1247,12 +1251,14 @@ hardware service) but never run on a Mac; **gap** = does not work yet.
 | Arm, actuate | Rotrics Dexarm | gap (tty names, port discovery) | built, same gap in the agent |
 | Webcam, HDMI capture | UVC cameras, capture cards | gap | gap |
 | BLE, BluFi | host Bluetooth | gap | gap |
-| WiFi (`lager wifi`) | host WiFi | gap (was "not supported") | gap |
+| WiFi (`lager wifi`) | host WiFi | not supported on macOS (owner's decision); must say so plainly | same |
 | Routers | MikroTik, ASUS | likely (network only) | likely |
 | DFU, `/usb/devices`, `lager diagnose` | host USB | gap: run in the container | n/a |
-| Module-level helpers | `lager.power.supply.voltage(...)`, `lager.io.adc.read(...)` and the like | n/a | gap: build real drivers in the script; only SPI/I2C and USB hub are covered |
+| Module-level helpers | `lager.power.supply.voltage(...)`, `lager.io.adc.read(...)` and the like, for supply, battery, e-load, solar, ADC, DAC, GPIO, watt, thermocouple, energy, HSM | n/a | built (driver made in the agent through the dispatcher base); SPI/I2C and USB hub bench |
+| Helpers that bypass the dispatchers | `lager.core.read_adc`, the DAC legacy backend | n/a | gap |
 | GPIO/ADC/DAC from `LAGER_MUXES` (legacy net definition) | — | n/a | gap |
-| pyvisa, raw USB, pyftdi, bleak used directly in a script | any | n/a | gap |
+| pyvisa used directly in a script | any | n/a | gap |
+| raw USB, pyftdi, bleak used directly in a script | any | n/a | fails loudly (owner's decision) |
 | Custom driver bundles, customer binaries | user code | reach hardware only through nets that have a hand-off | same |
 | MCP tools | `debug_probe_status`, hub USB listing | gap: read container sysfs | n/a |
 | Box management | install, update, uninstall, ssh, dut, box-config edit | bench | n/a |
@@ -1298,4 +1304,12 @@ fake driver; live on the bench Mac only that a script in the container
 reaches the agent's route and gets the Box's own `InvalidNetError` for an
 unknown net. **Not verified:** any of these seven instrument types on
 hardware; none is on the bench.
+
+**Module-level helpers (2026-11-18).** All eleven Box dispatchers get their
+driver from `_make_driver`, so one default-off hook in
+`BaseDispatcher.__init__` (`box/lager/dispatchers/base.py`, in the ledger)
+hands that to the agent: the agent instantiates the same dispatcher class
+and runs its real `_make_driver`, and the helper gets a stand-in for the
+result. The agent refuses any class that is not a `BaseDispatcher` subclass
+in the `lager` package. Unit tested; not run on hardware.
 
