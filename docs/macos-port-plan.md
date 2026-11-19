@@ -1239,12 +1239,12 @@ hardware service) but never run on a Mac; **gap** = does not work yet.
 | USB hub | Plugable | gap: driver reads sysfs | gap |
 | UART | USB-serial by `ttyUSBn`/`ttyACMn` | bench | bench |
 | UART | pinned by `/dev/serial/by-id` or `by-path` | gap | gap |
-| Thermocouple | Phidget | likely | gap |
-| Rotation | Phidget encoder | no command exists | gap |
-| Watt meter | Yocto-Watt, Joulescope JS220, Nordic PPK2 | likely | gap |
-| Energy analyzer | Joulescope JS220, Nordic PPK2 | likely | gap |
-| HSM | YubiHSM 2 | likely | gap |
-| Arm, actuate | Rotrics Dexarm | gap (tty names, port discovery) | gap |
+| Thermocouple | Phidget | likely | built |
+| Rotation | Phidget encoder | no command exists | built |
+| Watt meter | Yocto-Watt, Joulescope JS220, Nordic PPK2 | likely | built |
+| Energy analyzer | Joulescope JS220, Nordic PPK2 | likely | built |
+| HSM | YubiHSM 2 | likely | built |
+| Arm, actuate | Rotrics Dexarm | gap (tty names, port discovery) | built, same gap in the agent |
 | Webcam, HDMI capture | UVC cameras, capture cards | gap | gap |
 | BLE, BluFi | host Bluetooth | gap | gap |
 | WiFi (`lager wifi`) | host WiFi | gap (was "not supported") | gap |
@@ -1272,4 +1272,30 @@ Dexarm, by-id pins); (3) OpenOCD, Rigol scope daemons, Plugable hub;
 (4) DFU, USB listing, diagnose, MCP tools; (5) pyvisa and raw USB from
 scripts; (6) cameras; (7) BLE/BluFi and WiFi; (8) box-config apply, arm64
 image, packaging.
+
+### A script's driver object, run in the agent (2026-11-18)
+
+`box/lager/host/net_rpc.py`, `box/lager/hostlink/net_proxy.py`,
+`box/lager/hostlink/wire.py` (all new). Instead of one hand-written stand-in
+per instrument, the object `Net.get` would have returned on Linux is made in
+the agent and the script holds a stand-in that forwards every method call
+and attribute read. The script therefore sees the driver's whole interface.
+- Values keep their types (bytes, tuples, sets, non-string keys; numpy
+  becomes plain numbers and lists). Errors are raised as the driver's own
+  class when it can be imported in the container.
+- A value with no JSON form (an HSM session, a generator) stays in the
+  agent and comes back as a stand-in of its own.
+- An object lives until the script closes or drops it; all are released
+  when the script runner asks for USB claims to be released, before each
+  script.
+- Not carried: a callback passed as an argument; `isinstance` against the
+  driver class.
+
+Used by `Net.get` for thermocouple, watt-meter, energy-analyzer, hsm,
+rotation, actuate and arm nets (one more default-off branch in
+`box/lager/nets/net.py`, in the ledger). **Verified:** unit tests against a
+fake driver; live on the bench Mac only that a script in the container
+reaches the agent's route and gets the Box's own `InvalidNetError` for an
+unknown net. **Not verified:** any of these seven instrument types on
+hardware; none is on the bench.
 

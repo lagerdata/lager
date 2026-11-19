@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3989 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5571 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5591 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 417 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10414** |
+| | **Total gated** | **10434** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 359 files)
+### Local Unit Tests (`test/unit/` -- 360 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 196 files)
+#### Box Unit Tests (`test/unit/box/` -- 197 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -581,6 +581,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_hardware_service_redaction.py` | The `/invoke` log line masks secret keyword arguments (`password`, `pin`, `private_key_pem`, ...) while the driver still receives them |
 | `test_hsm_net_command.py` | `/net/command` for `hsm` nets: each action reaches its `hsm_hs` method with the login kwargs, a missing password and unknown algorithm, mechanism or object type answer 400 before the device is reached, the password never appears in a reply, and hardware_service's wrapper text is dropped from errors |
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches. The host `ca-certificates` upgrade `lager update` runs, including its command run by `sh` against stub `sudo` and `dpkg-query`. Also `udev_apply`, the box-config sudoers rules and bootstrap command, the v2 marker pin, username validation and the bootstrap texts |
+| `test_host_net_rpc.py` | A script's net object whose driver runs in the macOS host agent: the stand-in wired to the agent's routes through a Flask test client with a fake driver. Methods, properties and attributes all forwarded (a property not read until asked for); bytes, tuples, sets, non-string dict keys and numpy values keeping their types; a driver error raised as its own class, or RuntimeError when the class cannot be imported; private names refused on both sides; a session and a generator staying on the agent as handles; close, and every object released before the next script; a long measurement getting a matching HTTP timeout; and `Net.get` returning the stand-in for thermocouple, watt-meter, energy-analyzer, hsm, rotation, actuate and arm nets only under LAGER_HOSTLINK |
 | `test_host_orphans.py` | The macOS host agent's children do not outlive it: a child exits when its parent changes (asks itself to stop, then leaves regardless), and a starting supervisor ends agent children whose parent is launchd -- only this user's, only an interpreter running `-m lager.host worker`/`debug` or the oscilloscope daemon's exact path (including a path with spaces), never a supervised child or itself; asked first, killed only if it ignores the request; a failed process listing is not fatal |
 | `test_host_darwin_scan.py` | USB discovery for a container whose USB is on a macOS host: the Mac's USB bus written out as a sysfs-shaped tree (a Linux-style name from the location ID, attributes as files, a device inside its parent hub, one controller per bus, a departed device removed, a serial port as a tty entry inside its USB interface), the Box's own scanner run against that tree as a private copy (Linux-identical addresses, a serial-less device addressed by port, the Box's module left reading the real sysfs), the agent's two routes (bus IDs with unknown kept apart from empty, the instrument list, a failed scan), the container's stand-ins (IDs back in the sysfs reader's shape, anything malformed as unknown, a failed scan raised with the agent's reason), and the `LAGER_HOSTLINK` switches in `self_restart.py` and `usb_scanner.py` staying off unless set to `1`. Device entries are constructed to match one real bench; no hardware or `ioreg` is involved |
 | `test_host_darwin_usb.py` | USB enumeration on macOS for the hardware service's self-restart gate, read from the I/O Registry in place of Linux sysfs: devices nested under hubs, two units of one model, a device with no serial, either serial key, an empty plane, and every `ioreg` failure reported as unknown rather than empty. Pins that the function the agent swaps in is the one the gate consults, and that a restart becomes due only when the device is present. Also the device list in the shape `usb_sysfs` returns, which the hub drivers use to confirm a power cycle: keys and formats, a name that follows the port across re-enumeration, the vid/pid/serial filters, an unreadable bus as empty, and the reader replaced where the drivers look. The registry data is constructed; the sysfs-shaped part matches what a real Acroname hub and J-Link reported |
