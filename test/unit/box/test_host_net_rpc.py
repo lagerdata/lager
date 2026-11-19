@@ -264,3 +264,85 @@ def test_net_get_never_uses_the_stand_in_without_hostlink(saved_nets):
         assert saved_nets.Net.get("tc", type=NetType.Thermocouple) == "real"
     opened.assert_not_called()
     real.assert_called_once()
+
+
+# --------------------------------------------------- module-level helpers
+
+from lager.dispatchers.base import BaseDispatcher  # noqa: E402
+
+
+class FakeDispatcher(BaseDispatcher):
+    ROLE = "watt-meter"
+    made = []
+
+    def _choose_driver(self, instrument_name):
+        return FakeDriver
+
+    def _make_error(self, message):
+        return DriverError(message)
+
+    def _make_driver(self, rec, netname, channel):
+        if netname == "broken":
+            raise DriverError("no instrument at " + rec["address"])
+        FakeDispatcher.made.append((rec, netname, channel))
+        return FakeDriver(netname)
+
+
+def test_a_dispatcher_keeps_its_own_make_driver_without_hostlink():
+    environ = {k: v for k, v in os.environ.items() if k != "LAGER_HOSTLINK"}
+    with mock.patch.dict(os.environ, environ, clear=True):
+        dispatcher = FakeDispatcher()
+    assert "_make_driver" not in vars(dispatcher)
+    assert isinstance(dispatcher._make_driver({"address": "a"}, "n", 1), FakeDriver)
+
+
+def test_under_hostlink_the_agent_runs_that_dispatchers_make_driver(agent, monkeypatch):
+    # The agent only builds dispatchers from the Box's own package.
+    import sys
+    import types
+    fake_module = types.ModuleType("lager._fake_dispatcher")
+    fake_module.FakeDispatcher = FakeDispatcher
+    monkeypatch.setitem(sys.modules, "lager._fake_dispatcher", fake_module)
+    monkeypatch.setattr(FakeDispatcher, "__module__", "lager._fake_dispatcher")
+    FakeDispatcher.made.clear()
+    with mock.patch.dict(os.environ, {"LAGER_HOSTLINK": "1"}):
+        dispatcher = FakeDispatcher()
+    # The agent builds the dispatcher without the switch, so it makes the real one.
+    environ = {k: v for k, v in os.environ.items() if k != "LAGER_HOSTLINK"}
+    with mock.patch.dict(os.environ, environ, clear=True):
+        driver = dispatcher._make_driver({"address": "USB0::1", "pin": 2}, "w1", 2)
+        assert isinstance(driver, net_proxy.HostObject)
+        assert FakeDispatcher.made == [({"address": "USB0::1", "pin": 2}, "w1", 2)]
+        assert driver.read(duration=1) == {"power": 1.25, "duration": 1}
+        with pytest.raises(DriverError, match="no instrument at USB0::9"):
+            dispatcher._make_driver({"address": "USB0::9"}, "broken", 0)
+
+
+@pytest.mark.parametrize("module, name", [
+    ("os", "system"), ("lager.nets.net", "Net"), ("lager.nope", "X"),
+    ("lager.dispatchers.base", "no such"), (None, "X"), ("subprocess", "Popen"),
+])
+def test_only_a_box_dispatcher_class_can_be_asked_to_make_a_driver(agent, module, name):
+    response = agent.client.post(net_rpc.OPEN_DRIVER_PATH,
+                                 json={"module": module, "class": name, "args": []})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("path", [
+    "lager.power.supply.dispatcher", "lager.power.battery.dispatcher",
+    "lager.power.eload.dispatcher", "lager.power.solar.dispatcher",
+    "lager.io.adc.dispatcher", "lager.io.gpio.dispatcher", "lager.io.dac.dispatcher",
+    "lager.measurement.watt.dispatcher", "lager.measurement.thermocouple.dispatcher",
+    "lager.measurement.energy_analyzer.dispatcher", "lager.security.hsm.dispatcher",
+])
+def test_every_box_dispatcher_goes_through_the_base_constructor(path):
+    """The hand-off is installed there; a dispatcher with its own __init__ would miss it."""
+    import importlib
+    import inspect
+    module = importlib.import_module(path)
+    classes = [c for _n, c in inspect.getmembers(module, inspect.isclass)
+               if issubclass(c, BaseDispatcher) and c is not BaseDispatcher
+               and c.__module__ == path]
+    assert classes
+    for cls in classes:
+        assert cls.__init__ is BaseDispatcher.__init__
