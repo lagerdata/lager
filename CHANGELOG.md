@@ -12,6 +12,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **LabJack gpio nets can declare the level they power up at.** A LabJack
+  powers up with every pin as a pulled-up input, so a load on a gpio net saw
+  HIGH after a power cycle until lager next drove the pin.
+  `lager nets set-power-up NET... low|high|none` records a level on T7 and U3
+  nets, as do `nets add --power-up` and an `add-batch` `power_up` key.
+  `lager nets apply-power-up` writes each LabJack's boot configuration from its
+  nets, writing flash only when a level changed, and `--check` fails in CI when
+  one drifts.
+
 ## [0.65.0] - 2026-11-19
 
 ### Added

@@ -70,6 +70,10 @@ lager gpo RESET_N low --box my-lager-box
 lager gpo RESET_N high --box my-lager-box
 ```
 
+### Power-Up Level
+
+A level that `lager gpo` sets on a LabJack is lost when the LabJack loses power. At power-on, every LabJack pin is an input with a pull-up, so it reads HIGH. To make a LabJack T7 or U3 pin power up at a known level, declare the level with [`lager nets set-power-up`](/source/reference/cli/nets#set-power-up). Then write it with [`lager nets apply-power-up`](/source/reference/cli/nets#apply-power-up).
+
 ---
 
 ## Supported Hardware
@@ -162,3 +166,4 @@ lager gpo BOOT0 low --box my-lager-box
 - USB-202 channels are `DIO0`-`DIO7`
 - `--hold` has no effect; it prints a note and exits
 - The command sets the output level and exits immediately; the pin retains its state until the next command
+- A level does not survive a LabJack power cycle unless the net declares it with `lager nets set-power-up`

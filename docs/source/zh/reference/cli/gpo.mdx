@@ -68,6 +68,10 @@ lager gpo RESET_N low --box my-lager-box
 lager gpo RESET_N high --box my-lager-box
 ```
 
+### 上电电平
+
+`lager gpo` 在 LabJack 上设置的电平会在 LabJack 断电后丢失。上电时，LabJack 的每个引脚都是带上拉的输入，因此读数为 HIGH。若要让 LabJack T7 或 U3 的引脚以已知电平上电，请用 [`lager nets set-power-up`](/source/reference/cli/nets#set-power-up) 声明该电平。然后用 [`lager nets apply-power-up`](/source/reference/cli/nets#apply-power-up) 写入。
+
 ---
 
 ## 受支持的硬件
@@ -158,3 +162,4 @@ lager gpo BOOT0 low --box my-lager-box
 - USB-202 的通道是 `DIO0`-`DIO7`
 - `--hold` 没有效果；它会打印一条说明并退出
 - 命令设置好输出电平后立即退出；引脚会保持该状态，直到下一条命令
+- 除非 Net 用 `lager nets set-power-up` 声明过电平，否则电平在 LabJack 断电重启后不会保留

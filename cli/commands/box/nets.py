@@ -1457,6 +1457,175 @@ def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
                     fg="green")
 
 
+# LabJacks that keep a power-up I/O configuration in flash. Mirrors the box's
+# own check (nets_handler._POWER_UP_INSTRUMENT_RE); the box decides.
+_POWER_UP_INSTRUMENT_RE = re.compile(r"labjack[_\-\s]*(t7|u3)", re.IGNORECASE)
+_POWER_UP_LEVELS = ("low", "high", "none")
+
+
+def _power_up_problem(record: dict) -> Optional[str]:
+    """Why ``record`` cannot declare a power-up level, or None."""
+    if record.get("role") != "gpio":
+        return f"'{record.get('name')}' is a {record.get('role')} net; power-up levels are for gpio nets"
+    if not _POWER_UP_INSTRUMENT_RE.search(str(record.get("instrument") or "")):
+        return (f"'{record.get('name')}' is on a {record.get('instrument') or 'unknown instrument'}, "
+                "which has no stored power-up configuration; only LabJack T7 and U3 nets have one")
+    return None
+
+
+@nets.command("set-power-up", help="Declare the level LabJack gpio nets power up at")
+@click.argument("items", nargs=-1, required=True, metavar="NET... LEVEL")
+@click.option("--box", help="Lager Box name or IP")
+@click.pass_context
+def set_power_up_cmd(ctx: click.Context, items: tuple, box: str | None) -> None:
+    """
+    LEVEL is low, high or none (clears the declaration). There is no default:
+    LOW switches an active-high load off but asserts an active-low line such as
+    a reset, and an input net must stay undeclared.
+
+    This only records the level on the box. Run `lager nets apply-power-up` to
+    write it to the LabJack.
+    """
+    if len(items) < 2:
+        raise click.UsageError("Give one or more net names, then the level (low, high or none).")
+    *names, level = items
+    level = level.strip().lower()
+    if level not in _POWER_UP_LEVELS:
+        raise click.UsageError(f"LEVEL must be low, high or none, got '{items[-1]}'.")
+
+    resolved_box = _resolve_box(ctx, box)
+    recs = _fetch_saved_nets(ctx, resolved_box)
+    by_name = {}
+    for rec in recs:
+        by_name.setdefault(rec.get("name"), rec)
+    problems = []
+    for name in names:
+        rec = by_name.get(name)
+        if rec is None:
+            problems.append(f"no net named '{name}' on {resolved_box}")
+        elif level != "none":
+            problem = _power_up_problem(rec)
+            if problem:
+                problems.append(problem)
+    if problems:
+        for problem in problems:
+            click.secho(f"Error: {problem}", fg="red", err=True)
+        ctx.exit(1)
+
+    value = None if level == "none" else level
+    for name in names:
+        _box_request(ctx, resolved_box, "PUT", f"/nets/{name}/power-up",
+                     json_body={"power_up": value})
+        if value:
+            click.secho(f"'{name}' powers up {value.upper()}.", fg="green")
+        else:
+            click.secho(f"'{name}' has no declared power-up level.", fg="green")
+    click.echo(f"Write it to the LabJack with: lager nets apply-power-up --box {box or resolved_box}")
+
+
+def _render_power_up_report(report: dict) -> None:
+    for dev in report.get("devices", []):
+        model = dev.get("model") or "LabJack"
+        serial = dev.get("serial")
+        title = f"LabJack {model}" + (f" (serial {serial})" if serial else "")
+        click.secho(title, bold=True)
+        if dev.get("error"):
+            click.secho(f"  Error: {dev['error']}", fg="red")
+            continue
+        if dev.get("factory"):
+            click.echo("  Stored boot config: factory (every pin powers up as a pulled-up input)")
+        elif dev.get("stored_known") is False:
+            click.echo("  Stored boot config: custom, not saved by lager (stored levels unknown)")
+        rows = [["NET", "PIN", "DECLARED", "STORED", "STATUS"]]
+        for pin in dev.get("pins", []):
+            ok = pin.get("stored") == pin.get("declared")
+            rows.append([pin.get("net") or "", pin.get("dio_name") or "",
+                         (pin.get("declared") or "").upper(),
+                         (pin.get("stored") or "").upper(),
+                         "OK" if ok else "CHANGE"])
+        widths = [max(len(r[i]) for r in rows) for i in range(5)]
+        for row in rows:
+            click.echo("  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+        if dev.get("undeclared_outputs"):
+            click.secho("  Outputs no net declares (frozen as-is by a T7 save): "
+                        + ", ".join(dev["undeclared_outputs"]), fg="yellow")
+        if dev.get("written"):
+            click.secho("  Written to flash.", fg="green")
+        elif dev.get("in_sync"):
+            click.echo("  Stored config matches; nothing to write.")
+    if report.get("undeclared"):
+        click.secho("LabJack gpio nets with no declared power-up level (they power up as "
+                    "pulled-up inputs): " + ", ".join(report["undeclared"]), fg="yellow")
+
+
+@nets.command("apply-power-up",
+              help="Write each LabJack's power-up levels from its gpio nets")
+@click.option("--box", help="Lager Box name or IP")
+@click.option("--dry-run", is_flag=True, help="Show the changes and write nothing")
+@click.option("--check", is_flag=True,
+              help="Read only; exit 1 if any LabJack's stored levels differ from its nets")
+@click.option("--yes", is_flag=True, help="Do not ask before driving pins and writing flash")
+@click.option("--allow-undeclared", is_flag=True,
+              help="On a T7, save outputs that no net declares at their current level")
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
+@click.pass_context
+def apply_power_up_cmd(ctx: click.Context, box: str | None, dry_run: bool, check: bool,
+                       yes: bool, allow_undeclared: bool, as_json: bool) -> None:
+    """
+    Each gpio net on a LabJack T7 or U3 can declare a power-up level with
+    `lager nets set-power-up`. This command groups the declared nets by
+    LabJack, compares them with what the LabJack has stored, and writes the
+    boot configuration of any LabJack that differs. It drives the declared pins
+    now, and writes flash only when something changed.
+
+    A T7 saves its whole current I/O configuration (every pin, the DAC outputs,
+    the analog input settings), so it refuses while an undeclared pin is an
+    output unless --allow-undeclared is given.
+
+    --check is safe to run in CI or a nightly job: it only reads.
+    """
+    if dry_run and check:
+        raise click.UsageError("Give --dry-run or --check, not both.")
+    resolved_box = _resolve_box(ctx, box)
+    plan = _box_request(ctx, resolved_box, "POST", "/nets/power-up",
+                        json_body={"mode": "plan"})
+    errors = any(d.get("error") for d in plan.get("devices", []))
+
+    if check or dry_run or plan.get("in_sync"):
+        if as_json:
+            click.echo(json.dumps(plan, indent=2))
+        else:
+            _render_power_up_report(plan)
+            if not plan.get("devices"):
+                click.echo("No LabJack gpio net declares a power-up level.")
+            elif plan.get("in_sync") and not check and not dry_run:
+                click.secho("Every LabJack already matches its nets; nothing written.",
+                            fg="green")
+        if check and not plan.get("in_sync"):
+            ctx.exit(1)
+        if errors:
+            ctx.exit(1)
+        return
+
+    pending = [d for d in plan.get("devices", []) if not d.get("in_sync") and not d.get("error")]
+    if not as_json:
+        _render_power_up_report(plan)
+    if not yes:
+        pins = sum(len(d.get("pins", [])) for d in pending)
+        click.confirm(f"Drive {pins} declared pin(s) now and write the boot config of "
+                      f"{len(pending)} LabJack(s)?", abort=True, err=True)
+
+    result = _box_request(ctx, resolved_box, "POST", "/nets/power-up",
+                          json_body={"mode": "apply", "allow_undeclared": allow_undeclared})
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+    else:
+        click.echo()
+        _render_power_up_report(result)
+    if any(d.get("error") for d in result.get("devices", [])):
+        ctx.exit(1)
+
+
 @nets.command("add")
 @click.argument("name")
 @click.argument("role")
@@ -1485,9 +1654,13 @@ def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
               type=click.Choice(["A", "B", "C", "D"], case_sensitive=False),
               help="FTDI channel for a gpio, i2c or spi net on an FT2232H or "
                    "FT4232H. The default is A.")
+@click.option("--power-up", "power_up", default=None,
+              type=click.Choice(["low", "high"], case_sensitive=False),
+              help="Level a LabJack T7/U3 gpio net powers up at. Write it to the "
+                   "LabJack afterwards with `lager nets apply-power-up`.")
 @click.pass_context
 def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config,
-            sda, scl, cs, sck, mosi, miso, interface):
+            sda, scl, cs, sck, mosi, miso, interface, power_up):
     """
     Add a net using inferred instrument from VISA address.
 
@@ -1729,6 +1902,12 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         net_data["params"] = net_params
     if is_uart_device_path:
         net_data["device_path"] = channel
+    if power_up:
+        problem = _power_up_problem(net_data)
+        if problem:
+            click.secho(f"Error: --power-up: {problem}", fg="red", err=True)
+            ctx.exit(1)
+        net_data["power_up"] = power_up.lower()
 
     # Handle J-Link script for debug nets
     if role == "debug" and jlink_script:
@@ -2355,7 +2534,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 # Keys a `nets add-batch` record may carry. Anything else is refused: a key
 # this command does not read used to vanish without a word, which is how a
 # record's `params` (custom LabJack pins, the FTDI channel) was lost (#516).
-_BATCH_KEYS = ("name", "role", "channel", "address", "instrument", "params")
+_BATCH_KEYS = ("name", "role", "channel", "address", "instrument", "params", "power_up")
 # `params` keys that stand for a `nets add` pin option, and the option each is.
 _BATCH_PIN_PARAMS = {param: signal for signal, param in
                      {**_I2C_PIN_PARAMS, **_SPI_PIN_PARAMS}.items()}
@@ -2621,6 +2800,16 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
             normalized_net["pin"] = pin_label
         if params:
             normalized_net["params"] = params
+        if net_data.get("power_up") is not None:
+            level = str(net_data["power_up"]).strip().lower()
+            if level not in ("low", "high"):
+                channel_errors.append(f"{label}: power_up must be 'low' or 'high'.")
+            else:
+                problem = _power_up_problem(normalized_net)
+                if problem:
+                    channel_errors.append(f"{label}: power_up: {problem}")
+                else:
+                    normalized_net["power_up"] = level
 
         # The role check `nets add` makes. An instrument the scan could not
         # name ("Unknown", absent hardware) and a uart device path skip it,
@@ -3158,6 +3347,9 @@ def show_cmd(
 
     if target.get("openocd_config"):
         click.echo("  OpenOCD:    (OpenOCD config attached)")
+
+    if target.get("power_up"):
+        click.echo(f"  Power-up:   {str(target['power_up']).upper()}")
 
     purpose = target.get("purpose", "")
     notes = target.get("notes", "")
