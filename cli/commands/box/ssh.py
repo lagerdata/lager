@@ -6,12 +6,13 @@
 
     SSH into boxes
 """
+import os
 import click
 from click.exceptions import Exit
 import shlex
 import subprocess
 import platform
-from ...box_storage import resolve_and_validate_box
+from ...box_storage import auto_lock_around_command, resolve_and_validate_box
 from ...context import get_default_box
 from ._ssh import resolve_box_user, widened_identity_args
 
@@ -95,8 +96,20 @@ def ssh(ctx, box, command):
     if box is None:
         box = get_default_box(ctx)
 
-    # Resolve and validate the box (handles both names and IPs)
-    resolved_box = resolve_and_validate_box(ctx, box)
+    # Hold an ephemeral auto-lock for the whole SSH session (interactive or
+    # one-shot). While it is held, other users' lager commands that change
+    # the box are refused. A direct `ssh user@box` takes no lock.
+    # Skip the pre-resolve lock check when we will acquire: acquire_box_lock
+    # waits in CI and treats an already-ours user lock as fine. When the
+    # LAGER_AUTO_LOCK_DISABLE escape hatch is set, keep the pre-check so a
+    # foreign user lock is still refused.
+    auto_lock_enabled = not os.getenv('LAGER_AUTO_LOCK_DISABLE')
+    resolved_box = resolve_and_validate_box(
+        ctx, box, _skip_lock_check=auto_lock_enabled,
+    )
+    # `is None`, not `or`: an empty --box is falsy and must not fall back
+    # (see test_empty_box_everywhere).
+    box_label = resolved_box if box is None else box
 
     # The stored user for a saved name, else the one saved for this IP (an
     # IP or the default box never matches a name), else 'lagerdata'.
@@ -119,12 +132,20 @@ def ssh(ctx, box, command):
         ssh_cmd.append(' '.join(shlex.quote(arg) for arg in command))
 
     try:
-        # Run SSH as a child process (not exec) so Click ctx.call_on_close hooks run.
-        try:
-            ret = subprocess.call(ssh_cmd)
-        except KeyboardInterrupt:
-            ret = 130
-        ctx.exit(ret if ret is not None else 0)
+        # Heartbeat keeps a long interactive session alive; release runs on
+        # normal exit, Ctrl-C, ctx.exit, and process death (atexit).
+        # fail_open: a box with no lock API, or a lock server that errors,
+        # still gets a shell -- `lager ssh` is how such a box is repaired.
+        with auto_lock_around_command(
+            resolved_box, box_label, 'ssh', fail_open=True,
+        ):
+            # Run SSH as a child process (not exec) so Click ctx.call_on_close
+            # hooks and the auto-lock release still run.
+            try:
+                ret = subprocess.call(ssh_cmd)
+            except KeyboardInterrupt:
+                ret = 130
+            ctx.exit(ret if ret is not None else 0)
     except FileNotFoundError:
         click.secho('Error: SSH client not found', fg='red', err=True)
         click.secho(_get_ssh_install_hint(), err=True)

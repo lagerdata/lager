@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Changed
+
+- **`lager ssh` locks the box for the length of the session.** An interactive
+  shell or a one-shot remote command takes an ephemeral lock and releases it
+  when the session ends. While it is held, other users' lager commands that
+  change the box are refused. A box without the lock API still connects, with a
+  warning, and `LAGER_AUTO_LOCK_DISABLE=1` connects without taking the lock.
+
 ### Fixed
 
 - **`lager scope NET cursor time` and `cursor volts` accept negative values.** A

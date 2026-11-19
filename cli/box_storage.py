@@ -912,6 +912,7 @@ def acquire_box_lock(
     wait_seconds=0,
     poll=2.0,
     quiet=False,
+    fail_open=False,
 ):
     """Acquire the box lock for ``holder``.
 
@@ -930,6 +931,10 @@ def acquire_box_lock(
 
     ``holder_type`` and ``ttl_seconds`` are forwarded to the server. Older
     box versions that don't understand these fields will just ignore them.
+
+    Any other reply (no lock API, a server error) exits too, unless
+    ``fail_open`` is set: then it warns and returns ``("unreachable", None)``,
+    so the caller runs without a lock. A collision still exits either way.
     """
     import time
     import click
@@ -1052,6 +1057,23 @@ def acquire_box_lock(
 
             time.sleep(min(poll, max(0.1, deadline - time.monotonic())))
             continue
+
+        # A box that cannot take a lock at all: an image older than the lock
+        # API (404), or a lock server that errors. With fail_open the caller
+        # carries on unlocked, as the pre-command lock check does; `lager ssh`
+        # uses this because it is how such a box gets repaired.
+        if fail_open:
+            if not quiet:
+                reason = (
+                    'runs an old image without lock support'
+                    if resp.status_code == 404
+                    else f'did not take the lock (HTTP {resp.status_code})'
+                )
+                click.secho(
+                    f"Warning: box '{display}' {reason}; continuing without a lock.",
+                    fg='yellow', err=True,
+                )
+            return ('unreachable', None)
 
         # Any other status: bail out.
         if not quiet:
@@ -1580,9 +1602,15 @@ def auto_lock_around_command(
     holder_type=None,
     heartbeat_interval=None,
     release_retry_seconds=0,
+    fail_open=False,
 ):
     """Context manager: auto-acquire a box lock for the duration of an
-    admin command (`install`, `uninstall`, `update`, `install-wheel`).
+    admin command (`install`, `uninstall`, `update`, `install-wheel`), or
+    of a `lager ssh` session.
+
+    ``fail_open`` is passed to :func:`acquire_box_lock`: a box that cannot
+    take a lock (no lock API, a server error) yields state ``"unreachable"``
+    instead of exiting. `lager ssh` sets it; the admin commands do not.
 
     Use as::
 
@@ -1652,6 +1680,7 @@ def auto_lock_around_command(
             holder_type=resolved_type,
             ttl_seconds=resolved_ttl,
             wait_seconds=resolved_wait,
+            fail_open=fail_open,
         )
 
         should_release = (state == 'acquired')
