@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.65.0] - 2026-11-19
+
 ### Added
 
 - **A `ble-sniffer` net captures Bluetooth LE radio traffic to pcap.**
