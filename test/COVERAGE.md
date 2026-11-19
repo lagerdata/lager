@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 4013 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5559 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 4030 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5597 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10429** |
+| | **Total gated** | **10484** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 357 files)
+### Local Unit Tests (`test/unit/` -- 360 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 193 files)
+#### Box Unit Tests (`test/unit/box/` -- 195 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -596,6 +596,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_probe_lock.py` | One J-Link operation per probe at a time, since J-Link lets a second client interleave with a flash and corrupt its RAMCode download: a second thread or process waits for the first, the wait gives up with `ProbeBusyError` naming the holder, the lock is re-entrant within a thread, a holder that dies releases it, separate probes never block each other, and `holds_probe` holds a generator's lock for its whole life (released on close) while keeping its return value; a thread that waits behind another logs it, naming the holder |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
+| `test_labjack_boot_config.py` | LabJack power-up levels (`lager nets apply-power-up`) against a fake T7 that saves its whole live config and cannot read stored levels back, and a fake U3 whose `configU3` zeroes the omitted fields of a written group: a T7 drives the declared pins before the save, falls back to the BOOTUP register name, refuses while an undeclared pin is an output (driving nothing) unless allowed, and writes no flash on a second run, keyed by serial; a U3 writes every field with only the declared bits changed, clears a declared pin's analog bit, reads stored levels back and errors on a readback mismatch; levels have no default, two nets on one pin must agree, and the hardware_service adapter resolves nets through the GPIO dispatcher and refuses a non-LabJack driver |
 | `test_labjack_gpio_wait_for_level.py` | `LabJackGPIO.wait_for_level` against a fake ljm: the timeout runs from the call, so a slow `eStreamStart` counts against it (the old code started the clock after it, and a 0.4 s timeout took 0.7 s); the call never returns before the timeout; the returned elapsed time still runs from the stream start; and the stream is stopped once |
 | `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged. Also that the ADC, DAC and GPIO dispatchers refuse a bare `LabJack`, a T4 or a T8 with an error that lists the supported models, and that every listed model routes to a driver |
 | `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use. Also the U3 SPI and I2C drivers against a fake `u3.spi()`/`u3.i2c()` written from the LabJackPython source rather than from the drivers: the odd-packet padding SPI must trim and I2C must not, the AckArray bit order (bit 0 is the LAST data byte, so a partially acknowledged write is non-zero and a ported `acks == 0` check would call it success), the unshifted address, the 50/50/52 byte limits, and a transaction that fails when a pin is left in analog mode -- with a negative control that neuters the mux call and asserts the transaction then breaks, so a pass cannot be coincidental |
@@ -616,6 +617,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_mcp_publish_opt_out.py` | `LAGER_MCP_NO_PUBLISH`: runs the opt-out scan and the port-publishing block of `start_box.sh` under bash with a rendered `BOX_CONFIG_ENV`. A truthy value drops exactly the 8100 mapping, any other value drops nothing, and both opt-outs together drop 8100 and 9000. `--no-publish` still publishes nothing, and host mode warns that the variable has no effect |
 | `test_mcp_token_shim.py` | The box-side `mcp-token-*` verbs, with the REAL `_audit` pointed at a temp file: `enable` creates a mode-0600 file whatever the umask and refuses when one exists, `rotate` replaces it atomically and repairs an empty or unreadable one, `disable` is idempotent; no verb touches `box_config.json`, the audit log names the verb and never the value, no verb reads the value back, and the path comes from `lager/constants.py` alone |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
+| `test_nets_power_up_endpoint.py` | `PUT /nets/<name>/power-up` merges a declared level without touching other fields, clears it with null, and refuses non-gpio and non-LabJack nets and levels other than low/high; the whole-record `PUT /nets/<name>` validates the field too; `POST /nets/power-up` makes one hardware_service call per LabJack, locked on the `/invoke` device identity, with only that LabJack's declared nets, lists undeclared LabJack gpio nets, and reports a device error per device |
 | `test_net_metadata_endpoint.py` | `/nets/<name>/metadata`: merging purpose/notes/tags without disturbing the rest of the record, and reporting bench.json overrides |
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), I2C bus scan, and the request deadline handed to the USB batch as a per-hub budget |
@@ -708,7 +710,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 140 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 141 files)
 
 | File | What it tests |
 |------|---------------|
@@ -780,6 +782,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |
 | `test_nets_dual_role_notice.py` | Dual-role single-channel chips (Keithley 2281S, EA PSB, DP711): second role offered with a warn-once notice instead of a hard block, FT232H keeps the block, batch conflicts count selected rows only |
 | `test_nets_multi_device.py` | Two devices of one model: address ambiguity, not model name, decides whether nets can be created |
+| `test_nets_power_up.py` | `lager nets set-power-up` and `apply-power-up`: several nets in one call, `none` clears, the level is required and checked, one bad net refuses the whole call; `--check` exits 1 on drift and only reads, `--dry-run` never applies, a write asks first and passes `--allow-undeclared`, an in-sync box writes nothing, a device error fails the run; `nets show` prints the level, `add-batch` accepts and validates `power_up`, and a TUI metadata edit keeps it |
 | `test_nets_set_capture.py` | `lager nets set-capture`: the only capture card attached is paired, several are told apart by `--port`, an absent one is refused, `--clear` unpairs every net on the scope, one pairing per scope, and a PicoScope needs none |
 | `test_nets_state_display.py` | `lager nets state` State column rendering, including the dash shown for a net whose state is unknown |
 | `test_nets_tui_startup.py` | Nets TUI startup regressions: mixed net types, empty state, unsaved placeholders |
