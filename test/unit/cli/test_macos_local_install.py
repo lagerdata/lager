@@ -339,6 +339,34 @@ def test_an_arm_gdb_is_installed_with_brew_only_when_missing():
         assert "Homebrew" in macos_box.ensure_arm_gdb(_Runner(), echo=lambda *_: None)
 
 
+def test_rust_is_installed_with_brew_only_when_no_cargo_is_found(tmp_path):
+    cargo = tmp_path / "cargo"
+    run = _Runner()
+    with mock.patch.object(macos_box, "find_cargo", return_value=str(cargo)):
+        cargo.write_text("")
+        assert macos_box.ensure_rust(run, echo=lambda *_: None) is None
+        assert run.calls == [], "already installed, however old: nothing is run"
+        cargo.unlink()
+
+        found = {"bin/brew": "/opt/homebrew"}
+        with mock.patch.object(macos_box, "homebrew_prefix_with", side_effect=found.get):
+            installs = _Runner()
+
+            def brew(argv, **kwargs):
+                cargo.write_text("")
+                return installs(argv, **kwargs)
+            assert macos_box.ensure_rust(brew, echo=lambda *_: None) is None
+            assert [a for a, _ in installs.calls] == [
+                ["/opt/homebrew/bin/brew", "install", "rust"]]
+            cargo.unlink()
+
+            reason = macos_box.ensure_rust(_Runner(), echo=lambda *_: None)
+            assert "brew install rust" in reason, "still absent afterwards"
+
+        with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
+            assert "Homebrew" in macos_box.ensure_rust(_Runner(), echo=lambda *_: None)
+
+
 def test_jlink_is_installed_through_the_cask_only_when_missing(tmp_path):
     exe = tmp_path / "JLinkExe"
     exe.write_text("")
