@@ -29,6 +29,7 @@ from . import wire
 BASE_URL = "http://localhost:8080"
 OPEN_URL = BASE_URL + "/v1/net/open"
 CALL_URL = BASE_URL + "/v1/net/call"
+OPEN_DRIVER_URL = BASE_URL + "/v1/net/open_driver"
 CLOSE_URL = BASE_URL + "/v1/net/close"
 # Opening may enumerate a bus; a call may be a long measurement.
 _BASE_TIMEOUT_S = 120.0
@@ -192,3 +193,21 @@ class HostObject:
 def open_net(name, role):
     """The stand-in for the saved net ``name`` in ``role`` (its saved name)."""
     return HostObject(_post(OPEN_URL, {"name": name, "role": role}, _BASE_TIMEOUT_S))
+
+
+def driver_maker(dispatcher):
+    """A ``_make_driver`` for ``dispatcher`` whose driver lives in the agent.
+
+    The module-level helpers (``lager.power.supply.voltage`` and the like)
+    get their driver from their dispatcher's ``_make_driver``. This one asks
+    the agent to run that same method of that same dispatcher class, and
+    returns a stand-in for what it made.
+    """
+    cls = type(dispatcher)
+    target = {"module": cls.__module__, "class": cls.__qualname__}
+
+    def _make_driver(*args, **kwargs):
+        body = dict(target, args=wire.encode(list(args)), kwargs=wire.encode(dict(kwargs)))
+        return HostObject(_post(OPEN_DRIVER_URL, body, _BASE_TIMEOUT_S))
+
+    return _make_driver

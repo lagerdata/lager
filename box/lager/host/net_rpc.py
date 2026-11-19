@@ -32,6 +32,7 @@ from lager.hostlink import protocol, wire
 logger = logging.getLogger(__name__)
 
 OPEN_PATH = "/v1/net/open"
+OPEN_DRIVER_PATH = "/v1/net/open_driver"
 CALL_PATH = "/v1/net/call"
 CLOSE_PATH = "/v1/net/close"
 RELEASE_PATH = "/cache/release_direct_usb"
@@ -55,6 +56,21 @@ def _make(name, role):
     from lager.nets.net import Net
 
     return Net.get(name, type=NetType.from_role(role))
+
+
+def _dispatcher(module, name):
+    """An instance of the Box dispatcher class ``module.name``; nothing else."""
+    import importlib
+
+    from lager.dispatchers.base import BaseDispatcher
+
+    if not (isinstance(module, str) and isinstance(name, str)
+            and module.startswith("lager.") and name.isidentifier()):
+        raise ValueError("Not a Box dispatcher.")
+    cls = getattr(importlib.import_module(module), name, None)
+    if not (isinstance(cls, type) and issubclass(cls, BaseDispatcher)):
+        raise ValueError("Not a Box dispatcher.")
+    return cls()
 
 
 def describe(obj) -> dict:
@@ -139,6 +155,22 @@ def install(app: Flask) -> Flask:
             return respond(_register(_make(name, role)))
         except Exception as exc:  # the stand-in raises it as the same class
             logger.info("net open %s (%s) failed: %s: %s", name, role,
+                        type(exc).__name__, exc)
+            return respond(*_error(exc))
+
+    @app.route(OPEN_DRIVER_PATH, methods=["POST"])
+    def _hostlink_net_open_driver():
+        data = request.get_json(silent=True) or {}
+        try:
+            dispatcher = _dispatcher(data.get("module"), data.get("class"))
+        except (ValueError, ImportError) as exc:
+            return _bad(str(exc))
+        try:
+            driver = dispatcher._make_driver(*wire.decode(data.get("args") or []),
+                                             **wire.decode(data.get("kwargs") or {}))
+            return respond(_register(driver))
+        except Exception as exc:  # the stand-in raises it as the same class
+            logger.info("%s._make_driver failed: %s: %s", data.get("class"),
                         type(exc).__name__, exc)
             return respond(*_error(exc))
 

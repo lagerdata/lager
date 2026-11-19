@@ -4,6 +4,7 @@
 """Base dispatcher class providing common patterns for hardware backend dispatchers."""
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple, Type
 
@@ -52,6 +53,13 @@ class BaseDispatcher(ABC):
         # This prevents sharing cache across different dispatcher types
         if "_driver_cache" not in self.__class__.__dict__:
             self.__class__._driver_cache = {}
+
+        # A container with no hardware of its own (LAGER_HOSTLINK=1, set only
+        # by the macOS start script): the driver is made in the host agent.
+        # Unset, nothing here runs and _make_driver is the subclass's own.
+        if os.environ.get("LAGER_HOSTLINK") == "1":
+            from ..hostlink.net_proxy import driver_maker
+            self._make_driver = driver_maker(self)
 
     @abstractmethod
     def _choose_driver(self, instrument_name: str) -> Type[Any]:
