@@ -123,10 +123,11 @@ def create_app(endpoint: config.Endpoint) -> Flask:
             darwin_debug.install()
         except Exception:
             logger.exception("debug support is unavailable")
-    from . import debug_rpc, serial_rpc, usb_rpc
+    from . import debug_rpc, net_rpc, serial_rpc, usb_rpc
 
     debug_rpc.install(hardware_service.app)
     usb_rpc.install(hardware_service.app)
+    net_rpc.install(hardware_service.app)
     serial_rpc.install(hardware_service.app, endpoint.bind)
     return install(hardware_service.app, endpoint)
 
