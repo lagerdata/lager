@@ -93,6 +93,10 @@ OPTIONAL_AGENT_REQUIREMENTS = (
     ("Phidget", "Phidget22"),
     ("Yoctopuce", "yoctopuce"),
     ("YubiHSM", "yubihsm[usb]"),
+    ("YKUSH hub", "hidapi"),
+    # The same commit the Linux Box image installs.
+    ("YKUSH hub", "git+https://github.com/Yepkit/pykush@d83ee856b4d0ea961b63b531fe4f4c533f6962f6"),
+    ("MCC USB-202", "uldaq"),
 )
 MIN_PYTHON = (3, 10)
 # The oscilloscope daemon does not build with an older Rust.
