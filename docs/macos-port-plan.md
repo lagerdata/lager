@@ -1188,3 +1188,23 @@ Mac".
 - A laptop Box saved by LAN address stops resolving when the laptop changes
   network (seen: the bench Mac moved from 10.101.x to 192.168.x overnight).
 
+### Requirement: full parity (2026-11-18)
+
+The project owner: "my customers will use all instruments on the mac. this
+port needs to make the mac version indistinguishable from the linux
+version".
+
+This replaces "the bench's instruments work" as the bar. Every net type,
+instrument family, script API and CLI command of the Linux Box is in scope,
+and the port is not done while any is unbuilt or unverified. It is still
+subordinate to section 0.1: the Linux Box must not regress.
+
+Earlier per-feature exceptions were agreed before this and now conflict
+with it; each needs the owner's confirmation rather than an assumption:
+WiFi control, host network mode, and raw USB / pyftdi / direct bleak in
+scripts returning "not supported on macOS".
+
+A parity matrix (every net type and instrument family, how a script and the
+CLI reach it, and its macOS state) is being compiled and will be added
+here; it is the list this work is tracked against from now on.
+
