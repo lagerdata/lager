@@ -63,7 +63,7 @@ class FakeRepl:
 def mem8_text(addr, data):
     """Format bytes the way J-Link Commander prints mem8 output, including the
     echoed command line (no '=') and a trailing prompt fragment."""
-    lines = [f'mem8 {hex(addr)} {len(data)}\r']
+    lines = [f'mem8 {hex(addr)} {hex(len(data))}\r']
     for off in range(0, len(data), 16):
         row = data[off:off + 16]
         lines.append('{:08X} = {} \r'.format(addr + off, ' '.join(f'{b:02X}' for b in row)))
@@ -76,7 +76,7 @@ def make_responder(flash_bytes, mirror_base, loadfile_out='LOADFILE-OK\r\nDone.\
     def responder(cmd):
         if cmd.startswith('mem8 '):
             _, addr_s, n_s = cmd.split()
-            addr, n = int(addr_s, 16), int(n_s)
+            addr, n = int(addr_s, 16), int(n_s, 16)
             start = addr - mirror_base
             return mem8_text(addr, flash_bytes[start:start + n])
         if cmd.startswith('loadfile '):
@@ -248,7 +248,7 @@ class MismatchAndInconclusiveTests(TempBinMixin, unittest.TestCase):
                  LAGER_DA1469_UNCACHED_VERIFY_BYTES=str(CHUNK)):
             yields, commands = run_flash('DA14695', responder, binfiles=[(path, XIP)])
         mem8s = [c for c in commands if c.startswith('mem8 ')]
-        self.assertEqual(mem8s, [f'mem8 {hex(XIP + MIRROR_OFF)} {CHUNK}'])
+        self.assertEqual(mem8s, [f'mem8 {hex(XIP + MIRROR_OFF)} {hex(CHUNK)}'])
         note = [y for y in yields if y.startswith('Uncached read-back OK')]
         self.assertIn(f'{CHUNK} of {3 * CHUNK} bytes', note[0])
 
