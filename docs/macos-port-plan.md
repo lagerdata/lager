@@ -1411,3 +1411,29 @@ line, the progress lines, the "Set up" line, no password line, 33 s),
 `lager ssh -- uname -s`, YKUSH3 and CP2102 from a script. Not run live:
 the uninstall/reinstall name round trip, the quiet pull and the `--ip`
 path (unit tests only).
+
+**Second clean reinstall (2026-11-19).** Prompts answered as a person
+would. Found and fixed:
+1. The image download (the longest step, network only) waited for about a
+   minute of local builds. It now starts in the background right after
+   Docker is found; the install waits for it only before starting the
+   container, saying "still downloading (N min so far)" every 30 s.
+   Docker's own output is captured in every case.
+2. The Box-name question came at the end, minutes in. Every question is
+   now asked before the install starts.
+3. "Continue?" did not say what Homebrew would add. It now lists what is
+   missing (OrbStack, J-Link, PicoScope 7, Rust, an ARM GDB) and says
+   which installers ask for the Mac password.
+4. The uninstall's "Remove 'local' from local .lager configuration?" now
+   reads "Also forget the saved Box 'local' in this CLI? (A reinstall
+   brings the name back.)". The Linux uninstall's wording is unchanged.
+5. `test/unit/box/test_prebuilt_image.py` ran the `start_box.sh` block
+   that writes `/etc/lager/image-source` whenever `/etc/lager` is
+   writable, which a Mac Box's is: the suite left a fake digest there for
+   `lager update` to read. The test now points the block at a scratch
+   directory.
+
+Result: clean install 76 s (was 4 min 12 s; the download overlapped the
+builds and was also faster this time), YKUSH3 and CP2102 checks pass
+after it. Not run live: the Homebrew list and password line (everything
+was installed) and the 30 s heartbeat (the wait was 10 s).
