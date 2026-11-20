@@ -78,6 +78,10 @@ DA1469X_RESET_STAT_REG = 0x500000BC
 # command — big enough to amortise REPL round-trips, small enough to stay well
 # inside pexpect/replwrap buffering.
 _UNCACHED_VERIFY_CHUNK = 4096
+# J-Link Commander reads every number as hex, counts included: ``mem32 0x0
+# 4096`` asks for 0x4096 words. It refuses more than 0x4000 items in one
+# ``mem32``/``mem8`` ("NumItems should be <= 0x4000"), printing no data.
+_MEM_MAX_ITEMS = 0x4000
 # J-Link Commander's loadfile compare-failure line; wording varies across
 # Commander versions ("Verification failed", "Verify failed").
 _VERIFY_FAILED_RE = re.compile(r'verif(?:y|ication)\s+failed', re.IGNORECASE)
@@ -313,7 +317,7 @@ def _verify_bin_uncached(jl, captured_output, path, address):
         jl.run_command(f'w4 {hex(_DA1469X_CACHE_CTRL1_REG)} 1')
         for offset in range(0, total, _UNCACHED_VERIFY_CHUNK):
             n = min(_UNCACHED_VERIFY_CHUNK, total - offset)
-            got = _parse_mem8_bytes(jl.run_command(f'mem8 {hex(mirror + offset)} {n}'), n)
+            got = _parse_mem8_bytes(jl.run_command(f'mem8 {hex(mirror + offset)} {hex(n)}'), n)
             if len(got) != n:
                 inconclusive = f'short read at {hex(mirror + offset)} ({len(got)}/{n} bytes)'
                 break
@@ -676,15 +680,24 @@ class JLink:
             # number of words; fall back to mem8 for unaligned/partial reads
             # (e.g. RAM, which tolerates byte access). ARMv8-M (M33) tolerates
             # byte access, so mem8 happened to work there; mem32 is correct for both.
+            # Counts are hex to Commander, and capped per command, so a long
+            # read is several commands.
             if address % 4 == 0 and length % 4 == 0:
                 # mem32 syntax: mem32 address nwords (one 32-bit word per count)
-                output = jl.run_command(f'mem32 {hex(address)} {length // 4}')
-                parser = _parse_mem32_bytes
+                command, size, parser = 'mem32', 4, _parse_mem32_bytes
             else:
                 # mem8 syntax: mem8 address count
-                output = jl.run_command(f'mem8 {hex(address)} {length}')
-                parser = _parse_mem8_bytes
-        return parser(output, length)
+                command, size, parser = 'mem8', 1, _parse_mem8_bytes
+            data = b''
+            step = _MEM_MAX_ITEMS * size
+            for offset in range(0, length, step):
+                n = min(step, length - offset)
+                output = jl.run_command(f'{command} {hex(address + offset)} {hex(n // size)}')
+                chunk = parser(output, n)
+                data += chunk
+                if len(chunk) < n:
+                    break
+        return data
 
     @staticmethod
     def _should_memrd_reset_halt(override):

@@ -246,6 +246,19 @@ _ATTACH_FAILED_RE = re.compile(
 )
 
 
+# Commander could not use the probe at all, so nothing was programmed. Seen
+# when it starts moments after another client (the GDB server stopped just
+# before the flash) let go of the probe: one J-Link OB on the Mac bench gave
+# this, with a garbled USB reply, on about half of the flashes from a script.
+_PROBE_BUSY_RE = re.compile(
+    r'cannot connect to the probe/programmer'
+    r'|j-link connection not established yet but required for command',
+    re.IGNORECASE,
+)
+# How long to leave the probe alone before the one retry.
+_PROBE_BUSY_RETRY_WAIT_S = 2.0
+
+
 def _attach_failed(output_chunks):
     """True if Commander output shows it never attached, strictly enough to
     fail the operation on rather than retry it."""
@@ -1393,7 +1406,9 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         files: Tuple of (hexfiles, binfiles, elffiles)
         preverify: Verify before flashing (unused)
         verify: Verify after flashing (unused)
-        run_after: Reset and run after flashing (JLinkExe does this automatically)
+        run_after: Reset and run after flashing. Commander's ``loadfile`` leaves
+            the core halted, so a part other than a DA1469x (which is reset
+            below regardless) gets ``rnh`` after a successful flash.
         mcu: MCU identifier (e.g., 'nRF52833_XXAA')
         use_gdb: DEPRECATED - ignored, always uses JLinkExe
         script_file: Optional path to J-Link script file (from debug service)
@@ -1492,6 +1507,19 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             flash_output = retry_output
         # Retry failed too: keep the original output, which carries the real error.
 
+    if _PROBE_BUSY_RE.search('\n'.join(flash_output)):
+        logger.warning('Flash could not use the J-Link; retrying once after %.0f s.',
+                       _PROBE_BUSY_RETRY_WAIT_S)
+        stop_jlink(serial=serial)
+        stop_jlink_gdbserver(serial=serial)
+        time.sleep(_PROBE_BUSY_RETRY_WAIT_S)
+        with sampler:
+            retry_output = _run_flash(resolved_script)
+        if not _PROBE_BUSY_RE.search('\n'.join(retry_output)):
+            yield 'WARNING: the J-Link could not be used on the first try; flashed on the second.'
+            flash_output = retry_output
+        # Retry failed too: keep the first output, which carries the error.
+
     yield from flash_output
     failure = _flash_failure(flash_output, require_evidence, device=device)
 
@@ -1533,6 +1561,18 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             logger.warning("DA1469x post-flash Commander reset failed: %s", e)
             yield f"Warning: Could not reset target after flash: {e}"
     else:
+        if run_after and not failure:
+            # loadfile halts the core and leaves it halted, and the GDB server
+            # below attaches with -nohalt, which does not resume it: without
+            # this the new firmware sits at a halt until the next reset.
+            try:
+                with commander(jlink_args, script_file=resolved_script, serial=serial) as jl:
+                    jl.run_command('connect')
+                    jl.run_command('rnh')
+                yield "Target reset and running"
+            except Exception as e:
+                logger.warning("Post-flash reset failed: %s", e)
+                yield f"Warning: Could not reset target after flash: {e}"
         # Non-DA1469x: reconnect GDB server so the debug service knows
         # a server is running for subsequent operations.
         yield "Reconnecting GDB server..."
