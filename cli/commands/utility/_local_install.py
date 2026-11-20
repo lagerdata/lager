@@ -112,22 +112,35 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
         click.echo(f"Your password is asked for once, to create {macos_box.ETC_DIR}.")
     for flag, why in ignored_options(ctx):
         click.secho(f"Ignoring {flag}: {why}.", fg='yellow')
-    if not yes and not click.confirm("Continue?", default=True):
-        click.secho("Installation cancelled.", fg='yellow')
-        ctx.exit(1)
+    skip = [piece for piece, wanted in (("jlink", skip_jlink),
+                                        ("picoscope", skip_picoscope)) if wanted]
+    brewed = macos_box.homebrew_installs(skip)
+    if brewed:
+        click.echo("Homebrew will install: " + ", ".join(brewed) + ".")
+        asking = [piece for piece in brewed if piece in macos_box.ASKS_FOR_PASSWORD]
+        if asking:
+            click.echo(f"The {' and '.join(asking)} installer"
+                       f"{'s' if len(asking) > 1 else ''} ask{'' if len(asking) > 1 else 's'} "
+                       "for your Mac password during the install.")
+    # Every question is asked here, before the install starts: it takes
+    # minutes, and nobody should come back to a prompt.
+    name = get_box_name_by_ip(macos_box.LOCAL_ADDRESS)
+    if not yes:
+        if not click.confirm("Continue?", default=True):
+            click.secho("Installation cancelled.", fg='yellow')
+            ctx.exit(1)
+        if name is None:
+            default = macos_box.remembered_box_name() or DEFAULT_LOCAL_NAME
+            name = click.prompt("Save the Box in this CLI as", type=str,
+                                default=default).strip() or default
+    name = name or macos_box.remembered_box_name() or DEFAULT_LOCAL_NAME
 
     result = macos_box.install(
         version, cli_version, echo=click.echo,
         confirm=(lambda question: True) if yes
         else (lambda question: click.confirm(question, default=True)),
-        skip=[piece for piece, wanted in (("jlink", skip_jlink),
-                                          ("picoscope", skip_picoscope)) if wanted])
+        skip=skip)
 
-    name = get_box_name_by_ip(macos_box.LOCAL_ADDRESS)
-    if name is None:
-        name = macos_box.remembered_box_name() or DEFAULT_LOCAL_NAME
-        if not yes:
-            name = click.prompt("Box name", type=str, default=name).strip() or name
     add_box(name, macos_box.LOCAL_ADDRESS, user=getpass.getuser(),
             version=result.box_version, python_port=macos_box.PYTHON_SERVICE_PORT)
     macos_box.remember_box_name(name)
@@ -171,7 +184,8 @@ def uninstall_locally(ctx, *, purge_config, yes, dry_run, platform=None,
 
     name = get_box_name_by_ip(macos_box.LOCAL_ADDRESS)
     if name and (yes or click.confirm(
-            f"Remove '{name}' from local .lager configuration?", default=True)):
+            f"Also forget the saved Box '{name}' in this CLI? (A reinstall "
+            "brings the name back.)", default=True)):
         delete_box(name)
     click.secho("Uninstall complete.", fg='green', bold=True)
 

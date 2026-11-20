@@ -18,6 +18,7 @@ import os
 import plistlib
 import subprocess
 import tarfile
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -460,18 +461,59 @@ def test_uninstall_removes_the_box_images_unless_asked_to_keep_them(layout, tmp_
                    for piece in macos_box.installed_pieces(layout, keep_images=True))
 
 
-def test_the_image_download_is_quiet_without_a_terminal(tmp_path):
+def test_docker_pull_output_is_captured_not_printed(tmp_path):
+    """Without a terminal Docker prints hundreds of progress lines."""
     missing = _Runner([(lambda a, k: a[1:3] == ["image", "inspect"], _done(1))])
-    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
-            mock.patch.object(macos_box.sys.stdout, "isatty", return_value=False):
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)):
         macos_box.start_container("docker", {}, "img:v1", tmp_path, missing)
-    pulls = [a for a, _ in missing.calls if a[1] == "pull"]
-    assert pulls == [["docker", "pull", "--platform", "linux/amd64", "--quiet", "img:v1"]]
-    shown = _Runner([(lambda a, k: a[1:3] == ["image", "inspect"], _done(1))])
-    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
-            mock.patch.object(macos_box.sys.stdout, "isatty", return_value=True):
-        macos_box.start_container("docker", {}, "img:v1", tmp_path, shown)
-    assert "--quiet" not in [a for a, _ in shown.calls if a[1] == "pull"][0]
+    pulls = [(a, k) for a, k in missing.calls if a[1] == "pull"]
+    assert [a for a, _ in pulls] == [["docker", "pull", "--platform", "linux/amd64", "img:v1"]]
+    assert "capture_output" not in pulls[0][1], "the runner's default captures"
+
+
+def test_the_image_downloads_in_the_background_and_says_it_is_still_going():
+    release = threading.Event()
+
+    def slow_pull(argv, **kwargs):
+        if argv[1:3] == ["image", "inspect"]:
+            return _done(1)
+        release.wait(5)
+        return _done()
+    lines = []
+    download = macos_box.BackgroundPull("docker", {}, "img:v1", slow_pull, lines.append)
+    assert download.thread.is_alive(), "the install goes on while it downloads"
+    threading.Timer(0.15, release.set).start()
+    download.wait(lines.append, every_s=0.05)
+    assert "Waiting for the Box image to finish downloading..." in lines
+    assert any("still downloading" in line for line in lines)
+
+    present = macos_box.BackgroundPull("docker", {}, "img:v1", _Runner(), lines.append)
+    assert present.thread is None
+    present.wait(lines.append)
+
+    failing = _Runner([(lambda a, k: a[1:3] == ["image", "inspect"], _done(1)),
+                       (lambda a, k: a[1] == "pull", _done(1, err="denied"))])
+    with mock.patch.object(macos_box, "anonymous_env", return_value={}):
+        failed = macos_box.BackgroundPull("docker", {}, "img:v1", failing, lines.append)
+        with pytest.raises(LagerError) as caught:
+            failed.wait(lines.append, every_s=0.05)
+    assert caught.value.cause == "denied"
+
+
+def test_what_homebrew_will_install_is_known_before_the_install(tmp_path):
+    with mock.patch.object(macos_box, "homebrew_prefix_with",
+                           side_effect=lambda rel: "/opt/homebrew" if rel == "bin/brew" else None), \
+            mock.patch.object(macos_box, "RUNTIME_APPS", (("OrbStack", str(tmp_path / "no")),)), \
+            mock.patch.object(macos_box.shutil, "which", return_value=None), \
+            mock.patch.object(macos_box, "JLINK_EXE", str(tmp_path / "no")), \
+            mock.patch.object(macos_box, "PICOSCOPE_APP", str(tmp_path / "no")), \
+            mock.patch.object(macos_box, "find_cargo", return_value=str(tmp_path / "no")):
+        assert macos_box.homebrew_installs() == [
+            "OrbStack (Docker)", "SEGGER J-Link", "PicoScope 7", "Rust", "an ARM GDB"]
+        assert macos_box.homebrew_installs(["jlink", "picoscope"]) == [
+            "OrbStack (Docker)", "an ARM GDB"]
+    with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
+        assert macos_box.homebrew_installs() == [], "no Homebrew: nothing to install with"
 
 
 def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, tmp_path):
@@ -484,7 +526,8 @@ def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, t
               mock.patch.object(macos_box, "ensure_source", return_value=tmp_path),
               mock.patch.object(macos_box, "source_version", return_value="9.9.9"),
               mock.patch.object(macos_box, "ensure_agent_env", return_value=[]),
-              mock.patch.object(macos_box, "wait_for_link", return_value=""))
+              mock.patch.object(macos_box, "wait_for_link", return_value=""),
+              mock.patch.object(macos_box, "BackgroundPull"))
     lines = []
     with contextlib.ExitStack() as stack:
         called = {name: stack.enter_context(patch) for name, patch in steps.items()}
@@ -543,6 +586,7 @@ def lager_home(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(macos_box, "BOX_NAME_FILE", str(tmp_path / "box-name"))
     monkeypatch.setattr(_local_install.getpass, "getuser", lambda: "me")
+    monkeypatch.setattr(macos_box, "homebrew_installs", lambda skip=(): [])
     return tmp_path
 
 
@@ -689,6 +733,24 @@ def test_the_password_is_mentioned_only_when_it_will_be_asked(lager_home, tmp_pa
         present = CliRunner().invoke(install, ["--yes"], obj={})
     assert "password" in absent.output
     assert "password" not in present.output
+
+
+def test_every_question_is_asked_before_the_install_starts(lager_home, monkeypatch):
+    from cli.commands.utility.install import install
+    value = macos_box.Result(source=Path("/src"), image="img", box_version="2.0.0")
+    monkeypatch.setattr(macos_box, "homebrew_installs",
+                        lambda skip=(): ["SEGGER J-Link", "an ARM GDB"])
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "install", return_value=value) as provision:
+        provision.side_effect = lambda *a, **k: (print("INSTALLING"), value)[1]
+        result = CliRunner().invoke(install, [], obj={}, input="y\nbench\n")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "Homebrew will install: SEGGER J-Link, an ARM GDB." in out
+    assert "The SEGGER J-Link installer asks for your Mac password" in out
+    assert out.index("Continue?") < out.index("Save the Box in this CLI as") \
+        < out.index("INSTALLING")
+    assert list(_saved(lager_home)) == ["bench"]
 
 
 def test_update_of_the_local_box_is_the_install_again():

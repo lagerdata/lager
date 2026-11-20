@@ -29,6 +29,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -822,24 +823,9 @@ def start_container(docker: str, env: dict, image: str, source: Path,
     if not os.path.exists(nets):
         with open(nets, "w", encoding="utf-8") as fh:
             fh.write("[]")
-    if run([docker, "image", "inspect", image], env=env, timeout=60).returncode != 0:
+    if not image_present(docker, env, image, run):
         echo(f"Downloading the Box image {image} (several GB; this takes a while)...")
-        # Without a terminal Docker prints a line per layer event, hundreds.
-        pull = [docker, "pull", "--platform", IMAGE_PLATFORM,
-                *([] if sys.stdout.isatty() else ["--quiet"]), image]
-        result = run(pull, env=env, timeout=3600, capture_output=False)
-        if result.returncode != 0:
-            # Over SSH the login keychain is locked, and a Docker set up to
-            # keep credentials there fails every pull, even of a public
-            # image. Pull once more with no credential store at all.
-            result = run(pull, env=anonymous_env(docker, env, run), timeout=3600,
-                         capture_output=False)
-        if result.returncode != 0:
-            raise LagerError(
-                f"The CLI did not download the Box image {image}.",
-                fixes=["Check the network connection, then run `lager install` again.",
-                       "For a development version, pass --version with a release "
-                       "tag that has an image."])
+        _check_pull(pull_image(docker, env, image, run), image)
     run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
     result = run(docker_run_argv(docker, image, source, etc_real, bind),
                  env=env, timeout=300)
@@ -852,6 +838,95 @@ def start_container(docker: str, env: dict, image: str, source: Path,
                      "Stop it, then run `lager install` again."]
         raise LagerError("The CLI did not start the Box container.",
                          cause=cause, fixes=fixes)
+
+
+def image_present(docker: str, env: dict, image: str, run: Run = _run) -> bool:
+    return run([docker, "image", "inspect", image], env=env, timeout=60).returncode == 0
+
+
+def pull_image(docker: str, env: dict, image: str,
+               run: Run = _run) -> subprocess.CompletedProcess:
+    """Download the Box image. Docker's own output is captured: without a
+    terminal it is a line per layer event, hundreds of them."""
+    pull = [docker, "pull", "--platform", IMAGE_PLATFORM, image]
+    result = run(pull, env=env, timeout=3600)
+    if result.returncode != 0:
+        # Over SSH the login keychain is locked, and a Docker set up to keep
+        # credentials there fails every pull, even of a public image. Pull
+        # once more with no credential store at all.
+        result = run(pull, env=anonymous_env(docker, env, run), timeout=3600)
+    return result
+
+
+def _check_pull(result: subprocess.CompletedProcess, image: str) -> None:
+    if result.returncode != 0:
+        raise LagerError(
+            f"The CLI did not download the Box image {image}.",
+            cause=_last_line(result.stderr),
+            fixes=["Check the network connection, then run `lager install` again.",
+                   "For a development version, pass --version with a release "
+                   "tag that has an image."])
+
+
+class BackgroundPull:
+    """Downloads the Box image while the agent is built: the download is the
+    longest step and needs only the network."""
+
+    def __init__(self, docker: str, env: dict, image: str, run: Run = _run,
+                 echo=print):
+        self.image = image
+        self.result = None
+        self.thread = None
+        if image_present(docker, env, image, run):
+            return
+        echo(f"Downloading the Box image {image} in the background "
+             "(several GB)...")
+        self.started = time.monotonic()
+
+        def pull():
+            self.result = pull_image(docker, env, image, run)
+        self.thread = threading.Thread(target=pull, name="lager-image-pull", daemon=True)
+        self.thread.start()
+
+    def wait(self, echo=print, every_s: float = 30.0) -> None:
+        """Return once the image is there, saying so every ``every_s`` seconds
+        while it is not."""
+        if self.thread is None:
+            return
+        self.thread.join(timeout=0)
+        if self.thread.is_alive():
+            echo("Waiting for the Box image to finish downloading...")
+        while self.thread.is_alive():
+            self.thread.join(timeout=every_s)
+            if self.thread.is_alive():
+                minutes = (time.monotonic() - self.started) / 60
+                echo(f"  still downloading ({minutes:.0f} min so far)...")
+        _check_pull(self.result, self.image)
+
+
+def homebrew_installs(skip: Sequence[str] = ()) -> List[str]:
+    """What an install would add with Homebrew on this Mac, as it would be
+    named to the user. Nothing when Homebrew is not installed (those pieces
+    are skipped then, with the reason)."""
+    if homebrew_prefix_with("bin/brew") is None:
+        return []
+    wanted = []
+    if not any(os.path.isdir(path) for _, path in RUNTIME_APPS) and shutil.which("docker") is None:
+        wanted.append("OrbStack (Docker)")
+    if "jlink" not in skip and not os.path.exists(JLINK_EXE):
+        wanted.append("SEGGER J-Link")
+    if "picoscope" not in skip:
+        if not os.path.isdir(PICOSCOPE_APP):
+            wanted.append("PicoScope 7")
+        if not os.path.exists(find_cargo()):
+            wanted.append("Rust")
+    if homebrew_prefix_with(f"bin/{ARM_GDB}") is None:
+        wanted.append("an ARM GDB")
+    return wanted
+
+
+# The Homebrew installers that ask for the Mac's password themselves.
+ASKS_FOR_PASSWORD = ("SEGGER J-Link", "PicoScope 7")
 
 
 _LINK_PROBE = ("import urllib.request;"
@@ -942,6 +1017,7 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     source = ensure_source(layout, version, run, source)
     box_version = source_version(source) or version.lstrip("v")
     image = image_for(box_version if from_tree else version)
+    download = BackgroundPull(docker, env, image, run, echo)
 
     echo("Installing the host agent's Python packages...")
     skipped = ensure_agent_env(layout, run)
@@ -966,6 +1042,7 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     echo("Starting the host agent...")
     start_agent(layout, source, run)
 
+    download.wait(echo)
     echo("Starting the Box container...")
     start_container(docker, env, image, source, run, echo, bind)
     wait_for_link(docker, env, run)

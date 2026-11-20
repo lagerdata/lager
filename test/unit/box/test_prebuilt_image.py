@@ -148,9 +148,12 @@ def run(tmp_path):
             env["LAGER_BOX_IMAGE_VERSION"] = want
         env.update({k: str(v) for k, v in fakes.items()})
 
+        # The block records the image's origin in /etc/lager when it can
+        # write there, as it can on a Mac Box (the user owns /etc/lager).
+        # Point it at a scratch directory so a test never writes the real one.
         script = (
             "set -e\n"
-            + PREBUILT_SH
+            + PREBUILT_SH.replace("/etc/lager", str(tmp_path / "etc-lager"))
             + '\nif [ -n "${LAGER_BOX_IMAGE:-}" ] && use_prebuilt_box_image; then\n'
             "    echo RESULT=PREBUILT\n"
             "else\n"
