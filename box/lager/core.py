@@ -156,7 +156,10 @@ def read_adc(kind="T7", interface="AIN0"):
     past it rather than ignoring it. The U3 is driven by the Exodriver
     instead -- see lager.io.labjack_ud_handle.
     """
-    from labjack import ljm
+    # Through the handle module, which hands a Mac Box's LJM its data files.
+    from lager.io.labjack_handle import ljm, _LJM_ERR
+    if ljm is None:
+        raise RuntimeError(f"LabJack LJM library not available: {_LJM_ERR}")
     handle = None
     try:
         handle = ljm.openS(kind, "ANY", "ANY")

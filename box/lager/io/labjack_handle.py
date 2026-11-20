@@ -86,6 +86,34 @@ def _prefer_dist_path(dist_name: str, wanted_rel: str) -> None:
         pass  # best-effort
 
 
+if sys.platform == "darwin":
+    _MISSING_LIBRARY = (
+        "labjack.ljm loaded but the native LJM library (libLabJackM.dylib) "
+        "is not available. Run `lager install` again: it installs LJM for the "
+        "host agent; the install output says why if it could not."
+    )
+else:
+    _MISSING_LIBRARY = (
+        "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
+        "is not available. Install the LJM SDK from "
+        "https://labjack.com/support/software/installers/ljm"
+    )
+
+# Set by a Mac Box's host agent, whose LJM data files live in the agent's own
+# directory rather than /usr/local/share/LabJack/LJM.
+LJM_CONSTANTS_ENV = "LAGER_LJM_CONSTANTS_FILE"
+
+
+def _point_ljm_at_its_files(_ljm) -> None:
+    """Give LJM its constants file before any device is opened.
+
+    Without it, LJM cannot resolve register names such as ``AIN0``.
+    """
+    path = os.environ.get(LJM_CONSTANTS_ENV)
+    if path:
+        _ljm.writeLibraryConfigStringS("LJM_CONSTANTS_FILE", path)
+
+
 def _load_ljm():
     """
     Import the real pip-installed 'labjack.ljm', even if a shadowing 'labjack.py'
@@ -98,11 +126,7 @@ def _load_ljm():
         from labjack import ljm as _ljm
         from labjack.ljm import ljm as _inner
         if getattr(_inner, '_staticLib', None) is None:
-            raise ImportError(
-                "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
-                "is not available. Install the LJM SDK from "
-                "https://labjack.com/support/software/installers/ljm"
-            )
+            raise ImportError(_MISSING_LIBRARY)
         return _ljm
     except Exception as e1:
         first_exc = e1
@@ -134,11 +158,7 @@ def _load_ljm():
         _ljm = importlib.import_module("labjack.ljm")
         _inner = importlib.import_module("labjack.ljm.ljm")
         if getattr(_inner, '_staticLib', None) is None:
-            raise ImportError(
-                "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
-                "is not available. Install the LJM SDK from "
-                "https://labjack.com/support/software/installers/ljm"
-            )
+            raise ImportError(_MISSING_LIBRARY)
         return _ljm
     except Exception as e2:
         _debug(f"Failed to import labjack.ljm; first={first_exc!r}, second={e2!r}")
@@ -148,6 +168,7 @@ def _load_ljm():
 # Load ljm module at import time
 try:
     ljm = _load_ljm()
+    _point_ljm_at_its_files(ljm)
     _LJM_ERR = None
 except Exception as _exc:  # pragma: no cover
     ljm = None
