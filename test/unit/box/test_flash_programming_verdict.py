@@ -302,6 +302,72 @@ Target connection not established yet but required for command.
 """
 
 
+class PostFlashRunTests(unittest.TestCase):
+    """Commander's loadfile leaves the core halted, and the GDB server that is
+    started afterwards attaches with -nohalt, which does not resume it. The
+    debug service flashes with run_after=True: the new firmware must run."""
+
+    def _flash(self, output, run_after):
+        with _bench(output) as rec:
+            lines, failure = _drain(api.flash_device(
+                ([], [('/tmp/fw.bin', 0x0)], []), mcu=OTHER, run_after=run_after))
+        return rec, lines, failure
+
+    def test_a_successful_flash_is_reset_and_run_before_the_gdb_server(self):
+        rec, lines, failure = self._flash(PROGRAMMED, run_after=True)
+        self.assertIsNone(failure)
+        self.assertEqual(rec.commands, ['connect', 'rnh'])
+        self.assertLess(lines.index('Target reset and running'),
+                        lines.index('Reconnecting GDB server...'))
+        self.assertEqual(rec.gdbserver_starts, 1)
+
+    def test_a_failed_flash_is_not_run(self):
+        rec, lines, failure = self._flash(ATTACH_FAILED, run_after=True)
+        self.assertIsNotNone(failure)
+        self.assertNotIn('rnh', rec.commands)
+        self.assertNotIn('Target reset and running', lines)
+
+    def test_without_run_after_the_core_is_left_as_loadfile_left_it(self):
+        rec, lines, _failure = self._flash(PROGRAMMED, run_after=False)
+        self.assertNotIn('rnh', rec.commands)
+
+
+class ProbeBusyRetryTests(unittest.TestCase):
+    """Commander could not use the probe at all (nothing was programmed): the
+    flash is tried once more after the probe is left alone."""
+
+    BUSY = ('connect\r\nJ-Link connection not established yet but required for command.\r\n'
+            'Connecting to J-Link ...FAILED: Cannot connect to the probe/programmer.\r\n')
+
+    def _flash(self, outputs):
+        attempts = iter(outputs)
+
+        def fake_flash(self_, files, preverify=False, verify=False, **kw):
+            yield next(attempts)
+        with _bench(PROGRAMMED) as rec, \
+                patch.object(api.JLink, 'flash', fake_flash):
+            lines, failure = _drain(api.flash_device(
+                ([], [('/tmp/fw.bin', 0x0)], []), mcu=OTHER, run_after=True))
+        return rec, lines, failure
+
+    def test_a_busy_probe_is_retried_and_the_retry_is_the_result(self):
+        rec, lines, failure = self._flash([self.BUSY, PROGRAMMED])
+        self.assertIsNone(failure)
+        self.assertIn('WARNING: the J-Link could not be used on the first try; '
+                      'flashed on the second.', lines)
+        self.assertNotIn(self.BUSY, lines)
+        self.assertIn('rnh', rec.commands)
+
+    def test_a_probe_busy_twice_fails_with_the_first_output(self):
+        _rec, lines, failure = self._flash([self.BUSY, self.BUSY])
+        self.assertIsNotNone(failure)
+        self.assertIn(self.BUSY, lines)
+
+    def test_a_clean_flash_is_not_retried(self):
+        _rec, lines, failure = self._flash([PROGRAMMED])  # a second try would raise
+        self.assertIsNone(failure)
+
+
 class UnusableProbeAndMissingDownloadTests(unittest.TestCase):
     def test_an_unusable_probe_is_the_verdict(self):
         self.assertEqual(

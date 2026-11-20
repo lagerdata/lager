@@ -57,7 +57,7 @@ class FakeRepl:
 
 def mem8_text(addr, data):
     """Format bytes the way J-Link Commander prints mem8 output."""
-    lines = [f'mem8 {hex(addr)} {len(data)}\r']
+    lines = [f'mem8 {hex(addr)} {hex(len(data))}\r']
     for off in range(0, len(data), 16):
         row = data[off:off + 16]
         lines.append('{:08X} = {} \r'.format(addr + off, ' '.join(f'{b:02X}' for b in row)))
@@ -68,7 +68,7 @@ def mem8_text(addr, data):
 def mem32_text(addr, data):
     """Format the way J-Link Commander prints mem32: one 8-hex-digit word VALUE
     per address. *data* is little-endian bytes (memory order)."""
-    lines = [f'mem32 {hex(addr)} {len(data) // 4}\r']
+    lines = [f'mem32 {hex(addr)} {hex(len(data) // 4)}\r']
     for off in range(0, len(data), 4):
         v = int.from_bytes(data[off:off + 4], 'little')
         lines.append('{:08X} = {:08X} \r'.format(addr + off, v))
@@ -95,10 +95,12 @@ def run_read(device, data, address=0xE000ED00, length=4, **kwargs):
     def responder(cmd):
         if cmd.startswith('mem32 '):
             _, addr_s, n_s = cmd.split()
-            return mem32_text(int(addr_s, 16), data[:int(n_s) * 4])
+            at = int(addr_s, 16) - address
+            return mem32_text(int(addr_s, 16), data[at:at + int(n_s, 16) * 4])
         if cmd.startswith('mem8 '):
             _, addr_s, n_s = cmd.split()
-            return mem8_text(int(addr_s, 16), data[:int(n_s)])
+            at = int(addr_s, 16) - address
+            return mem8_text(int(addr_s, 16), data[at:at + int(n_s, 16)])
         return f'{cmd.upper()}-OUT'
 
     fake = FakeRepl(responder)
@@ -150,7 +152,7 @@ class Da1469ResetHaltTests(unittest.TestCase):
         self.assertNotIn('rnh', commands)
         self.assertNotIn('h', commands)
         # 0xE000ED00/4 is word-aligned -> mem32 (one word).
-        self.assertEqual(commands, ['connect', f'mem32 {hex(0xE000ED00)} 1'])
+        self.assertEqual(commands, ['connect', f'mem32 {hex(0xE000ED00)} 0x1'])
 
     def test_env_optout_skips_reset_halt_on_da1469(self):
         for value in ('0', 'false', 'no', 'off'):
@@ -209,7 +211,7 @@ class WordVsByteAccessTests(unittest.TestCase):
                                         address=0xE000ED00, length=4)
         self.assertEqual(result, KUMO_CPUID_BYTES)               # 01 c6 0c 41
         self.assertEqual(int.from_bytes(result, 'little'), 0x410CC601)
-        self.assertEqual(self._read_cmd(commands), f'mem32 {hex(0xE000ED00)} 1')
+        self.assertEqual(self._read_cmd(commands), f'mem32 {hex(0xE000ED00)} 0x1')
 
     def test_multiword_read_uses_mem32_with_word_count(self):
         data = bytes(range(16))  # 4 words
@@ -217,7 +219,7 @@ class WordVsByteAccessTests(unittest.TestCase):
             result, commands = run_read('ATSAMD21', data,
                                         address=0x20000000, length=16)
         self.assertEqual(result, data)
-        self.assertEqual(self._read_cmd(commands), f'mem32 {hex(0x20000000)} 4')
+        self.assertEqual(self._read_cmd(commands), f'mem32 {hex(0x20000000)} 0x4')
 
     def test_unaligned_address_falls_back_to_mem8(self):
         data = b'\xAA\xBB\xCC'
@@ -225,7 +227,7 @@ class WordVsByteAccessTests(unittest.TestCase):
             result, commands = run_read('ATSAMD21', data,
                                         address=0x20000001, length=3)
         self.assertEqual(result, data)
-        self.assertEqual(self._read_cmd(commands), f'mem8 {hex(0x20000001)} 3')
+        self.assertEqual(self._read_cmd(commands), f'mem8 {hex(0x20000001)} 0x3')
 
     def test_partial_word_length_falls_back_to_mem8(self):
         data = b'\x01\x02\x03'
@@ -233,7 +235,7 @@ class WordVsByteAccessTests(unittest.TestCase):
             result, commands = run_read('ATSAMD21', data,
                                         address=0x20000000, length=3)
         self.assertEqual(result, data)
-        self.assertEqual(self._read_cmd(commands), f'mem8 {hex(0x20000000)} 3')
+        self.assertEqual(self._read_cmd(commands), f'mem8 {hex(0x20000000)} 0x3')
 
     def test_word_read_composes_with_da1469_reset_halt(self):
         # DA1469x word read must still reset+halt, THEN use mem32.
@@ -268,6 +270,33 @@ class ParseMem32BytesTests(unittest.TestCase):
     def test_garbled_returns_empty(self):
         self.assertEqual(jlink._parse_mem32_bytes('no equals sign', 4), b'')
 
+
+
+class CountsAreHexAndCappedTests(unittest.TestCase):
+    """Commander reads every number as hex and refuses more than 0x4000 items
+    per mem32/mem8: a decimal count of 4096 words asked for 0x4096 and got
+    "NumItems should be <= 0x4000" and no data."""
+
+    def _read(self, address, length):
+        data = bytes(i & 0xFF for i in range(length))
+        return run_read('NRF52840_XXAA', data, address=address, length=length), data
+
+    def test_a_16_kib_read_is_one_command_with_a_hex_count(self):
+        (result, commands), data = self._read(0x0, 0x4000)
+        self.assertEqual([c for c in commands if c.startswith('mem')], ['mem32 0x0 0x1000'])
+        self.assertEqual(result, data)
+
+    def test_a_read_over_the_cap_is_split(self):
+        (result, commands), data = self._read(0x20000000, 0x10000 + 16)
+        self.assertEqual([c for c in commands if c.startswith('mem')],
+                         ['mem32 0x20000000 0x4000', 'mem32 0x20010000 0x4'])
+        self.assertEqual(result, data)
+
+    def test_an_unaligned_read_over_the_cap_is_split_by_bytes(self):
+        (result, commands), data = self._read(0x20000001, 0x4000 + 3)
+        self.assertEqual([c for c in commands if c.startswith('mem')],
+                         ['mem8 0x20000001 0x4000', 'mem8 0x20004001 0x3'])
+        self.assertEqual(result, data)
 
 if __name__ == '__main__':
     unittest.main()
