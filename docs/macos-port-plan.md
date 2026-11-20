@@ -1242,13 +1242,13 @@ hardware service) but never run on a Mac; **gap** = does not work yet.
 | SPI, I2C | LabJack U3 | bench (SPI loopback; I2C no slave) | bench |
 | SPI | LabJack T7, FT4232H | bench (no slave wired: reads only) | bench |
 | SPI, I2C | Aardvark, FT232H; I2C on T7 and FT4232H | built | built |
-| Debug | J-Link | bench (and erase/flash/verify on an nRF52840) | bench (connect, reset, halt, flash, erase, read, status, RTT); `rtt_defmt` not run |
+| Debug | J-Link (nRF52840 only) | bench: erase, flash .bin/.elf, memrd up to 72 KiB, reset, status | bench: connect, reset, halt, flash .bin/.elf, erase, read, status, RTT, `rtt_defmt` |
 | Debug | OpenOCD probes (ST-Link, CMSIS-DAP, FTDI, picoprobe) | gap: fixed Linux paths | gap |
 | Debug | remaining `DebugNet` methods in scripts | n/a | gap: not on the stand-in |
 | USB hub | Acroname | bench | bench |
 | USB hub | YKUSH3 | bench | bench |
 | USB hub | Plugable | gap: driver reads sysfs | gap |
-| UART | USB-serial by `ttyUSBn`/`ttyACMn` (CP2102, J-Link VCOM) | bench | bench |
+| UART | USB-serial by `ttyUSBn`/`ttyACMn` (CP2102, J-Link VCOM) | bench (`lager uart -i` to a firmware command line) | bench |
 | UART | pinned by `/dev/serial/by-id` or `by-path` | gap | gap |
 | Thermocouple | Phidget | likely | built |
 | Rotation | Phidget encoder | no command exists | built |
@@ -1437,3 +1437,108 @@ Result: clean install 76 s (was 4 min 12 s; the download overlapped the
 builds and was also faster this time), YKUSH3 and CP2102 checks pass
 after it. Not run live: the Homebrew list and password line (everything
 was installed) and the 30 s heartbeat (the wait was 10 s).
+
+### J-Link fixes and a test firmware (2026-11-20)
+
+**Test firmware.** An Embassy (embassy-nrf 0.11) application for the
+nRF52840 DK, built on this Mac with rustup from Homebrew and kept outside
+the repository: a command line on UARTE0, which the DK wires to the
+J-Link's virtual COM port (help, ping, info, led, echo; 115200 8N1), and
+defmt logs over RTT (a boot line and a tick a second). The bench DUT's own
+firmware has no UART output, which is why the VCOM had nothing to say on
+2026-11-19. The DUT was given its own firmware back afterwards (hash
+checked) and the UICR was untouched.
+
+**Verified with it:** `lager debug <net> flash --elf` from the CLI;
+`flash()` of an ELF from a script, also with an `rtt_defmt` reader open
+across the flash and a reset; `rtt_defmt` decoding the boot line and ticks
+(the container's defmt-print, the ELF sent with `--add-file`); the command
+line from a script and from `lager uart <net> -i --no-echo` (interactive
+mode needs `-i`; without it the CLI connects read-only).
+
+**Fixed (shared with Linux, in the ledger):**
+- Memory reads: J-Link Commander reads every number as hex, and
+  `read_memory` sent the count in decimal, so a read of N bytes asked for
+  0xN items: up to about 4x too much was read and dropped, and from 16 KiB
+  ("NumItems should be <= 0x4000") nothing came back. Counts are now hex
+  and long reads are split at 0x4000 items. The DA1469x uncached verify had
+  the same decimal count. Live: 16 KiB and 72 KiB reads.
+- Flash leaving the core halted: `loadfile` halts the core and the GDB
+  server reconnect does not resume it, so `flash` (default `--no-halt`) and
+  `Net.flash()` left new firmware unrun until a reset. A successful flash
+  now ends with `rnh`. Live: erase, flash with no reset, firmware running.
+- A flash whose Commander cannot use the probe at all ("Cannot connect to
+  the probe/programmer", nothing programmed) is retried once after 2 s.
+  Seen on 3 of 6 script flashes shortly after the J-Link below was
+  recovered; after an agent restart 12 more script flashes all succeeded
+  without needing it, so the retry is unit-tested only.
+- A memory read that returns no data is now logged.
+
+**Seen, not fixed:**
+- The DK's J-Link OB stopped answering overnight (Commander hung at
+  "Connecting to J-Link"; GDB server and memrd failed). A power cycle of its
+  Acroname port (port 0, net `acro_usb0`) recovered it. Cause unknown.
+- With the LabJack T7 unplugged (removed from the bench on 2026-11-20), a
+  call to one of its nets hangs for 30 s and fails with "hardware service
+  did not respond" instead of saying the device is not connected: the
+  agent cannot confirm USB enumeration on macOS. On Linux the same check
+  reads sysfs.
+
+### What has not been tested on a Mac (2026-11-20)
+
+Everything below is either built and unit-tested only, or not built. It is
+the list to work through when the hardware is on a bench.
+
+**Instruments and net types never run on a Mac**
+- Power supplies: Rigol DP800, Siglent SPD1000X, Keithley 2281S (USBTMC,
+  expected to work); Rigol DP700 and EA PSB (serial; Linux tty names are
+  not translated in the agent).
+- Battery, e-load, DMM: Keithley 2281S battery mode, Rigol DL3021,
+  Siglent SDM3065X. Solar: EA PSB.
+- Scopes: Rigol MSO5000 / DS1000Z (not built: daemon started from the
+  container); PicoScope models other than the 2405A; the scope's live view.
+- GPIO/ADC/DAC: LabJack U6, MCC USB-202 (uldaq installed, never run),
+  FT232H, Aardvark.
+- I2C on every adapter (no I2C slave on the bench); SPI against a real
+  slave (only loopback and unwired reads).
+- Debug: OpenOCD probes (ST-Link, CMSIS-DAP, FTDI, picoprobe; not built);
+  J-Link with any target but the nRF52840; two J-Links on one Mac; RTT
+  down-channel writes; the `DebugNet` methods the stand-in does not carry.
+- USB hubs: Plugable (not built).
+- UART: nets pinned by `/dev/serial/by-id` or `by-path` (not built);
+  FTDI and PL2303 serial chips (only CP2102 and J-Link VCOM).
+- Phidget thermocouple and encoder, Yocto-Watt, Joulescope JS220, Nordic
+  PPK2, YubiHSM 2, Rotrics DexArm: built (driver made in the agent), never
+  run. Their vendor libraries' macOS builds are not installed or checked.
+- Webcams, HDMI capture, BLE/BluFi: not built. WiFi: not supported on
+  macOS by decision. Routers: network only, never run from a Mac Box.
+
+**Script and CLI surface**
+- Module-level helpers (`lager.power.supply.voltage(...)` and the like) on
+  hardware, beyond SPI/I2C and USB hubs; `lager.core.read_adc`; the DAC
+  legacy backend; `LAGER_MUXES` nets; pyvisa used directly in a script.
+- DFU, `/usb/devices`, `lager diagnose`, the MCP tools that read sysfs.
+- `lager box-config apply` (no restart path on a Mac), `lager update
+  --check` for a local Mac Box, `lager logs docker`.
+- Two instruments of the same type: T7 and PicoScope addresses carry no
+  serial on macOS, so they cannot be told apart.
+
+**Install and operation**
+- A Mac with nothing installed: the Homebrew installs of OrbStack, J-Link,
+  PicoScope 7, Rust and the ARM GDB, and their password prompts (every
+  piece was already present on both bench Macs).
+- Docker Desktop instead of OrbStack; a Mac without Homebrew; a user who is
+  not an administrator; an offline reinstall (Pico header reuse is
+  unit-tested only).
+- `lager install --ip <a Mac>` since the 2026-11-19 installer changes (last
+  run 2026-11-17).
+- Sleep and wake, OrbStack restarts, and unplugging an instrument while a
+  script uses it.
+- Run records and control-plane linking from a Mac Box.
+
+**Linux regression**
+- Every ledger entry that says "not run on Linux hardware", which is all of
+  them, including today's J-Link changes. Before merging: install, update
+  and uninstall a Linux Box; run `lager python`; flash and read memory
+  through its J-Link; start a Box with `start_box.sh`; build the scope
+  daemon on Linux.
