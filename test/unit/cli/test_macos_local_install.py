@@ -267,6 +267,75 @@ def test_optional_steps_give_a_reason_instead_of_failing(layout, tmp_path):
     assert run.calls == [], "already built: nothing is run"
 
 
+def _fake_ljm_package(layout, files=None):
+    """A runner whose curl/unzip/pkgutil lay out LabJack's package on disk."""
+    files = files if files is not None else {
+        macos_box.LJM_LIBRARY: "ljm", macos_box.LJM_LIBUSB: "usb",
+        f"{macos_box.LJM_SHARE}/ljm_constants.json": "{}",
+        f"{macos_box.LJM_SHARE}/ljm_startup_configs.json": "{}"}
+    body = b"the LabJack package"
+
+    def curl(argv, kwargs):
+        if argv[0] != "curl":
+            return False
+        Path(argv[argv.index("-o") + 1]).write_bytes(body)
+        return True
+
+    def expand(argv, kwargs):
+        if argv[:2] != ["pkgutil", "--expand-full"]:
+            return False
+        for name, text in files.items():
+            (Path(argv[3]) / name).parent.mkdir(parents=True, exist_ok=True)
+            (Path(argv[3]) / name).write_text(text)
+        return True
+
+    run = _Runner([(curl, _done()), (expand, _done())])
+    return run, hashlib.sha256(body).hexdigest()
+
+
+def test_ljm_is_unpacked_into_the_agent_directory_not_installed(layout):
+    run, digest = _fake_ljm_package(layout)
+    with mock.patch.object(macos_box, "LJM_SHA256", digest):
+        assert macos_box.install_ljm_library(layout, run) is None
+    assert (layout.lib_dir / "libLabJackM.dylib").read_text() == "ljm"
+    assert (layout.lib_dir / "libusb-1.0.0.dylib").read_text() == "usb"
+    assert (layout.ljm_dir / "ljm_constants.json").exists()
+    assert (layout.ljm_dir / "ljm_startup_configs.json").exists()
+    commands = [argv[0] for argv, _ in run.calls]
+    assert commands == ["curl", "unzip", "pkgutil"], "expanded, never `installer`"
+    assert all("sudo" not in argv for argv, _ in run.calls)
+    assert not (layout.build_dir / "ljm").exists(), "the download is cleaned up"
+    run = _Runner()
+    assert macos_box.install_ljm_library(layout, run) is None
+    assert run.calls == [], "already installed: nothing is run"
+
+
+def test_ljm_with_the_wrong_checksum_is_refused(layout):
+    run, _ = _fake_ljm_package(layout)
+    reason = macos_box.install_ljm_library(layout, run)
+    assert "checksum" in reason
+    assert [argv[0] for argv, _ in run.calls] == ["curl"]
+    assert not (layout.lib_dir / "libLabJackM.dylib").exists()
+
+
+def test_ljm_failures_give_a_reason_instead_of_failing(layout):
+    failed = _Runner([(lambda argv, kw: argv[0] == "curl", _done(22))])
+    assert macos_box.LJM_URL in macos_box.install_ljm_library(layout, failed)
+    run, digest = _fake_ljm_package(layout, files={})
+    with mock.patch.object(macos_box, "LJM_SHA256", digest):
+        assert "missing" in macos_box.install_ljm_library(layout, run)
+
+
+def test_the_launchd_job_hands_the_agent_ljms_constants_only_when_installed(layout, tmp_path):
+    job = plistlib.loads(macos_box.launch_agent_plist(layout, tmp_path / "src"))
+    assert macos_box.LJM_CONSTANTS_ENV not in job["EnvironmentVariables"]
+    layout.ljm_dir.mkdir(parents=True)
+    (layout.ljm_dir / "ljm_constants.json").write_text("{}")
+    job = plistlib.loads(macos_box.launch_agent_plist(layout, tmp_path / "src"))
+    assert job["EnvironmentVariables"][macos_box.LJM_CONSTANTS_ENV] == \
+        str(layout.ljm_dir / "ljm_constants.json")
+
+
 def _docker_answers(states):
     """find_docker stand-in: raises or returns from ``states`` in turn."""
     def find(run):
@@ -573,7 +642,8 @@ def test_what_homebrew_will_install_is_known_before_the_install(tmp_path):
 def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, tmp_path):
     steps = {name: mock.patch.object(macos_box, name, return_value=None)
              for name in ("ensure_libusb", "agent_loads_libusb",
-                          "build_labjack_library", "ensure_rust", "build_scope_daemon",
+                          "build_labjack_library", "install_ljm_library",
+                          "ensure_rust", "build_scope_daemon",
                           "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb",
                           "start_agent", "start_container", "check_platform",
                           "ensure_config_dir", "write_state")}
@@ -591,7 +661,8 @@ def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, t
         called["ensure_arm_gdb"].return_value = "no Homebrew"
         result = macos_box.install("v9.9.9", "9.9.9", echo=lines.append, layout=layout,
                                    source=tmp_path, skip=["jlink", "picoscope"])
-    assert result.ready == [macos_box.USB_INSTRUMENTS, "LabJack U3/U6 support"]
+    assert result.ready == [macos_box.USB_INSTRUMENTS, "LabJack U3/U6 support",
+                            "LabJack T4/T7/T8 support"]
     assert result.skipped == ["RTT auto-detection: no Homebrew"]
     for left_out in ("ensure_jlink", "ensure_picoscope_app", "ensure_rust",
                      "build_scope_daemon"):

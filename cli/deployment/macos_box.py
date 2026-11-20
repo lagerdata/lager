@@ -55,6 +55,23 @@ IMAGE_REPO = "ghcr.io/lagerdata/lager-box"
 IMAGE_PLATFORM = "linux/amd64"
 SOURCE_REPO = "https://github.com/lagerdata/lager"
 LABJACK_REPO = "https://github.com/labjack/exodriver"
+# LabJack's LJM installer for Apple silicon, which T-series devices (T4, T7,
+# T8) need. LJM is closed source, so it cannot be built like the Exodriver;
+# its signed libraries and data files are unpacked from the official package
+# instead, with no admin rights and nothing written under /usr/local.
+LJM_URL = ("https://files.labjack.com/installers/LJM/macOS/ARM64/release/"
+           "LabJack-LJM_2025-05-07.zip")
+LJM_SHA256 = "16439a170f450969b19bcb070823beb8e0bc566e3c68bfef7de92561d8db0768"
+LJM_PKG = "LabJack-LJM_2025-05-07.pkg"
+LJM_LIBRARY = "ljm_lib.pkg/Payload/libLabJackM-1.23.4.dylib"
+# LJM is linked against /usr/local/lib/libusb-1.0.0.dylib. When that path is
+# missing, dyld looks the name up on DYLD_FALLBACK_LIBRARY_PATH, which the
+# agent's job points at the library directory first.
+LJM_LIBUSB = "libusb_lib.pkg/Payload/libusb-1.0.0.dylib"
+LJM_SHARE = "ljm_share.pkg/Payload/LabJack/LJM"
+# The agent hands this to LJM before any device is opened; LJM otherwise
+# reads it from /usr/local/share/LabJack/LJM.
+LJM_CONSTANTS_ENV = "LAGER_LJM_CONSTANTS_FILE"
 START_SCRIPT = "/app/lager/lager/docker/start-services-hostlink.sh"
 
 # macOS's AirPlay receiver holds 5000, so the script service is published on
@@ -170,6 +187,11 @@ class Layout:
     @property
     def lib_dir(self) -> Path:
         return self.app_dir / "host" / "lib"
+
+    @property
+    def ljm_dir(self) -> Path:
+        """LJM's data files (constants, startup configs, log)."""
+        return self.app_dir / "host" / "share" / "LabJack" / "LJM"
 
     @property
     def build_dir(self) -> Path:
@@ -499,6 +521,58 @@ def build_labjack_library(layout: Layout, run: Run = _run,
     return None
 
 
+def install_ljm_library(layout: Layout, run: Run = _run,
+                        echo=lambda _line: None) -> Optional[str]:
+    """Unpack LabJack's LJM library from LabJack's installer. A reason, or None.
+
+    Optional: without it everything but LabJack T-series devices works. The
+    package is checked against a pinned SHA-256 and only expanded, never
+    installed: the libraries go in the agent's library directory and the data
+    files under ``layout.ljm_dir``, so ``lager uninstall`` removes them too.
+    """
+    library = layout.lib_dir / "libLabJackM.dylib"
+    constants = layout.ljm_dir / "ljm_constants.json"
+    if library.exists() and constants.exists():
+        return None
+    echo("Installing the LabJack T-series library (LJM)...")
+    work = layout.build_dir / "ljm"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        archive = work / "ljm.zip"
+        # curl, not urllib: it trusts the system keychain, so it works behind
+        # a TLS-inspecting corporate proxy.
+        if run(["curl", "-fsSL", "--retry", "2", "-o", str(archive), LJM_URL],
+               timeout=900).returncode != 0 or not archive.exists():
+            return f"could not download {LJM_URL}"
+        digest = hashlib.sha256()
+        with open(archive, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != LJM_SHA256:
+            return f"the download from {LJM_URL} does not match its expected checksum"
+        if run(["unzip", "-q", "-o", str(archive), LJM_PKG, "-d", str(work)],
+               timeout=300).returncode != 0:
+            return f"could not unpack {LJM_PKG}"
+        expanded = work / "expanded"
+        if run(["pkgutil", "--expand-full", str(work / LJM_PKG), str(expanded)],
+               timeout=600).returncode != 0:
+            return f"could not expand {LJM_PKG}"
+        pieces = [expanded / LJM_LIBRARY, expanded / LJM_LIBUSB,
+                  expanded / LJM_SHARE / "ljm_constants.json"]
+        missing = [p.name for p in pieces if not p.exists()]
+        if missing:
+            return f"LabJack's package is missing {', '.join(missing)}"
+        layout.lib_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(expanded / LJM_LIBRARY, library)
+        shutil.copy2(expanded / LJM_LIBUSB, layout.lib_dir / "libusb-1.0.0.dylib")
+        shutil.rmtree(layout.ljm_dir, ignore_errors=True)
+        shutil.copytree(expanded / LJM_SHARE, layout.ljm_dir)
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def ensure_arm_gdb(run: Run = _run, echo=print) -> Optional[str]:
     """Install an ARM GDB through Homebrew. A reason, or None.
 
@@ -767,7 +841,10 @@ def launch_agent_plist(layout: Layout, source: Path, environ=None) -> bytes:
     env = {"PYTHONPATH": str(source / "box"), "PATH": path, "PYTHONUNBUFFERED": "1"}
     if layout.scope_daemon.exists():
         env["LAGER_HOST_SCOPE_DAEMON"] = str(layout.scope_daemon)
-    log = str(layout.log_dir / "host-agent.log")
+    constants = layout.ljm_dir / "ljm_constants.json"
+    if constants.exists():
+        env[LJM_CONSTANTS_ENV] = str(constants)
+    log =str(layout.log_dir / "host-agent.log")
     return plistlib.dumps({
         "Label": LABEL,
         # macOS drops DYLD_* variables whenever it starts a system binary, so
@@ -1083,6 +1160,7 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     optional(USB_INSTRUMENTS, lambda: agent_loads_libusb(layout, run) and (
         ensure_libusb(run, echo) or agent_loads_libusb(layout, run)))
     optional("LabJack U3/U6 support", lambda: build_labjack_library(layout, run, echo))
+    optional("LabJack T4/T7/T8 support", lambda: install_ljm_library(layout, run, echo))
     if "picoscope" in skip:
         echo("Leaving out PicoScope support (--skip-picoscope).")
     else:
