@@ -104,11 +104,11 @@ NET_TYPES: dict[str, NetTypeInfo] = {
         phase=PHASE_SETUP_POWER, reference="ELoad",
     ),
     "solar": NetTypeInfo(
-        # A solar-array simulator is a supply driven through the PowerSupply
-        # API. Not a NetType member of its own; see ROLES_WITHOUT_NET_TYPE.
-        net_type="PowerSupply", electrical_type="power",
+        # A solar-array simulator: an EA PSB supply in PV simulation mode,
+        # with its own API (irradiance, MPP, Voc) rather than set_voltage().
+        net_type="Solar", electrical_type="power",
         capabilities=((_R.SOURCE_POWER, 1.0), (_R.DRIVE, 1.0), (_R.MEASURE, 0.9)),
-        phase=PHASE_SETUP_POWER, reference="PowerSupply",
+        phase=PHASE_SETUP_POWER, reference="Solar",
     ),
     "analog": NetTypeInfo(
         net_type="Analog", electrical_type="analog",
@@ -244,7 +244,7 @@ NET_TYPES: dict[str, NetTypeInfo] = {
 
 #: Roles the engine models that ``NetType.from_role`` does not accept. A net
 #: saved with one of these is driven through the API named in its row.
-ROLES_WITHOUT_NET_TYPE: frozenset[str] = frozenset({"solar"})
+ROLES_WITHOUT_NET_TYPE: frozenset[str] = frozenset()
 
 
 def info_for(role: str) -> NetTypeInfo | None:

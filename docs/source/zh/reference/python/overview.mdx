@@ -26,12 +26,13 @@ from lager import Net, NetType  # Convenience import for Net and NetType
 | NetType | 说明 | 硬件 |
 |---------|-------------|----------|
 | `NetType.PowerSupply` | 可编程电源 | Rigol DP700/DP800、Keysight E36200/E36300、Keithley 2281S、Siglent SPD1000X、EA PSB |
-| `NetType.PowerSupply2Q` | 双象限电源。太阳能 Net 不使用它；请参阅[太阳能](./solar) | -- |
+| `NetType.PowerSupply2Q` | 双象限电源。太阳能 Net 使用 `NetType.Solar` | -- |
+| `NetType.Solar` | 太阳能仿真器；请参阅[太阳能](./solar) | EA PSB |
 | `NetType.Battery` | 电池模拟器 | Keithley 2281S |
 | `NetType.ELoad` | 电子负载 | Rigol DL3000 |
 | `NetType.Analog` | 示波器（`scope` 和 `scope-channel` Net） | Rigol MSO5000、Rigol DS1000Z、PicoScope |
 | `NetType.Logic` | 逻辑分析仪输入 | Rigol MSO5000 |
-| `NetType.Waveform` | 尚未实现 | -- |
+| `NetType.Waveform` | 尚未实现。`Net.get()` 会引发 `NotImplementedError` | -- |
 | `NetType.GPIO` | 数字 I/O | LabJack T7/U3/U6、MCC USB-202、FT232H/FT2232H/FT4232H、Aardvark、YKUSH3 |
 | `NetType.ADC` | 模数转换器 | LabJack T7/U3/U6、MCC USB-202 |
 | `NetType.DAC` | 数模转换器 | LabJack T7/U3/U6、MCC USB-202 |

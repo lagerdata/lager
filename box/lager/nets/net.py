@@ -668,6 +668,10 @@ class Net:
                     from ..protocols.ble_sniffer.dispatcher import make_net
                     return make_net(name, item)
 
+                if role == NetType.Solar:
+                    from ..power.solar.solar_net_wrapper import SolarNetWrapper
+                    return SolarNetWrapper(name, item)
+
                 if role == NetType.Hsm:
                     from ..security.hsm.yubihsm2 import YubiHsm2
                     return YubiHsm2(name, item.get('address'))
@@ -762,6 +766,14 @@ class Net:
 
     @classmethod
     def get(cls, name, type, *, setup_function=None, teardown_function=None):
+        if type == NetType.Waveform:
+            # Kept in the enum so a script that names it still imports, but no
+            # driver backs it: without this the lookup fell through to the
+            # scope mapper and failed with "Invalid mapper type rigol_mso5000".
+            raise NotImplementedError(
+                "NetType.Waveform has no driver yet, so Net.get() cannot return "
+                "one. To read a signal on an oscilloscope channel, use "
+                "NetType.Analog.")
         local_net = cls.get_from_saved_json(name, type)
         if local_net:
             return local_net

@@ -5,9 +5,34 @@ description: 控制太阳能板仿真 Net
 
 模拟太阳能板的特性，用于测试由太阳能供电的设备。太阳能 Net 驱动一台 EA PSB 双向电源，使其工作在光伏仿真模式。
 
-<Warning>
-太阳能 Net 没有 `Net.get()` 路径。CLI 以角色 `solar` 保存太阳能 Net，而 `NetType` 没有 `solar` 角色，因此 `Net.get('SOLAR', type=NetType.PowerSupply2Q)` 会引发 `InvalidNetError`。请改用本页的模块函数。它们接受 Net 名称作为参数。请参阅 [#844](https://github.com/lagerdata/lager/issues/844)。
-</Warning>
+脚本可以用两种方式驱动太阳能 Net。`Net.get()` 返回一个 Net 对象，其读取方法返回数值。模块函数接受 Net 名称，并打印结果。
+
+## Net 对象
+
+```python
+from lager import Net, NetType
+
+pv = Net.get('SOLAR', type=NetType.Solar)
+pv.enable()
+try:
+    pv.irradiance(1000)
+    print(pv.voc(), pv.mpp_voltage(), pv.mpp_current())
+finally:
+    pv.disable()
+```
+
+| 方法 | 说明 |
+|--------|-------------|
+| `enable()` | 连接并启动光伏仿真模式 |
+| `disable()` | 停止仿真并断开连接 |
+| `irradiance(value=None)` | 给出值时设置辐照度（W/m²，0-1500），然后返回辐照度 |
+| `resistance(value=None)` | 给出值时设置动态面板电阻（ohm），然后返回该值 |
+| `mpp_current()` | 返回最大功率点电流（A） |
+| `mpp_voltage()` | 返回最大功率点电压（V） |
+| `voc()` | 返回开路电压（V） |
+| `temperature()` | 返回仿真电池温度（°C） |
+
+每个读取方法返回 `float`；仪器没有给出数值时返回 `None`。`set_to_solar_mode()` 和 `stop_solar_mode()` 是 `enable()` 和 `disable()` 的别名。辐照度超出 0-1500 或电阻不是正数时，会在 Box 发送命令之前引发 `ValueError`。这些调用使用与 `lager solar` 相同的 Box 驱动。
 
 ## 导入
 

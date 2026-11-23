@@ -36,6 +36,8 @@ class NetType(Enum):
     Hsm = auto()
     DMM = auto()
     BleSniffer = auto()
+    # Appended, not inserted, so no existing member's value moves.
+    Solar = auto()
 
     @classmethod
     def from_role(cls, role):
@@ -73,6 +75,7 @@ class NetType(Enum):
             'hsm': cls.Hsm,
             'dmm': cls.DMM,
             'ble-sniffer': cls.BleSniffer,
+            'solar': cls.Solar,
         }
         return mapping[role]
 
@@ -106,5 +109,6 @@ class NetType(Enum):
             self.Hsm: None,
             self.DMM: None,
             self.BleSniffer: None,
+            self.Solar: None,
         }
         return mapping[self]
