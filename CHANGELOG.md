@@ -153,6 +153,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 - **`lager logs clean --older-than N` removes logs older than N x 24 hours.** It
   counted whole days, so `--older-than 1` kept files up to 48 hours old.
 
+- **`lager box-config apply`, `restart`, `repair` and the automatic rollback
+  run the deployed `start_box.sh`.** A git update that does not flatten the
+  box checkout leaves the current tree under `~/box/box` and an older copy of
+  the script at `~/box`, and these commands ran the older copy. They now use
+  `~/box/box/start_box.sh` when it and its `lager/` tree are present, and
+  run the script with `bash`, so a copy checked out without the executable
+  bit still starts.
+
 ## [0.65.0] - 2026-11-19
 
 ### Added

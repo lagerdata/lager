@@ -31,6 +31,7 @@ from . import _shim_verbs as verbs
 from ._host_ops import apt_install, sysctl_apply, udev_apply
 from ._mount_prep import ensure_host_path_owned, manual_fix_command
 from ._pip_validation import is_direct_ref, validate_on_pypi
+from ._start_script import MANUAL_START_HINT, start_box_command
 from ._ssh import default_ssh_runner, resolve_box_user
 
 # How long we'll wait for the box's HTTP API to come up after start_box.sh
@@ -1257,7 +1258,7 @@ def restart_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     if bounce_rc != _BOUNCE_OK:
         click.secho(
             "Container restart failed. SSH into the box and run "
-            "`~/box/start_box.sh` manually to inspect.",
+            f"{MANUAL_START_HINT} manually to inspect.",
             fg="red", err=True,
         )
         ctx.exit(1)
@@ -1470,7 +1471,7 @@ def _apply_one(
             click.secho(
                 "Container restart failed and rollback was not possible. The "
                 "container can be down. SSH into the box, fix /etc/lager/box_config.json, "
-                "and run `~/box/start_box.sh` manually.",
+                f"and run {MANUAL_START_HINT} manually.",
                 fg="red",
                 err=True,
             )
@@ -2062,9 +2063,10 @@ def _bounce_container_rc(
     networking. Only `apply` passes it, after its reachability check.
     """
     click.echo(f"Restarting lager container on {resolved_box} via SSH...")
-    command = "cd ~/box && ./start_box.sh"
-    if confirm_network_switch:
-        command = f"cd ~/box && {_NETWORK_SWITCH_CONFIRM_ENV}=1 ./start_box.sh"
+    # Not a hardcoded `cd ~/box && ./start_box.sh`: on a box whose tracked tree
+    # sits under ~/box/box, that path is an older copy (see _start_script).
+    env = [(_NETWORK_SWITCH_CONFIRM_ENV, "1")] if confirm_network_switch else []
+    command = start_box_command(env)
     try:
         rc, stdout, stderr = default_ssh_runner(
             resolved_box,
