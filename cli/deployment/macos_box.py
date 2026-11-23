@@ -125,6 +125,11 @@ ORBSTACK_CASK = "orbstack"
 # A Linux Box has Debian's gdb-multiarch; the agent uses this instead, for
 # RTT auto-detection and target memory access over GDB.
 ARM_GDB = "arm-none-eabi-gdb"
+LIBUSB_FORMULA = "libusb"
+LIBUSB_DYLIB = "lib/libusb-1.0.dylib"
+# What the agent cannot reach without libusb: pyusb, which pyvisa-py uses for
+# USBTMC, and pyftdi. Named this way in the "Set up" and "Not set up" lines.
+USB_INSTRUMENTS = "USB instruments (USBTMC supplies, loads and meters; FTDI adapters)"
 RUST_FORMULA = "rust"
 # Started, in this order, when Docker is installed but not running.
 RUNTIME_APPS = (("OrbStack", "/Applications/OrbStack.app"),
@@ -374,7 +379,9 @@ def base_python() -> str:
     raise LagerError(
         f"The host agent needs Python {wanted} or newer.",
         cause=f"This CLI runs on Python {platform.python_version()}.",
-        fixes=["brew install python@3.12", "Then run `lager install` again."])
+        fixes=["brew install python@3.12, or install Python 3.12 from "
+               "https://www.python.org/downloads/macos/",
+               "Then run `lager install` again."])
 
 
 def ensure_agent_env(layout: Layout, run: Run = _run,
@@ -411,6 +418,50 @@ def homebrew_prefix_with(relative: str) -> Optional[str]:
         if os.path.exists(os.path.join(prefix, relative)):
             return prefix
     return None
+
+
+def library_path(layout: Layout) -> str:
+    """Where the agent's process looks for native libraries (libusb, the
+    LabJack library), in the order it looks."""
+    return ":".join([str(layout.lib_dir)]
+                    + [f"{p}/lib" for p in HOMEBREW_PREFIXES] + ["/usr/lib"])
+
+
+def ensure_libusb(run: Run = _run, echo=print) -> Optional[str]:
+    """Install libusb through Homebrew when it is missing. A reason, or None.
+
+    Without it the agent reaches no USBTMC or FTDI instrument, and nothing
+    fails until a script first touches one, so a missing libusb must be
+    named by the install.
+    """
+    if homebrew_prefix_with(LIBUSB_DYLIB) is not None:
+        return None
+    brew = homebrew_prefix_with("bin/brew")
+    if brew is None:
+        return ("libusb is not installed and Homebrew is not available to install it "
+                "(https://brew.sh, then `brew install libusb`)")
+    echo("Installing libusb (Homebrew)...")
+    result = run([os.path.join(brew, "bin", "brew"), "install", LIBUSB_FORMULA], timeout=1800)
+    if result.returncode != 0 or homebrew_prefix_with(LIBUSB_DYLIB) is None:
+        return (f"`brew install {LIBUSB_FORMULA}` did not install it "
+                f"({_last_line(result.stderr) or 'brew failed'})")
+    return None
+
+
+_LIBUSB_PROBE = ("import usb.backend.libusb1 as b, sys; "
+                 "sys.exit(0 if b.get_backend() is not None else 3)")
+
+
+def agent_loads_libusb(layout: Layout, run: Run = _run) -> Optional[str]:
+    """Check the agent's own Python finds libusb on the agent's library path.
+    A reason, or None."""
+    result = run(["/usr/bin/env", f"DYLD_FALLBACK_LIBRARY_PATH={library_path(layout)}",
+                  str(layout.python), "-c", _LIBUSB_PROBE], timeout=60)
+    if result.returncode == 0:
+        return None
+    return ("the host agent cannot load libusb"
+            + (f" ({_last_line(result.stderr)})" if result.returncode != 3 else "")
+            + "; check `brew info libusb`, then run `lager install` again")
 
 
 def build_labjack_library(layout: Layout, run: Run = _run,
@@ -709,8 +760,7 @@ def build_scope_daemon(layout: Layout, source: Path, run: Run = _run,
 
 def launch_agent_plist(layout: Layout, source: Path, environ=None) -> bytes:
     """The launchd job that keeps the agent running while the user is logged in."""
-    library_path = ":".join([str(layout.lib_dir)]
-                            + [f"{p}/lib" for p in HOMEBREW_PREFIXES] + ["/usr/lib"])
+    library = library_path(layout)
     path = ":".join([f"{p}/bin" for p in HOMEBREW_PREFIXES]
                     + [os.path.expanduser("~/.cargo/bin"),
                        "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
@@ -723,7 +773,7 @@ def launch_agent_plist(layout: Layout, source: Path, environ=None) -> bytes:
         # macOS drops DYLD_* variables whenever it starts a system binary, so
         # the library path is set by `env` as the last step before Python.
         "ProgramArguments": ["/usr/bin/env",
-                             f"DYLD_FALLBACK_LIBRARY_PATH={library_path}",
+                             f"DYLD_FALLBACK_LIBRARY_PATH={library}",
                              str(layout.python), "-m", "lager.host", "run"],
         "EnvironmentVariables": env,
         "RunAtLoad": True,
@@ -911,6 +961,8 @@ def homebrew_installs(skip: Sequence[str] = ()) -> List[str]:
     if homebrew_prefix_with("bin/brew") is None:
         return []
     wanted = []
+    if homebrew_prefix_with(LIBUSB_DYLIB) is None:
+        wanted.append("libusb")
     if not any(os.path.isdir(path) for _, path in RUNTIME_APPS) and shutil.which("docker") is None:
         wanted.append("OrbStack (Docker)")
     if "jlink" not in skip and not os.path.exists(JLINK_EXE):
@@ -1027,6 +1079,9 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
         reason = step()
         (skipped.append(f"{feature}: {reason}") if reason else ready.append(feature))
 
+    # Asked first: pyusb also finds a libusb Homebrew did not install.
+    optional(USB_INSTRUMENTS, lambda: agent_loads_libusb(layout, run) and (
+        ensure_libusb(run, echo) or agent_loads_libusb(layout, run)))
     optional("LabJack U3/U6 support", lambda: build_labjack_library(layout, run, echo))
     if "picoscope" in skip:
         echo("Leaving out PicoScope support (--skip-picoscope).")
