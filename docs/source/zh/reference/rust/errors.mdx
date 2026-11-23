@@ -29,6 +29,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 | `Config(String)` | 客户端侧的配置问题 |
 | `Stream(String)` | 流式会话（UART 或 RTT）失败 |
 | `UartInUse { message, held_by }` | 另一个会话占用了该 UART Net 或其串行设备 |
+| `BoxServiceUnavailable { box_host, upstream, attempts, elapsed, retry_safe, cause }` | 网关在线，但其后面的 Lager 服务没有应答 |
 
 ## 变体参考
 
@@ -46,6 +47,8 @@ online and updated
 **客户端侧**的截止时间到了：HTTP 请求、流式会话的连接确认，或者一直没等到的 `wait_for` 目标。
 
 HTTP 截止时间覆盖整个响应，包括响应体：盒子发出响应头之后，JSON 响应体停滞超过截止时间，同样返回 `Error::Timeout`。lager-net 0.12 之前，阻塞客户端把这种情况报告为 `Error::Decode`。
+
+原始字节下载（例如 `admin().download_file_with_timeout()` 或 `BleSniffer::download()`）也是如此。lager-net 0.14 之前，阻塞客户端把停滞的下载报告为 `Error::Connection`。Box 关闭连接而截断的下载仍然是 `Error::Connection`。
 
 ```text
 request to the Lager box timed out: {msg}
@@ -194,6 +197,18 @@ streaming session error: {msg}
 ### `UartInUse { message, held_by }`
 
 当另一个会话占用了该 Net 或其串行设备时，UART 会话无法启动。要结束您不再需要的会话，请把 `held_by` 传给 `lager.release_uart_session()`，然后重新打开。`held_by` 指明要释放的 Net（Box 0.49.0 或更高版本）。当两个 Net 共用一台设备时，它指的是另一个 Net。
+
+### `BoxServiceUnavailable { box_host, upstream, attempts, elapsed, retry_safe, cause }`
+
+受网关保护的 Box 的网关在线，但其后面的 Lager 服务没有应答。网关发送 HTTP 502 和 `X-Gateway-Error: upstream_unavailable`。服务重启时，这种情况大约持续 4 秒。lager-net 0.14 新增。
+
+客户端会再次发送可以安全重复的请求，直到 [`RetryPolicy`](/source/zh/reference/rust/client#box-服务重启) 的预算用完。`attempts` 和 `elapsed` 说明它尝试了多久。对只发送一次的请求，`retry_safe` 为 false。网关给出时，`upstream` 指明网关没有联系上的服务，例如 `lager:9000`。`source()` 返回网关自己的响应，即状态为 502 的 `Error::Box`。
+
+```text
+the Lager service on box {box_host} ({upstream}) is not answering; it may be restarting
+(gave up after {attempts} attempts over {elapsed}s). If this persists, check the box
+or run `lager update`
+```
 
 ## 匹配
 

@@ -36,7 +36,7 @@ Add the crate to your firmware project's dev-dependencies:
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.13" }
+lager = { package = "lager-net", version = "0.14" }
 ```
 
 The crate requires Rust **1.75** or newer and builds on edition 2021.
@@ -88,7 +88,7 @@ Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.13", features = ["async"] }
+lager = { package = "lager-net", version = "0.14", features = ["async"] }
 ```
 
 ## Errors
@@ -162,6 +162,7 @@ Logic-analyzer nets are not on the box HTTP API yet. The work list is in the cra
 - [USB Hub Ports](/source/reference/rust/usb)
 - [UART](/source/reference/rust/uart)
 - [BLE](/source/reference/rust/ble)
+- [BLE Sniffer](/source/reference/rust/ble-sniffer)
 - [WiFi](/source/reference/rust/wifi)
 - [BluFi](/source/reference/rust/blufi)
 - [Router](/source/reference/rust/router)

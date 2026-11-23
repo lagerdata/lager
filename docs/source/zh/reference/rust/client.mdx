@@ -19,13 +19,14 @@ let lager = LagerBox::connect("192.168.1.42")?;  // or an explicit host
 ### 构建器
 
 ```rust
-use lager::LagerBox;
+use lager::{LagerBox, RetryPolicy};
 use std::time::Duration;
 
 let lager = LagerBox::builder("192.168.1.42")
     .timeout(Duration::from_secs(30))
     .debug_service_url("http://127.0.0.1:8765")
     .bearer_token("...")
+    .upstream_retry(RetryPolicy::default())
     .build()?;
 ```
 
@@ -34,9 +35,21 @@ let lager = LagerBox::builder("192.168.1.42")
 | `timeout()` | 快速命令的默认 HTTP 时间预算；未修改时为 10 秒 |
 | `debug_service_url()` | 覆盖调试服务的基址；默认指向 Box 的 8765 端口 |
 | `bearer_token()` | 固定一个网关令牌，而不是去解析获取 |
+| `upstream_retry()` | 网关后面的 Box 服务重启时等待多久；见下文 |
 | `build()` | 构造该客户端 |
 
 `timeout()` 只设置**快速**命令的预算。长时间运行的操作无论如何都会自行计算更宽的预算 —— 一次 60 秒的 `wait_for_level` 不会被 10 秒的默认值截断。
+
+### Box 服务重启
+
+在受网关保护的 Box 上，网关后面的 Lager 服务重启时，网关会以 HTTP 502 和 `X-Gateway-Error: upstream_unavailable` 回应。一次重启大约需要 4 秒。从 lager-net 0.14 起，对于可以安全重复的请求，客户端会在这段时间内再次发送。
+
+| `RetryPolicy` 字段 | 默认值 | 含义 |
+|---|---|---|
+| `budget` | 9 秒 | 从第一次尝试起超过这段时间后，不再开始新的尝试 |
+| `backoff_step` | 1 秒 | 第 n 次重试等待 n 倍的该步长 |
+
+`RetryPolicy::disabled()` 关闭重试。`lager::is_retry_safe(&request)` 判断哪些请求可以安全重复：GET 请求、读取、绝对设定值，以及 USB 端口的 enable、disable 和 state。切换、移动、总线传输、烧录和原始字节调用只发送一次。没有重试的请求，或在预算用完后仍被拒绝的请求，会以 `Error::BoxServiceUnavailable` 失败。异步构建器有相同的方法。
 
 ### 环境变量
 
