@@ -1542,3 +1542,29 @@ the list to work through when the hardware is on a bench.
   and uninstall a Linux Box; run `lager python`; flash and read memory
   through its J-Link; start a Box with `start_box.sh`; build the scope
   daemon on Linux.
+
+### libusb on a Mac without it (2026-11-23)
+
+Asked: does an install on a Mac without Homebrew fail loudly? Mostly:
+no Docker and no Python 3.10+ stop the install (the Python error now also
+points at python.org), and J-Link, PicoScope 7, Rust, the ARM GDB and the
+LabJack library each get a "Not set up" line. libusb did not. The agent
+needs it for every USBTMC instrument over USB and for FTDI adapters, the
+installer never checked for it, and the install reported success; the
+first script to touch a supply then failed with pyusb's "No backend
+available". The same happened on a Mac with Homebrew but without the
+`libusb` formula; both bench Macs happened to have it.
+
+Now the install asks the agent's own Python whether pyusb has a libusb
+backend on the agent's library path (pyusb also searches Homebrew's
+folders itself, and finds a libusb from elsewhere). If not, it runs `brew
+install libusb` and asks again; without Homebrew it prints "Not set up --
+USB instruments (USBTMC supplies, loads and meters; FTDI adapters):
+libusb is not installed ...". libusb is listed in "Homebrew will install"
+before "Continue?". Verified live: a reinstall reports USB instruments as
+set up. The missing-libusb path is unit-tested only: removing Homebrew's
+libusb from the bench Mac would break other formulae.
+
+Also on 2026-11-23: the branch was rebased onto `main` at v0.65.0 (the
+only conflicts were test counts in `test/COVERAGE.md`); the local Box now
+runs the v0.65.0 image.

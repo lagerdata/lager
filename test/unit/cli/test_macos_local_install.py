@@ -369,6 +369,60 @@ def test_rust_is_installed_with_brew_only_when_no_cargo_is_found(tmp_path):
             assert "Homebrew" in macos_box.ensure_rust(_Runner(), echo=lambda *_: None)
 
 
+def test_libusb_is_installed_with_brew_when_missing_and_named_when_it_cannot_be():
+    run = _Runner()
+    with mock.patch.object(macos_box, "homebrew_prefix_with", return_value="/opt/homebrew"):
+        assert macos_box.ensure_libusb(run, echo=lambda *_: None) is None
+    assert run.calls == [], "already installed: nothing is run"
+
+    found = {"bin/brew": "/opt/homebrew"}
+    with mock.patch.object(macos_box, "homebrew_prefix_with", side_effect=found.get):
+        reason = macos_box.ensure_libusb(run, echo=lambda *_: None)
+    assert run.calls[0][0] == ["/opt/homebrew/bin/brew", "install", "libusb"]
+    assert "brew install libusb" in reason, "still absent afterwards"
+
+    with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
+        reason = macos_box.ensure_libusb(_Runner(), echo=lambda *_: None)
+    assert "Homebrew is not available" in reason and "brew install libusb" in reason
+
+
+def test_the_agent_is_asked_to_load_libusb_on_its_own_library_path(layout):
+    run = _Runner()
+    assert macos_box.agent_loads_libusb(layout, run) is None
+    argv = run.calls[0][0]
+    assert argv[0] == "/usr/bin/env"
+    assert argv[1] == f"DYLD_FALLBACK_LIBRARY_PATH={macos_box.library_path(layout)}"
+    assert argv[2] == str(layout.python)
+    assert "/opt/homebrew/lib" in argv[1]
+    no_backend = _Runner([(lambda a, k: True, _done(3))])
+    assert "cannot load libusb" in macos_box.agent_loads_libusb(layout, no_backend)
+    crashed = _Runner([(lambda a, k: True, _done(1, err="ImportError: no usb"))])
+    assert "ImportError: no usb" in macos_box.agent_loads_libusb(layout, crashed)
+
+
+def test_libusb_is_installed_only_when_the_agent_cannot_load_one(layout, tmp_path):
+    steps = ("build_labjack_library", "ensure_rust", "build_scope_daemon",
+             "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb", "start_agent",
+             "start_container", "check_platform", "ensure_config_dir", "write_state")
+    for loads, expected_installs in ((None, 0), ("cannot load libusb", 1)):
+        with contextlib.ExitStack() as stack:
+            for name in steps:
+                stack.enter_context(mock.patch.object(macos_box, name, return_value=None))
+            for name, value in (("ensure_docker", ("docker", {})), ("ensure_source", tmp_path),
+                                ("source_version", "9.9.9"), ("ensure_agent_env", []),
+                                ("wait_for_link", ""), ("BackgroundPull", mock.Mock())):
+                stack.enter_context(mock.patch.object(macos_box, name, return_value=value))
+            probe = stack.enter_context(mock.patch.object(
+                macos_box, "agent_loads_libusb", side_effect=[loads, None]))
+            install = stack.enter_context(mock.patch.object(
+                macos_box, "ensure_libusb", return_value=None))
+            result = macos_box.install("v9.9.9", "9.9.9", echo=lambda *_: None,
+                                       layout=layout, source=tmp_path)
+        assert install.call_count == expected_installs
+        assert probe.call_count == 1 + expected_installs, "checked again after installing"
+        assert macos_box.USB_INSTRUMENTS in result.ready
+
+
 def test_jlink_is_installed_through_the_cask_only_when_missing(tmp_path):
     exe = tmp_path / "JLinkExe"
     exe.write_text("")
@@ -509,16 +563,17 @@ def test_what_homebrew_will_install_is_known_before_the_install(tmp_path):
             mock.patch.object(macos_box, "PICOSCOPE_APP", str(tmp_path / "no")), \
             mock.patch.object(macos_box, "find_cargo", return_value=str(tmp_path / "no")):
         assert macos_box.homebrew_installs() == [
-            "OrbStack (Docker)", "SEGGER J-Link", "PicoScope 7", "Rust", "an ARM GDB"]
+            "libusb", "OrbStack (Docker)", "SEGGER J-Link", "PicoScope 7", "Rust", "an ARM GDB"]
         assert macos_box.homebrew_installs(["jlink", "picoscope"]) == [
-            "OrbStack (Docker)", "an ARM GDB"]
+            "libusb", "OrbStack (Docker)", "an ARM GDB"]
     with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
         assert macos_box.homebrew_installs() == [], "no Homebrew: nothing to install with"
 
 
 def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, tmp_path):
     steps = {name: mock.patch.object(macos_box, name, return_value=None)
-             for name in ("build_labjack_library", "ensure_rust", "build_scope_daemon",
+             for name in ("ensure_libusb", "agent_loads_libusb",
+                          "build_labjack_library", "ensure_rust", "build_scope_daemon",
                           "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb",
                           "start_agent", "start_container", "check_platform",
                           "ensure_config_dir", "write_state")}
@@ -536,7 +591,7 @@ def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, t
         called["ensure_arm_gdb"].return_value = "no Homebrew"
         result = macos_box.install("v9.9.9", "9.9.9", echo=lines.append, layout=layout,
                                    source=tmp_path, skip=["jlink", "picoscope"])
-    assert result.ready == ["LabJack U3/U6 support"]
+    assert result.ready == [macos_box.USB_INSTRUMENTS, "LabJack U3/U6 support"]
     assert result.skipped == ["RTT auto-detection: no Homebrew"]
     for left_out in ("ensure_jlink", "ensure_picoscope_app", "ensure_rust",
                      "build_scope_daemon"):
