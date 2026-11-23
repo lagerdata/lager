@@ -78,8 +78,9 @@ lager boxes add-all [--yes]
 1. 运行 `tailscale status` 发现设备
 2. 筛选名称长度为 5-8 个字符的设备
 3. 把名称转为大写
-4. 跳过名称和 IP 都相同、已经存在的 Box。IP 已经改变的 Box 会被直接更新，不提示
-5. 把新的 Box 添加到您的配置中
+4. 跳过名称和 IP 都相同、已经存在的 Box
+5. 更改已保存的 Box 之前会先询问：IP 已经改变的 Box，或者新 Box 的 IP 已被另一台已保存的 Box 使用。那台 Box 会被替换，因此两台 Box 不会共用一个 IP。已保存的用户和版本会保留。使用 `--yes` 时不询问，直接更改
+6. 把新的 Box 添加到您的配置中
 
 **示例：**
 ```bash
@@ -103,9 +104,10 @@ Add all 3 box(es)? [Y/n]: y
 
 Summary:
   Added:   2
+  Updated: 0
   Skipped: 1
 
-[OK] Successfully added 2 box(es)
+[OK] Added 2 and updated 0 box(es)
 ```
 
 ```bash

@@ -136,9 +136,10 @@ lager i2c NETNAME write DATA [OPTIONS]
 | `--address ADDR` | 设备地址：`0x48`（十六进制）或 `72`（十进制） | **必填** |
 | `--data-file PATH` | 含有要写入二进制数据的文件 | |
 | `--frequency FREQ` | 覆盖时钟频率 | |
-| `--format FORMAT` | 可以接受，但 `write` 不打印数据，因此没有效果（[#840](https://github.com/lagerdata/lager/issues/840)） | `hex` |
 
 数据可以作为 `DATA` 参数提供，也可以通过 `--data-file` 提供，但不能同时给出。两者都给出时会报用法错误。
+
+`write` 不打印数据，因此没有 `--format` 选项。传入 `--format` 的旧脚本仍可运行；该选项会被忽略，并在 `--help` 中隐藏。
 
 **示例：**
 
@@ -381,7 +382,7 @@ lager i2c MY_I2C read 6 --address 0x76
 
 ## 说明
 
-- `lager defaults` 没有 I2C Net 选项，因此请在每条命令中给出 Net 名称
+- 用 `lager defaults add --i2c-net NAME` 设置默认 I2C Net 后，可省略 `NET_NAME`
 - LabJack T7 约在 130 Hz 至 450 kHz 之间运行，LabJack U3 约在 10 kHz 至 150 kHz 之间运行
 - `config` 会打印 LabJack U3 实际使用的时钟速率，它可能与请求值不同
 - Aardvark 适配器支持内部上拉，可以通过 `config --pull-ups` 切换

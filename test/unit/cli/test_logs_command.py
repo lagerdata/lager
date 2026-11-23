@@ -72,6 +72,18 @@ def test_every_subcommand_goes_through_the_ssh_runner(argv):
     assert all(ip == "192.0.2.7" for ip, _, _ in runner.calls)
 
 
+@pytest.mark.parametrize("days, minutes", [(1, 1440), (7, 10080), (0, 0)])
+def test_clean_older_than_counts_hours_not_whole_days(days, minutes):
+    # `find -mtime +1` only matches files at least 48 hours old (#851); the
+    # command now asks find for more than N x 24 hours, in minutes.
+    runner = FakeRunner()
+    result = _logs(["clean", "--box", "bench-a", "--older-than", str(days), "--yes"], runner)
+    assert result.exit_code == 0, result.output
+    find_cmd = runner.calls[0][1]
+    assert f"-mmin +{minutes} " in find_cmd
+    assert "-mtime" not in find_cmd
+
+
 def test_size_with_no_box_checks_every_saved_box():
     boxes = {"bench-a": {"ip": "192.0.2.7"}, "bench-b": {"ip": "192.0.2.8"}}
     runner = FakeRunner((0, "1M\t/x", ""))

@@ -12,6 +12,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **`lager defaults add --energy-net`, `--i2c-net` and `--spi-net`.** `lager
+  energy`, `lager i2c` and `lager spi` already fell back to a default net, but no
+  option could set one. Each has a matching `lager defaults delete` subcommand.
+
 ### Changed
 
 - **Behavior change: `lager i2c` addresses and `lager spi --fill` read a bare
@@ -28,6 +34,17 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   that the box refused. On a net configured with `--word-size 16` or `32`, a
   run of hex is still one word, checked against that width before it is sent.
   The saved size is used only for parsing.
+
+- **`lager watt` prints readings with SI prefixes.** A 52 uW reading prints as
+  `52.340 µW` instead of `5.234e-05 W`, the same format as `lager energy`.
+  `--json` still reports base units.
+
+- **No-op options are hidden from `--help`.** `lager i2c write --format`,
+  `lager devenv delete --devenv` and `lager gpo --hold` did nothing. Scripts that
+  pass them still run.
+
+- **`lager battery disable` asks with a default of no,** the same as `enable`.
+  Pressing Enter at the prompt no longer turns the output off.
 
 ### Fixed
 
@@ -116,6 +133,25 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   the Dexarm constructor raised a plain `RuntimeError`, so the documented
   `lager.automation.arm.DeviceNotFoundError` was never raised. The new error is
   still a `RuntimeError`. (#851)
+
+- **A default watt meter net is used by `lager watt`.** `lager defaults add
+  --watt-meter-net` saved a key that `lager watt` did not read. `lager watt` now
+  reads it, and still reads the older `net_watt` key when it is the only one set.
+
+- **`lager dac 3.3` and `lager gpo high` use the default net.** With a default
+  DAC or GPIO net set, the value was taken as a net name and the command failed.
+  A lone value is now read as the value, unless a net of that type has that name.
+
+- **`lager boxes add-all` asks before it changes a saved box.** A box whose IP
+  changed was overwritten without a prompt, and a new box could share an IP with
+  a saved one. Both now need a confirm or `--yes`, the box that had the IP is
+  replaced, and a saved user and version are kept.
+
+- **`lager battery current-limit` refuses a value below 1 mA,** which the box
+  rejects, instead of sending it.
+
+- **`lager logs clean --older-than N` removes logs older than N x 24 hours.** It
+  counted whole days, so `--older-than 1` kept files up to 48 hours old.
 
 ## [0.65.0] - 2026-11-19
 

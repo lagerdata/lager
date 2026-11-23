@@ -21,11 +21,13 @@ from ...core.net_helpers import (
     list_nets_by_role,
     display_nets_table,
     post_net_command,
+    split_value_from_net,
     validate_net_exists,
 )
 
 
 GPIO_ROLE = "gpio"
+_LEVELS = ("low", "high", "on", "off", "0", "1", "toggle")
 
 
 def _level_label(value: int) -> str:
@@ -35,13 +37,15 @@ def _level_label(value: int) -> str:
 @click.command(name="gpo", cls=NetCommand, help="Set GPIO output level (0/1, low/high, off/on, toggle)")
 @click.pass_context
 @click.option("--box", required=False, help="Lager Box name or IP")
-@click.option("--hold", is_flag=True, default=False,
-              help="Hold output state (keeps process alive until Ctrl+C)")
+# The level persists without it (see the note printed below). Kept, hidden
+# from --help, so scripts that pass --hold still run.
+@click.option("--hold", is_flag=True, default=False, hidden=True,
+              help="Has no effect: the output level persists after the command returns")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit a machine-readable JSON object instead of formatted text")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.argument("level", required=False, metavar="[LEVEL]",
-                type=click.Choice(["low", "high", "on", "off", "0", "1", "toggle"], case_sensitive=False))
+                type=click.Choice(_LEVELS, case_sensitive=False))
 def gpo(ctx, box, netname, level, hold, as_json):
     """Set the output level of a GPIO output net.
 
@@ -53,6 +57,12 @@ def gpo(ctx, box, netname, level, hold, as_json):
         netname = get_default_net(ctx, 'gpio')
 
     box_ip = resolve_box_locked(ctx, box, 'gpo')
+    # `lager gpo high` with a default GPIO net: high is the level, not a net.
+    netname, level = split_value_from_net(box_ip, netname, level,
+                                          get_default_net(ctx, 'gpio'), GPIO_ROLE,
+                                          lambda t: t.lower() in _LEVELS)
+    if level is not None:
+        level = level.lower()
 
     # If still no netname, list available GPIO nets
     if netname is None:

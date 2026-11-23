@@ -108,8 +108,31 @@ def test_supply_box_error_is_a_non_zero_exit(lager, power):
 @pytest.mark.parametrize("argv", [["enable"], ["disable"]])
 def test_battery_output_changes_are_not_sent_unconfirmed(lager, power, argv):
     result = lager("battery", "battery1", *argv, input="n\n")
-    assert "[y/N]" in result.output or "[Y/n]" in result.output
+    assert "[y/N]" in result.output
     assert power.posts == []
+
+
+@pytest.mark.parametrize("argv", [["enable"], ["disable"]])
+def test_battery_output_change_prompt_defaults_to_no(lager, power, argv):
+    # Enter alone at the prompt must not change the output, for enable and
+    # disable alike (#851: disable used to default to yes).
+    result = lager("battery", "battery1", *argv, input="\n")
+    assert "Aborting" in result.output
+    assert power.posts == []
+
+
+@pytest.mark.parametrize("value", ["0", "0.0005", "0.0009"])
+def test_battery_current_limit_below_1_ma_is_refused(lager, power, value):
+    result = lager("battery", "battery1", "current-limit", value)
+    assert result.exit_code != 0
+    assert "Current limit must be at least 0.001 A" in result.output
+    assert power.posts == []
+
+
+def test_battery_current_limit_of_1_ma_is_sent(lager, power):
+    result = lager("battery", "battery1", "current-limit", "0.001")
+    assert result.exit_code == 0, result.output
+    assert _battery(power)["params"]["value"] == 0.001
 
 
 @pytest.mark.parametrize("argv, action, extra", [

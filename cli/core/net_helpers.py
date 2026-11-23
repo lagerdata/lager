@@ -982,6 +982,27 @@ def get_role(role_key: str) -> str:
     return NET_ROLES.get(role_key, role_key)
 
 
+def split_value_from_net(box_ip: str, netname: str | None, value: str | None,
+                         default: str | None, role: str,
+                         looks_like_value) -> tuple[str | None, str | None]:
+    """Read ``lager dac 3.3`` as the default net and value ``3.3``.
+
+    NET_NAME and the value are both optional positionals, so a lone value
+    lands in NET_NAME. It is taken as the value when it looks like one, a
+    ``default`` net is set, and no net of ``role`` has that name;
+    a net named like a value still wins. ``lager dmm`` applies the same rule
+    to its function argument.
+    """
+    if value is not None or netname is None or not looks_like_value(netname.strip()):
+        return netname, value
+    if default is None or default == netname:
+        return netname, value
+    token = netname.strip()
+    if any(n.get("name") == token and n.get("role") == role for n in fetch_nets(box_ip)):
+        return netname, value
+    return default, token
+
+
 # =============================================================================
 # Net Existence Validation
 # =============================================================================

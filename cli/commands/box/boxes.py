@@ -810,33 +810,63 @@ def add_all(yes):
             return
 
     added_count = 0
+    updated_count = 0
     skipped_count = 0
+
+    def _ip_of(info):
+        return info.get('ip') if isinstance(info, dict) else info
 
     click.echo()
     for name, ip in boxes_found:
         existing_boxes = list_boxes()
-        if name in existing_boxes:
-            existing_ip = existing_boxes[name].get('ip') if isinstance(existing_boxes[name], dict) else existing_boxes[name]
-            if existing_ip == ip:
-                click.echo(f"  {name}: ", nl=False)
-                click.secho('already exists (skipped)', fg='yellow')
-                skipped_count += 1
-                continue
+        saved = existing_boxes.get(name)
+        if saved is not None and _ip_of(saved) == ip:
+            click.echo(f"  {name}: ", nl=False)
+            click.secho('already exists (skipped)', fg='yellow')
+            skipped_count += 1
+            continue
 
-        # Add the box (without triggering prompts)
-        add_box(name, ip, None, None)
+        # Same rules as `lager boxes add`: a changed IP, or an IP another box
+        # already has, is replaced only on a confirm (or --yes), so two
+        # entries never share an IP.
+        same_ip = next((n for n, info in existing_boxes.items()
+                        if n != name and _ip_of(info) == ip), None)
+        if saved is not None or same_ip is not None:
+            if not yes:
+                click.echo(f"  {name}:")
+                if saved is not None:
+                    click.echo(f"    saved with IP {_ip_of(saved)}; Tailscale reports {ip}")
+                if same_ip is not None:
+                    click.echo(f"    IP {ip} is already saved as {same_ip}, which is replaced")
+                if not click.confirm(f"  Update {name}?", default=False):
+                    click.echo(f"  {name}: ", nl=False)
+                    click.secho('not changed (skipped)', fg='yellow')
+                    skipped_count += 1
+                    continue
+            if same_ip is not None:
+                delete_box(same_ip)
+
+        # Keep a saved user and version; only the IP changes.
+        user = saved.get('user') if isinstance(saved, dict) else None
+        version = saved.get('version') if isinstance(saved, dict) else None
+        add_box(name, ip, user, version)
         click.echo(f"  {name}: ", nl=False)
-        click.secho('added', fg='green')
-        added_count += 1
+        if saved is not None or same_ip is not None:
+            click.secho('updated', fg='green')
+            updated_count += 1
+        else:
+            click.secho('added', fg='green')
+            added_count += 1
 
     click.echo()
     click.echo(click.style('Summary:', fg='blue', bold=True))
     click.echo(f"  Added:   {added_count}")
+    click.echo(f"  Updated: {updated_count}")
     click.echo(f"  Skipped: {skipped_count}")
 
-    if added_count > 0:
+    if added_count or updated_count:
         click.echo()
-        click.secho(f'[OK] Successfully added {added_count} box(es)', fg='green')
+        click.secho(f'[OK] Added {added_count} and updated {updated_count} box(es)', fg='green')
 
 
 @boxes.command('delete')

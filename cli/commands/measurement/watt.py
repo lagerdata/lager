@@ -15,6 +15,7 @@ from ...core.net_helpers import (
     resolve_box,
     resolve_box_locked,
     display_nets,
+    fmt_si,
     post_net_command,
     validate_net_exists,
 )
@@ -48,11 +49,17 @@ class WattGroup(NetGroup):
         return super().parse_args(ctx, args)
 
 
+def _default_watt_net(ctx):
+    """The default watt meter net: the key `lager defaults add --watt-meter-net`
+    writes, then `net_watt`, which older configs set by hand."""
+    return get_default_net(ctx, 'watt_meter') or get_default_net(ctx, 'watt')
+
+
 def _require_netname(ctx):
     """Get the netname stashed on ctx.obj by the group, or fall back to default."""
     netname = getattr(ctx.obj, "watt_netname", None)
     if netname is None:
-        netname = get_default_net(ctx, 'watt')
+        netname = _default_watt_net(ctx)
     return netname
 
 
@@ -98,9 +105,9 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
             }))
         else:
             click.secho(f"Measurements '{netname}' ({duration:g}s):", fg="green")
-            click.secho(f"  Current: {current:.6g} A", fg="green")
-            click.secho(f"  Voltage: {voltage:.6g} V", fg="green")
-            click.secho(f"  Power:   {power:.6g} W", fg="green")
+            click.secho(f"  Current: {fmt_si(current, 'A')}", fg="green")
+            click.secho(f"  Voltage: {fmt_si(voltage, 'V')}", fg="green")
+            click.secho(f"  Power:   {fmt_si(power, 'W')}", fg="green")
         return
 
     v = float(value)
@@ -108,7 +115,7 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
     if as_json:
         click.echo(json.dumps({"netname": netname, mode: v, "duration_s": duration}))
     else:
-        click.secho(f"{label} '{netname}': {v:.6g} {unit}", fg="green")
+        click.secho(f"{label} '{netname}': {fmt_si(v, unit)}", fg="green")
 
 
 # Shared options for the read subcommands.
@@ -141,7 +148,7 @@ def watt(ctx, box, netname):
     subcommands for other quantities.
     """
     if netname is None:
-        netname = get_default_net(ctx, 'watt')
+        netname = _default_watt_net(ctx)
     if netname is not None:
         ctx.obj.watt_netname = netname
     ctx.obj.watt_box = box

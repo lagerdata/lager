@@ -54,7 +54,7 @@ def _saved_box_ip(ctx, box):
 @logs.command('clean')
 @click.pass_context
 @click.option('--box', required=True, help='Box to clean logs on')
-@click.option('--older-than', default=1, type=int, help='Remove logs older than N days (default: 1)')
+@click.option('--older-than', default=1, type=int, help='Remove logs modified more than N x 24 hours ago (default: 1)')
 @click.option('--yes', is_flag=True, help='Skip confirmation')
 def clean(ctx, box, older_than, yes):
     """Clean old log files from box"""
@@ -68,9 +68,9 @@ def clean(ctx, box, older_than, yes):
     if not yes:
         click.confirm(f"Clean logs older than {older_than} day(s) on {box} ({ip})?", abort=True)
 
-    # Build command to remove old logs
-    # Note: -mtime +N means "modified more than N days ago"
-    cmd = f'find ~/box/logs -name "*.log" -type f -mtime +{older_than} -delete 2>/dev/null || true'
+    # Remove logs modified more than N x 24 hours ago. `-mtime +N` would count
+    # whole days only, so `--older-than 1` would keep anything under 48 hours.
+    cmd = f'find ~/box/logs -name "*.log" -type f -mmin +{older_than * 24 * 60} -delete 2>/dev/null || true'
 
     click.echo(f'Cleaning logs on {box}...', nl=False)
     rc, _stdout, stderr = _run_on_box(ip, cmd, timeout=30)

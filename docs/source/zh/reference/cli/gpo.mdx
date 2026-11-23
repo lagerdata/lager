@@ -3,7 +3,7 @@ title: GPO
 description: 设置 GPIO 输出电平
 ---
 
-设置 GPIO 引脚的数字输出电平，并可选择保持模式，让输出一直有效直到被中断。
+设置 GPIO 引脚的数字输出电平。命令退出后，引脚会保持其电平。
 
 ## 语法
 
@@ -15,7 +15,7 @@ lager gpo [NETNAME] LEVEL [OPTIONS]
 
 | 参数 | 说明 |
 |----------|-------------|
-| `NETNAME` | GPIO Net 名称（设置了默认值时可省略）。省略时会列出全部可用的 GPIO Net。 |
+| `NETNAME` | GPIO Net 名称（设置了默认值时可省略）。省略时会列出全部可用的 GPIO Net。设置了默认 GPIO Net 时，`lager gpo high` 会设置默认 Net，除非有名为 `high` 的 GPIO Net。 |
 | `LEVEL` | 输出电平（见下文） |
 
 ## 电平取值
@@ -33,7 +33,6 @@ lager gpo [NETNAME] LEVEL [OPTIONS]
 | 选项 | 说明 |
 |--------|-------------|
 | `--box BOX` | Lager Box 名称或 IP 地址 |
-| `--hold` | 为兼容旧脚本而保留，没有效果；请参阅[保持模式](#保持模式) |
 | `--json` | 输出程序可读的 JSON 对象，而不是格式化文本 |
 
 ---
@@ -60,7 +59,7 @@ lager gpo --box my-lager-box
 
 ### 保持模式
 
-`--hold` 没有效果（[#840](https://github.com/lagerdata/lager/issues/840)）。Box 会保持设备会话打开，因此无论是否加 `--hold`，命令退出后引脚都会保持其电平。命令会打印一条说明并退出。若要释放引脚，请把它设为另一个电平。
+Box 会保持设备会话打开，因此命令退出后引脚会保持其电平。传入 `--hold` 的旧脚本仍可运行：该选项在 `--help` 中隐藏，没有效果，并会打印一条说明。若要释放引脚，请把它设为另一个电平。
 
 ```bash
 # The level stays until the next command changes it
@@ -156,5 +155,4 @@ lager gpo BOOT0 low --box my-lager-box
 - 引脚必须在 Net 配置中被设为输出
 - toggle 会先读取当前状态再取反
 - USB-202 的通道是 `DIO0`-`DIO7`
-- `--hold` 没有效果；它会打印一条说明并退出
 - 命令设置好输出电平后立即退出；引脚会保持该状态，直到下一条命令
