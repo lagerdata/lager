@@ -471,8 +471,10 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
               help='File containing data to write')
 @click.option('--frequency', default=None,
               help='Clock frequency override (e.g., 100k, 400k)')
+# `write` prints no data, so --format has nothing to format. Kept, hidden from
+# --help, so scripts that pass it still run.
 @click.option('--format', 'output_format', type=click.Choice(["hex", "bytes", "json"]), default="hex",
-              help='Output format')
+              hidden=True, help='Has no effect: write prints no data')
 def write(ctx, data, box, address, data_file, frequency, output_format):
     """
     Write bytes to an I2C device

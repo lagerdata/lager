@@ -3,7 +3,7 @@ title: GPO
 description: Set GPIO output level
 ---
 
-Set the digital output level of GPIO pins, with an optional hold mode that keeps the output asserted until interrupted.
+Set the digital output level of GPIO pins. The pin keeps its level after the command exits.
 
 ## Syntax
 
@@ -15,7 +15,7 @@ lager gpo [NETNAME] LEVEL [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `NETNAME` | GPIO net name (optional if default is set). If omitted, lists all available GPIO nets. |
+| `NETNAME` | GPIO net name (optional if default is set). If omitted, lists all available GPIO nets. With a default GPIO net set, `lager gpo high` sets the default net, unless a GPIO net is named `high`. |
 | `LEVEL` | Output level (see below) |
 
 ## Level Values
@@ -33,7 +33,6 @@ The following values are accepted (case-insensitive):
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lager Box name or IP address |
-| `--hold` | Accepted for older scripts. It has no effect; see [Hold Mode](#hold-mode) |
 | `--json` | Emit a machine-readable JSON object instead of formatted text |
 
 ---
@@ -60,8 +59,9 @@ lager gpo --box my-lager-box
 
 ### Hold Mode
 
-`--hold` has no effect ([#840](https://github.com/lagerdata/lager/issues/840)). The box keeps the device session open, so the pin keeps its level
-after the command exits, with or without `--hold`. The command prints a note and exits.
+The box keeps the device session open, so the pin keeps its level after the command exits.
+Older scripts that pass `--hold` still run: the option is hidden from `--help`, has no effect,
+and prints a note.
 To release a pin, set it to the other level.
 
 ```bash
@@ -160,5 +160,4 @@ lager gpo BOOT0 low --box my-lager-box
 - Pin must be configured as output in net configuration
 - Toggle reads current state and inverts it
 - USB-202 channels are `DIO0`-`DIO7`
-- `--hold` has no effect; it prints a note and exits
 - The command sets the output level and exits immediately; the pin retains its state until the next command

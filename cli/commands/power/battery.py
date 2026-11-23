@@ -312,8 +312,8 @@ def capacity(ctx, box, value):
 @click.option("--box", required=False, help="Lager Box name or IP")
 def current_limit(ctx, box, value):
     """Set (or read) maximum charge/discharge current in amps (A)"""
-    # Keithley 2281S max current is 6A
-    MAX_CURRENT = 6.0
+    # Keithley 2281S max current is 6A; the box refuses less than 1 mA.
+    MIN_CURRENT, MAX_CURRENT = 0.001, 6.0
 
     # Parse and validate current limit
     parsed_value = None
@@ -323,8 +323,8 @@ def current_limit(ctx, box, value):
         except ValueError:
             click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
             ctx.exit(1)
-        if parsed_value < 0:
-            click.secho(f"Error: Current limit must be positive, got {parsed_value} A", fg='red', err=True)
+        if parsed_value < MIN_CURRENT:
+            click.secho(f"Error: Current limit must be at least {MIN_CURRENT} A (1 mA), got {parsed_value} A", fg='red', err=True)
             ctx.exit(1)
         if parsed_value > MAX_CURRENT:
             click.secho(f"Error: Current limit must not exceed {MAX_CURRENT} A, got {parsed_value} A", fg='red', err=True)
@@ -523,7 +523,7 @@ def disable(ctx, box, yes):
     resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
 
-    if yes or click.confirm(f"Disable Net?", default=True):
+    if yes or click.confirm(f"Disable Net?", default=False):
         pass
     else:
         click.echo("Aborting")

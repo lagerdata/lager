@@ -68,12 +68,14 @@ MCC USB-202 不支持回读，因此对 USB-202 Net 的读取会失败。
 lager defaults add --dac-net VOLTAGE_OUTPUT
 ```
 
-之后，不带参数的 `lager dac` 会读取默认 Net。若要设置电压，还需给出 Net 名称：
+之后，不带参数的 `lager dac` 会读取默认 Net，`lager dac 3.3` 会设置它：
 
 ```bash
 lager dac
-lager dac VOLTAGE_OUTPUT 3.3
+lager dac 3.3
 ```
+
+只有在设置了默认 DAC Net 且没有同名的 DAC Net 时，单独的数字才会被当作电压。例如，名为 `5` 的 DAC Net 仍然由 `lager dac 5` 读取。
 
 ## 示例
 

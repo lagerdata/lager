@@ -21,11 +21,20 @@ from ...core.net_helpers import (
     list_nets_by_role,
     display_nets_table,
     post_net_command,
+    split_value_from_net,
     validate_net_exists,
 )
 
 
 DAC_ROLE = "dac"
+
+
+def _is_number(token: str) -> bool:
+    try:
+        float(token)
+    except ValueError:
+        return False
+    return True
 
 
 @click.command(name="dac", cls=NetCommand, help="Set or read DAC output voltage")
@@ -46,6 +55,10 @@ def dac(ctx, box, netname, voltage, as_json):
         netname = get_default_net(ctx, 'dac')
 
     box_ip = resolve_box_locked(ctx, box, 'dac')
+    # `lager dac 3.3` with a default DAC net: 3.3 is the voltage, not a net.
+    netname, voltage = split_value_from_net(box_ip, netname, voltage,
+                                            get_default_net(ctx, 'dac'), DAC_ROLE,
+                                            _is_number)
 
     # If still no netname, list available DAC nets
     if netname is None:

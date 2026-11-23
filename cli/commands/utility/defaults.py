@@ -53,66 +53,67 @@ def defaults(ctx):
         click.echo(table.draw())
 
 
+# Every net default `lager defaults add` can set: (option and delete subcommand
+# name, config key, name used in help and messages). The `add` options, the
+# `delete` subcommands and the key each net command reads all come from here,
+# so a command's fallback and the option that sets it cannot drift apart.
+_net_types = [
+    ('supply-net', 'net_power_supply', 'supply net'),
+    ('battery-net', 'net_battery', 'battery net'),
+    ('solar-net', 'net_solar', 'solar net'),
+    ('scope-net', 'net_scope', 'scope net'),
+    ('logic-net', 'net_logic', 'logic net'),
+    ('adc-net', 'net_adc', 'ADC net'),
+    ('dac-net', 'net_dac', 'DAC net'),
+    ('gpio-net', 'net_gpio', 'GPIO net'),
+    ('debug-net', 'net_debug', 'debug net'),
+    ('eload-net', 'net_eload', 'electronic load net'),
+    ('usb-net', 'net_usb', 'USB hub net'),
+    ('webcam-net', 'net_webcam', 'webcam net'),
+    ('watt-meter-net', 'net_watt_meter', 'watt meter net'),
+    ('energy-net', 'net_energy', 'energy analyzer net'),
+    ('thermocouple-net', 'net_thermocouple', 'thermocouple net'),
+    ('dmm-net', 'net_dmm', 'multimeter net'),
+    ('ble-sniffer-net', 'net_ble_sniffer', 'BLE sniffer net'),
+    ('uart-net', 'net_uart', 'UART net'),
+    ('i2c-net', 'net_i2c', 'I2C net'),
+    ('spi-net', 'net_spi', 'SPI net'),
+    ('arm-net', 'net_arm', 'robotic arm net'),
+]
+
+
+def _param(option):
+    return option.replace('-', '_')
+
+
+def _net_options(func):
+    for option, _key, display_name in reversed(_net_types):
+        func = click.option(f'--{option}', _param(option), required=False,
+                            help=f'Set default {display_name} name')(func)
+    return func
+
+
 @defaults.command()
 @click.option("--box", required=False, help="Set default box")
 @click.option('--serial-port', required=False, help='Set default serial port path')
-@click.option('--supply-net', required=False, help='Set default supply net name')
-@click.option('--battery-net', required=False, help='Set default battery net name')
-@click.option('--solar-net', required=False, help='Set default solar net name')
-@click.option('--scope-net', required=False, help='Set default scope net name')
-@click.option('--logic-net', required=False, help='Set default logic net name')
-@click.option('--adc-net', required=False, help='Set default ADC net name')
-@click.option('--dac-net', required=False, help='Set default DAC net name')
-@click.option('--gpio-net', required=False, help='Set default GPIO net name')
-@click.option('--debug-net', required=False, help='Set default debug net name')
-@click.option('--eload-net', required=False, help='Set default electronic load net name')
-@click.option('--usb-net', required=False, help='Set default USB hub net name')
-@click.option('--webcam-net', required=False, help='Set default webcam net name')
-@click.option('--watt-meter-net', required=False, help='Set default watt meter net name')
-@click.option('--thermocouple-net', required=False, help='Set default thermocouple net name')
-@click.option('--dmm-net', required=False, help='Set default multimeter net name')
-@click.option('--ble-sniffer-net', required=False, help='Set default BLE sniffer net name')
-@click.option('--uart-net', required=False, help='Set default UART net name')
-@click.option('--arm-net', required=False, help='Set default robotic arm net name')
+@_net_options
 @click.option('--user', required=False,
               help='Set the username recorded on box locks. To have a lock that '
                    'another tool records under your email recognized as yours, '
                    'set this to that email.')
-def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_net,
-        adc_net, dac_net, gpio_net, debug_net, eload_net, usb_net, webcam_net,
-        watt_meter_net, thermocouple_net, dmm_net, ble_sniffer_net, uart_net, arm_net, user):
+def add(box, serial_port, user, **nets):
     """
         Set default values
     """
     # Check if at least one option is provided
-    if all(v is None for v in [box, serial_port, supply_net, battery_net, solar_net,
-                                scope_net, logic_net, adc_net, dac_net, gpio_net, debug_net,
-                                eload_net, usb_net, webcam_net, watt_meter_net, thermocouple_net,
-                                dmm_net, ble_sniffer_net,
-                                uart_net, arm_net, user]):
+    if all(v is None for v in [box, serial_port, user, *nets.values()]):
         click.secho("Error: You must specify at least one setting", fg='red', err=True)
         click.echo("\nAvailable options:", err=True)
-        click.echo("  --box [BOX_NAME]              Set default box", err=True)
-        click.echo("  --serial-port [PATH]          Set default serial port", err=True)
-        click.echo("  --supply-net [NET_NAME]       Set default power supply net", err=True)
-        click.echo("  --battery-net [NET_NAME]      Set default battery net", err=True)
-        click.echo("  --solar-net [NET_NAME]        Set default solar net", err=True)
-        click.echo("  --scope-net [NET_NAME]        Set default oscilloscope net", err=True)
-        click.echo("  --logic-net [NET_NAME]        Set default logic analyzer net", err=True)
-        click.echo("  --adc-net [NET_NAME]          Set default ADC net", err=True)
-        click.echo("  --dac-net [NET_NAME]          Set default DAC net", err=True)
-        click.echo("  --gpio-net [NET_NAME]         Set default GPIO net", err=True)
-        click.echo("  --debug-net [NET_NAME]        Set default debug net", err=True)
-        click.echo("  --eload-net [NET_NAME]        Set default electronic load net", err=True)
-        click.echo("  --usb-net [NET_NAME]          Set default USB hub net", err=True)
-        click.echo("  --webcam-net [NET_NAME]       Set default webcam net", err=True)
-        click.echo("  --watt-meter-net [NET_NAME]   Set default watt meter net", err=True)
-        click.echo("  --thermocouple-net [NET_NAME] Set default thermocouple net", err=True)
-        click.echo("  --dmm-net [NET_NAME]          Set default multimeter net", err=True)
-        click.echo("  --ble-sniffer-net [NET_NAME]  Set default BLE sniffer net", err=True)
-        click.echo("  --uart-net [NET_NAME]         Set default UART net", err=True)
-        click.echo("  --arm-net [NET_NAME]          Set default robotic arm net", err=True)
-        click.echo("  --user [USERNAME]             Set default username for box locking", err=True)
+        click.echo(f"  {'--box [BOX_NAME]':<30}Set default box", err=True)
+        click.echo(f"  {'--serial-port [PATH]':<30}Set default serial port", err=True)
+        for option, _key, display_name in _net_types:
+            click.echo(f"  {'--' + option + ' [NET_NAME]':<30}Set default {display_name}", err=True)
+        click.echo(f"  {'--user [USERNAME]':<30}Set default username for box locking", err=True)
         click.echo("\nExample: lager defaults add --box mybox --supply-net supply1", err=True)
         raise click.Abort()
 
@@ -151,33 +152,11 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
         changes.append(f"user: {user}")
 
     # Handle net defaults
-    net_defaults = {
-        'supply_net': ('net_power_supply', supply_net),
-        'battery_net': ('net_battery', battery_net),
-        'solar_net': ('net_solar', solar_net),
-        'scope_net': ('net_scope', scope_net),
-        'logic_net': ('net_logic', logic_net),
-        'adc_net': ('net_adc', adc_net),
-        'dac_net': ('net_dac', dac_net),
-        'gpio_net': ('net_gpio', gpio_net),
-        'debug_net': ('net_debug', debug_net),
-        'eload_net': ('net_eload', eload_net),
-        'usb_net': ('net_usb', usb_net),
-        'webcam_net': ('net_webcam', webcam_net),
-        'watt_meter_net': ('net_watt_meter', watt_meter_net),
-        'thermocouple_net': ('net_thermocouple', thermocouple_net),
-        'dmm_net': ('net_dmm', dmm_net),
-        'ble_sniffer_net': ('net_ble_sniffer', ble_sniffer_net),
-        'uart_net': ('net_uart', uart_net),
-        'arm_net': ('net_arm', arm_net),
-    }
-
-    for display_name, (config_key, value) in net_defaults.items():
+    for option, config_key, _display_name in _net_types:
+        value = nets[_param(option)]
         if value is not None:
             config.set('LAGER', config_key, value)
-            # Convert display name to hyphenated format (e.g., power_supply_net -> power-supply-net)
-            display = display_name.replace('_', '-')
-            changes.append(f"{display}: {value}")
+            changes.append(f"{option}: {value}")
 
     write_config_file(config)
 
@@ -331,27 +310,6 @@ def _create_net_delete_command(net_type, config_key, display_name):
 
 
 # Create delete commands for all net types
-_net_types = [
-    ('supply-net', 'net_power_supply', 'supply net'),
-    ('battery-net', 'net_battery', 'battery net'),
-    ('solar-net', 'net_solar', 'solar net'),
-    ('scope-net', 'net_scope', 'scope net'),
-    ('logic-net', 'net_logic', 'logic net'),
-    ('adc-net', 'net_adc', 'ADC net'),
-    ('dac-net', 'net_dac', 'DAC net'),
-    ('gpio-net', 'net_gpio', 'GPIO net'),
-    ('debug-net', 'net_debug', 'debug net'),
-    ('eload-net', 'net_eload', 'electronic load net'),
-    ('usb-net', 'net_usb', 'USB hub net'),
-    ('webcam-net', 'net_webcam', 'webcam net'),
-    ('watt-meter-net', 'net_watt_meter', 'watt meter net'),
-    ('thermocouple-net', 'net_thermocouple', 'thermocouple net'),
-    ('dmm-net', 'net_dmm', 'multimeter net'),
-    ('ble-sniffer-net', 'net_ble_sniffer', 'BLE sniffer net'),
-    ('uart-net', 'net_uart', 'UART net'),
-    ('arm-net', 'net_arm', 'robotic arm net'),
-]
-
 for net_type, config_key, display_name in _net_types:
     _create_net_delete_command(net_type, config_key, display_name)
 

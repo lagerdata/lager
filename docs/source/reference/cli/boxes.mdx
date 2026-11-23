@@ -78,8 +78,9 @@ This command scans your Tailscale network for devices with names 5-8 characters 
 1. Runs `tailscale status` to discover devices
 2. Filters for devices with names 5-8 characters long
 3. Converts names to uppercase
-4. Skips a box that already exists with the same name and IP. A box whose IP changed is updated without a prompt
-5. Adds new boxes to your configuration
+4. Skips a box that already exists with the same name and IP
+5. Asks before it changes a saved box: a box whose IP changed, or a new box whose IP another saved box already has. That other box is replaced, so two boxes never share an IP. A saved user and version are kept. `--yes` makes these changes without asking
+6. Adds new boxes to your configuration
 
 **Example:**
 ```bash
@@ -103,9 +104,10 @@ Add all 3 box(es)? [Y/n]: y
 
 Summary:
   Added:   2
+  Updated: 0
   Skipped: 1
 
-[OK] Successfully added 2 box(es)
+[OK] Added 2 and updated 0 box(es)
 ```
 
 ```bash

@@ -69,7 +69,7 @@ lager logs clean --box BOX [--older-than DAYS] [--yes]
 
 **Options:**
 - `--box BOX` (required) - Lager Box to clean
-- `--older-than DAYS` - Remove logs more than N full days old (default: 1). The age counts whole days only, so `--older-than 1` removes files that are at least 48 hours old ([#851](https://github.com/lagerdata/lager/issues/851))
+- `--older-than DAYS` - Remove logs last modified more than N x 24 hours ago (default: 1). `--older-than 1` removes files older than 24 hours
 - `--yes` - Skip confirmation prompt
 
 **Examples:**
@@ -154,7 +154,7 @@ The `size` command uses warning thresholds:
 ## What Gets Cleaned
 
 The `clean` command removes:
-- Files that match `*.log` in `~/box/logs` on the box host, and that are more than `--older-than` full days old
+- Files that match `*.log` in `~/box/logs` on the box host, and that were last modified more than `--older-than` x 24 hours ago
 
 It does **not** remove:
 - System logs in `/var/log/`

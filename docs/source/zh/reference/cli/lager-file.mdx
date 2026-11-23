@@ -50,11 +50,14 @@ CLI 总是知道该用哪个文件。`lager boxes` 和 `lager defaults` 之类�
 | `net_eload` | `--eload-net` | 默认电子负载 Net |
 | `net_usb` | `--usb-net` | 默认 USB 集线器 Net |
 | `net_webcam` | `--webcam-net` | 默认摄像头 Net |
-| `net_watt_meter` | `--watt-meter-net` | 默认功率计 Net。`lager watt` 目前不读取这个键（[#836](https://github.com/lagerdata/lager/issues/836)）；请参阅 [`lager watt`](/source/zh/reference/cli/watt#默认-net) |
+| `net_watt_meter` | `--watt-meter-net` | 默认功率计 Net。`lager watt` 也会读取旧的 `net_watt` 键；请参阅 [`lager watt`](/source/zh/reference/cli/watt#默认-net) |
+| `net_energy` | `--energy-net` | 默认能量分析仪 Net |
 | `net_thermocouple` | `--thermocouple-net` | 默认热电偶 Net |
 | `net_dmm` | `--dmm-net` | 默认万用表 Net |
 | `net_ble_sniffer` | `--ble-sniffer-net` | 默认 BLE 嗅探器 Net |
 | `net_uart` | `--uart-net` | 默认 UART Net |
+| `net_i2c` | `--i2c-net` | 默认 I2C Net |
+| `net_spi` | `--spi-net` | 默认 SPI Net |
 | `net_arm` | `--arm-net` | 默认机械臂 Net |
 | `user` | `--user` | 记录在 Box 锁上的用户名 |
 

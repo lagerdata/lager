@@ -103,12 +103,10 @@ def test_a_saved_box_becomes_the_default(lager, lager_file):
     ("--thermocouple-net", "thermocouple"),
     ("--uart-net", "uart"),
     ("--arm-net", "arm"),
-    pytest.param("--watt-meter-net", "watt", marks=pytest.mark.xfail(
-        strict=True,
-        reason="defaults add --watt-meter-net writes net_watt_meter, but `lager watt` "
-               "reads get_default_net(ctx, 'watt') = net_watt, so the default is "
-               "never used",
-    )),
+    ("--watt-meter-net", "watt_meter"),
+    ("--energy-net", "energy"),
+    ("--i2c-net", "i2c"),
+    ("--spi-net", "spi"),
 ])
 def test_a_net_default_is_the_one_its_command_reads(lager, lager_file, option, net_type):
     result = lager("defaults", "add", option, "net-under-test")
@@ -127,14 +125,16 @@ def _net_types_read_by_commands():
     return found
 
 
-def test_net_types_no_defaults_option_can_set():
-    """Two-sided: a command reads these defaults, but `defaults add` cannot set them.
+def test_every_default_a_command_reads_can_be_set():
+    """Two-sided: every net type a command reads has a `defaults add` option.
 
-    They can only be set by hand-editing `.lager`. Shrink this set by adding
-    the option; a new command that reads an unsettable default fails here.
+    The one exception is `watt`, the legacy key `lager watt` still reads after
+    `watt_meter` so a hand-edited config keeps working. A new command that
+    reads an unsettable default fails here.
     """
     settable = {key[len("net_"):] for _, key, _ in defaults_mod._net_types}
-    assert _net_types_read_by_commands() - settable == {"energy", "i2c", "spi", "watt"}
+    assert _net_types_read_by_commands() - settable == {"watt"}
+    assert "watt_meter" in _net_types_read_by_commands()
 
 
 def test_every_add_option_has_a_delete_subcommand():

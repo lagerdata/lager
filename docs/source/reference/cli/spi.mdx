@@ -413,7 +413,7 @@ lager spi MY_SPI read 4
 
 ## Notes
 
-- `lager defaults` has no SPI net option, so give the net name in each command
+- Set a default SPI net with `lager defaults add --spi-net NAME` to leave out `NET_NAME`
 - LabJack T7 runs at about 800 kHz for a request of 800 kHz or more. A multi-byte transfer with a request between about 1 kHz and 800 kHz runs at about 1 kHz
 - LabJack U3 runs from about 5.4 kHz to 71.4 kHz, and `config` prints the rate that the hardware uses
 - SPI is full-duplex: data is always sent and received simultaneously

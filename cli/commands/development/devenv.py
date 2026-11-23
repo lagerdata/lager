@@ -412,7 +412,10 @@ def add(command_name, command, warn):
 
 @devenv.command(name='delete')
 @click.argument('command_name')
-@click.option('--devenv', '_devenv', help='Devenv name', metavar='foo')
+# `delete` always edits the current project's devenv. Kept, hidden from --help,
+# so scripts that pass --devenv still run.
+@click.option('--devenv', '_devenv', hidden=True, metavar='foo',
+              help="Has no effect: delete edits the current project's devenv")
 def delete(command_name, _devenv):
     """
     Delete command from devenv

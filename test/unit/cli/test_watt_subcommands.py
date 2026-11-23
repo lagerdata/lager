@@ -137,7 +137,15 @@ class TestSubcommandActions:
     def test_power_prints_role_label(self):
         result, calls, _ = _run(["NET1", "power", "--box", "b"])
         assert calls[0]["quiet"] is True
-        assert "Power 'NET1': 0.5 W" in result.output
+        assert "Power 'NET1': 500.000 mW" in result.output
+
+    def test_small_readings_use_si_prefixes(self):
+        # A 52 uW reading used to print as `5.234e-05 W` (#837); it now
+        # matches `lager energy`.
+        with patch.dict(_VALUES, {"power": 5.234e-05}):
+            result, _, _ = _run(["NET1", "power", "--box", "b"])
+        assert "Power 'NET1': 52.340 \u00b5W" in result.output
+        assert "e-05" not in result.output
 
     def test_all_prints_multiline_measurements(self):
         result, _, _ = _run(["NET1", "all", "--box", "b"])
@@ -203,6 +211,18 @@ class TestBackwardCompatible:
         assert calls[0]["action"] == "power"
         assert calls[0]["netname"] == "defnet"
         assert not display_mock.called
+
+    @pytest.mark.parametrize("config, expected", [
+        ({"watt_meter": "meter-net"}, "meter-net"),
+        ({"watt_meter": "meter-net", "watt": "old-net"}, "meter-net"),
+        ({"watt": "old-net"}, "old-net"),
+        ({}, None),
+    ])
+    def test_default_net_prefers_the_key_defaults_add_writes(self, config, expected):
+        # `lager defaults add --watt-meter-net` writes net_watt_meter; older
+        # hand-edited configs may still carry net_watt (#836).
+        with patch.object(watt_mod, "get_default_net", lambda ctx, t: config.get(t)):
+            assert watt_mod._default_watt_net(None) == expected
 
 
 if __name__ == "__main__":

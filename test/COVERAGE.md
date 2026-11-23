@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3978 (+3 xfailed) |
+| `unit (cli)` | `test/unit/cli/` | 4013 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 5539 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10374** |
+| | **Total gated** | **10409** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,7 +504,7 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 354 files)
+### Local Unit Tests (`test/unit/` -- 356 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 192 files)
 
@@ -707,7 +707,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 138 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 140 files)
 
 | File | What it tests |
 |------|---------------|
@@ -721,6 +721,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, format_lock_user CI support, `lock_scope`/`_lock_held_by_self` identity matching across all four lock-path comparisons (check, pre-acquire probe, `previous_user`, and the conflict branch that decides whether to wait), the `_check_box_lock` refusal path, the holder that a resumed lock's heartbeat sends, and a `LAGER_LOCK_WAIT` that is not a number keeping the CI wait with one warning. Also the no-expiry sentinel: `--timeout 0` asks for a lock that never expires, and the auto-lock boundary tells that apart from a caller that states no TTL at all, which used to collapse into the 1800 s default |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal. Also that `-i` does not cost the operator ssh's own defaults: `lager ssh` names `lager_box` first and then each default identity file present, in ssh's order, and passes no `-i` at all when no `lager_box` key exists |
+| `test_boxes_add_all.py` | `lager boxes add-all` against a stubbed `tailscale status`: a changed IP and an IP another box already has each need a confirm or `--yes`, the box that had the IP is replaced so no two entries share one, and a saved user is kept |
 | `test_ssh_auto_lock.py` | `lager ssh` acquires an ephemeral auto-lock for interactive and one-shot sessions, releases on exit or SSH failure, skips the pre-resolve lock check while acquiring, and keeps the foreign-lock pre-check when `LAGER_AUTO_LOCK_DISABLE` is set |
 | `test_cmd_box_misc.py` | `lager instruments` (render, empty, unparseable, unreachable, two devices on one address listed once as a note), the hidden `authorize` alias delegating to `ssh-setup` with the same box, `lager terminal` with and without its dependencies, the PyPI check behind `box-config pip add`, and the uncalled `debug/service_helper.py` tunnel cache and `debug/tunnel.py` port handling |
 | `test_cmd_bus_surface.py` | `lager i2c` / `lager spi` payloads: frequency suffixes, the default 7-bit scan range, address and hex parsing (split, separated, out-of-range, garbled), SPI word-size splitting and range refusal, per-call overrides, and a box error as a non-zero exit |
@@ -811,6 +812,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
 | `test_usb_cycle_command.py` | `lager usb <net> cycle|recover` wiring: off-time reaches the box, no client-side default that could drift from the box's, and the client budget outlasts the longest legal cycle. Also that a cycle whose device did not come back exits 1, read from an old box's `reconnected: false` too |
 | `test_user_facing_messages.py` | Messages that stated something untrue: `lager debug gdbserver`/`disconnect` name the GDB server of the net's backend, the `lager nets state` old-box note names 0.34.0, and the host-networking warning links a docs page and heading that exist |
+| `test_value_without_net.py` | `lager dac 3.3` and `lager gpo high` with a default net set: a lone value is the value, not a net name, unless a net of that role has that name |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
