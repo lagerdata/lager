@@ -342,6 +342,23 @@ class TestCaptureJobs:
         assert "The 3 packets recorded" in info["error"]
         assert info["file_saved"] is True and info["result"] is None
 
+    def test_a_device_lost_before_start_job_looks_still_returns_the_job(
+            self, locks, tmp_path, monkeypatch):
+        # Force the order that used to raise: the capture records and fails
+        # before start_job reads the state. _started does not wake start_job
+        # here, so start_job only looks once the capture thread has failed.
+        def started_without_waking(job, ctx):
+            job._ctx = ctx
+            job.state = "running"
+        monkeypatch.setattr(capture_jobs.CaptureJob, "_started", started_without_waking)
+        drv = StubDriver(records=3, lose=True)
+        job = capture_jobs.start_job("s", drv, CaptureOptions(duration=5), tmp_path / "j.pcap")
+        assert job._done.is_set()
+        info = job.to_dict()
+        assert info["state"] == "failed" and info["error_kind"] == "backend"
+        assert "The 3 packets recorded" in info["error"]
+        assert capture_jobs.get_job(job.id) is job
+
     def test_finished_jobs_are_trimmed(self, locks, tmp_path, monkeypatch):
         monkeypatch.setattr(capture_jobs, "_KEEP_JOBS", 2)
         drv = StubDriver(records=0)
