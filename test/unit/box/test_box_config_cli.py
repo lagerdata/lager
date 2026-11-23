@@ -2377,7 +2377,7 @@ class SwitchToHostOnlyThroughApply(unittest.TestCase):
         return run.call_args.args[1]
 
     def test_the_confirmed_bounce_sets_the_variable_the_renderer_reads(self):
-        self.assertIn("LAGER_APPLY_NETWORK_SWITCH=1 ./start_box.sh",
+        self.assertIn("LAGER_APPLY_NETWORK_SWITCH=1 bash ./start_box.sh",
                       self._ssh_command(confirm_network_switch=True))
 
     def test_every_other_bounce_leaves_it_unset(self):
