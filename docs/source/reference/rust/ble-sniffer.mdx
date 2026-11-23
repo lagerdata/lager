@@ -1,0 +1,209 @@
+---
+title: BLE Sniffer
+description: Capture Bluetooth LE radio traffic to pcap from Rust
+---
+
+Capture Bluetooth LE radio traffic with a BLE sniffer net. The sniffer is an nRF52840 Dongle that runs Nordic's nRF Sniffer for Bluetooth LE firmware. A BLE sniffer net requires box software 0.65.0 or later and lager-net 0.14 or later.
+
+A capture runs as a job on the Lager Box, because it holds the sniffer for its full duration. `capture()` starts the job, waits for it, downloads the pcap and deletes the box copy. The other methods do one of those steps each.
+
+## Handle
+
+```rust
+use lager::{LagerBox, SnifferOptions};
+
+let lager = LagerBox::from_env()?;
+let sniffer = lager.ble_sniffer("sniffer1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `capture()` | Capture for a fixed time and return the pcap |
+| `start()` | Start a capture job and return when the sniffer records |
+| `job()` | Report a capture job by its ID |
+| `stop()` | Stop the running capture early |
+| `status()` | Report whether the sniffer is on USB and busy, with its latest job |
+| `download()` | Download a capture's pcap from the Lager Box |
+| `delete()` | Delete a capture's pcap from the Lager Box |
+
+`download()` and `capture()` do not need the `admin` feature.
+
+## Types
+
+### `SnifferOptions`
+
+```rust
+use lager::{AddressType, SnifferOptions};
+
+let opts = SnifferOptions::new(30.0)       // capture time in seconds, 1 to 86400
+    .follow("C0:FF:EE:00:12:34")           // follow this device and its connections
+    .address_type(AddressType::Random)     // the type of the follow address
+    .only_advertising()                    // record the device's advertising only
+    .coded()                               // scan and follow on the LE Coded PHY
+    .rssi_cut_off(-70)                     // drop advertising weaker than -70 dBm
+    .keep();                               // capture() keeps the box copy
+```
+
+| Builder method | Description |
+|---|---|
+| `new(duration)` | Capture everything the sniffer hears for `duration` seconds. `SnifferOptions::default()` is 10 seconds |
+| `follow(address)` | Follow the device with this address, `AA:BB:CC:DD:EE:FF`, and its connections |
+| `address_type(t)` | `AddressType::Public` or `AddressType::Random`. Without it, the box takes the type from the device's first advertisement |
+| `follow_by_name(name)` | Follow the first device whose legacy advertising carries exactly this name. It cannot be combined with `follow` or `coded` |
+| `only_advertising()` | With `follow` or `follow_by_name`, record the device's advertising packets only, not its connections |
+| `coded()` | Scan and follow on the LE Coded PHY |
+| `rssi_cut_off(dbm)` | Drop advertising packets weaker than this RSSI, -255 to -10 dBm |
+| `keep()` | Used by `capture()` only: keep the pcap on the Lager Box after the download |
+
+The fields are public to read. Build the value with `SnifferOptions::new()` and the builder methods. A struct literal does not compile, so a field added later does not break your code.
+
+### `SnifferJob`
+
+```rust
+pub struct SnifferJob {
+    pub id: String,                            // the ID for job()
+    pub net: String,
+    pub state: SnifferJobState,                // Starting, Running, Done, Failed
+    pub file: String,                          // pcap path on the Lager Box
+    pub duration: f64,                         // requested seconds
+    pub elapsed: f64,                          // seconds recorded
+    pub packets: u64,                          // packets recorded
+    pub result: Option<SnifferResult>,         // set when the job is Done
+    pub error: Option<String>,                 // why the job failed
+    pub error_kind: Option<SnifferErrorKind>,  // Busy, Invalid, Backend
+    pub file_saved: bool,                      // a failed job kept its packets
+}
+```
+
+`state.is_finished()` is true for `Done` and `Failed`. A state or an error kind that a newer box sends comes back as `Unknown`.
+
+### `SnifferResult`
+
+| Field | Description |
+|---|---|
+| `file` | Path of the pcap file on the Lager Box |
+| `bytes` | File size |
+| `packets` | Number of captured packets |
+| `duration` | Measured capture time in seconds |
+| `port` | The sniffer's serial port |
+| `stopped` | Whether `stop()` ended the capture early |
+| `firmware` | Firmware version the sniffer reported |
+| `followed` | Address a follow request was sent for, or `None` |
+| `follow_seen` | Whether anything from the followed device was captured; `None` without a follow |
+
+### `SnifferStatus`
+
+| Field | Description |
+|---|---|
+| `serial` | USB serial number of the dongle |
+| `port` | Its serial port, or `None` when it is not on USB |
+| `present` | Whether the dongle is on USB |
+| `busy` | Whether a capture holds it |
+| `job` | The latest capture job on this sniffer, or `None` |
+
+### `SnifferCapture`
+
+```rust
+pub struct SnifferCapture {
+    pub pcap: Vec<u8>,     // the pcap file
+    pub job: SnifferJob,   // the finished job
+    pub box_file: String,  // pcap path on the Lager Box
+    pub deleted: bool,     // whether the box copy was deleted
+}
+```
+
+`is_complete()` is true when the job state is `Done`.
+
+## Method Reference
+
+### `capture(options: &SnifferOptions) -> Result<SnifferCapture>`
+
+Start a capture job, poll it once a second, download the pcap, and delete the box copy unless `keep()` is set.
+
+```rust
+let cap = sniffer.capture(&SnifferOptions::new(10.0))?;
+std::fs::write("advertising.pcap", &cap.pcap)?;
+assert!(cap.job.packets > 0, "no Bluetooth LE packets captured");
+```
+
+**Returns:** a `SnifferCapture`. When the sniffer stops answering mid-capture, the call still returns the packets recorded before that. Then `is_complete()` is false, and `job.error` gives the reason.
+
+**Errors:**
+
+- `Error::Box` (HTTP 400): an option has the wrong type or is out of range, or two options conflict. The sniffer is not touched.
+- `Error::Box` (HTTP 409): another capture holds the sniffer.
+- `Error::Box` (HTTP 502): the sniffer is not on USB, or it did not start. A job that fails later with nothing recorded comes back as HTTP 500.
+- `Error::Timeout`: the job did not end within 30 s after its duration and a `stop()`.
+
+If the job does not end within 30 s after its duration, `capture()` sends `stop()` and waits 10 s more. When the delete fails, `deleted` is false and the call still succeeds. The box deletes an old capture after a day.
+
+### `start(options: &SnifferOptions) -> Result<SnifferJob>`
+
+Start a capture job. The call returns when the sniffer records, so a busy, missing or silent sniffer fails here. The crate allows 30 s for the start.
+
+### `job(job_id: &str) -> Result<SnifferJob>`
+
+Report the capture job with this ID. A job exists only in the box HTTP server's process. After a box restart, the call fails with `Error::Box` (HTTP 400).
+
+### `stop() -> Result<SnifferStop>`
+
+Stop the running capture early. The capture ends within a fraction of a second, and its pcap keeps the packets recorded until then. Poll `job()` for the result. `SnifferStop` has `stopped`, `file` and `job`. `stopped` is false when no capture that the box API started is in progress.
+
+### `status() -> Result<SnifferStatus>`
+
+Report whether the sniffer is on USB and busy, and its latest capture job. It does not open the sniffer.
+
+### `download(file: &str) -> Result<Vec<u8>>`
+
+Download a capture's pcap from the Lager Box. Give the path that `SnifferJob::file` or `SnifferResult::file` reports. A missing file fails with `Error::Box` (HTTP 404).
+
+### `delete(file: &str) -> Result<bool>`
+
+Delete a capture's pcap from the Lager Box. The return value is false when no file was at that path. A path outside the box's capture folder fails with `Error::Box` (HTTP 400).
+
+## Examples
+
+### Follow the DUT while it connects
+
+```rust
+use lager::{LagerBox, SnifferOptions};
+
+let lager = LagerBox::from_env()?;
+let sniffer = lager.ble_sniffer("sniffer1");
+
+let cap = sniffer.capture(&SnifferOptions::new(30.0).follow("C0:FF:EE:00:12:34"))?;
+let result = cap.job.result.as_ref().expect("a finished capture has a result");
+assert_eq!(result.follow_seen, Some(true), "nothing from the DUT was captured");
+std::fs::write("dut.pcap", &cap.pcap)?;
+```
+
+### Stop a capture when the test is done
+
+```rust
+use lager::{LagerBox, SnifferOptions};
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let sniffer = lager.ble_sniffer("sniffer1");
+
+let job = sniffer.start(&SnifferOptions::new(600.0))?;
+// ... drive the DUT ...
+sniffer.stop()?;
+let mut done = sniffer.job(&job.id)?;
+while !done.state.is_finished() {
+    std::thread::sleep(Duration::from_millis(200));
+    done = sniffer.job(&job.id)?;
+}
+let pcap = sniffer.download(&done.file)?;
+sniffer.delete(&done.file)?;
+```
+
+## Notes
+
+- The pcap link type is `NORDIC_BLE` (272). Wireshark and `tshark` decode it.
+- A Lager Box older than 0.65.0 cannot hold a `ble-sniffer` net, so a call fails with `Error::Box` (HTTP 404). A box that serves the role lists `ble-sniffer` in `status().capabilities.net_command_roles`.
+- See the [CLI reference](/source/reference/cli/ble-sniffer#setting-up-a-sniffer) to flash the dongle and add the net.
+- To capture from a script that runs on the Lager Box, see the [Python reference](/source/reference/python/ble-sniffer).

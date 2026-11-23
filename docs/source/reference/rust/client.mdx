@@ -21,13 +21,14 @@ defaults to `http` and the port to 9000.
 ### The builder
 
 ```rust
-use lager::LagerBox;
+use lager::{LagerBox, RetryPolicy};
 use std::time::Duration;
 
 let lager = LagerBox::builder("192.168.1.42")
     .timeout(Duration::from_secs(30))
     .debug_service_url("http://127.0.0.1:8765")
     .bearer_token("...")
+    .upstream_retry(RetryPolicy::default())
     .build()?;
 ```
 
@@ -36,11 +37,30 @@ let lager = LagerBox::builder("192.168.1.42")
 | `timeout()` | Default HTTP budget for quick commands; 10 s unless changed |
 | `debug_service_url()` | Override the debug service base; defaults to the box on port 8765 |
 | `bearer_token()` | Pin a gateway token instead of resolving one |
+| `upstream_retry()` | How long to wait out a restart of the box service behind a gateway; see below |
 | `build()` | Construct the client |
 
 `timeout()` sets the budget for **quick** commands only. Long-running actions compute
 their own wider budgets regardless — a `wait_for_level` of 60 seconds is not cut short
 by a 10-second default.
+
+### Box service restarts
+
+On a gated box, the gateway answers HTTP 502 with `X-Gateway-Error:
+upstream_unavailable` while the Lager service behind it restarts. A restart takes about
+4 seconds. From lager-net 0.14, the client sends a request again during that time
+when the request is safe to repeat.
+
+| `RetryPolicy` field | Default | Meaning |
+|---|---|---|
+| `budget` | 9 s | No attempt starts after this time from the first attempt |
+| `backoff_step` | 1 s | Retry number n waits n times this step |
+
+`RetryPolicy::disabled()` turns the retry off. `lager::is_retry_safe(&request)` tells
+which requests are safe to repeat: GET requests, reads, absolute setpoints, and USB port
+enable, disable and state. Toggles, moves, bus transfers, flashes and raw-body calls are
+sent once. A request that is not retried, or that is still refused after the budget,
+fails with `Error::BoxServiceUnavailable`. The async builder has the same method.
 
 ### Environment variables
 

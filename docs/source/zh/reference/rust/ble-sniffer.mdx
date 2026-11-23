@@ -1,0 +1,209 @@
+---
+title: BLE Sniffer
+description: 用 Rust 抓取低功耗蓝牙空口流量并保存为 pcap
+---
+
+用 BLE 嗅探器 Net 抓取低功耗蓝牙空口流量。嗅探器是一个运行 Nordic nRF Sniffer for Bluetooth LE 固件的 nRF52840 Dongle。BLE 嗅探器 Net 需要 Box 软件 0.65.0 或更高版本，以及 lager-net 0.14 或更高版本。
+
+抓包在 Lager Box 上作为一个作业运行，因为它在整个时长内占用嗅探器。`capture()` 启动作业、等待它结束、下载 pcap，并删除 Box 上的副本。其余方法各完成其中一步。
+
+## 句柄
+
+```rust
+use lager::{LagerBox, SnifferOptions};
+
+let lager = LagerBox::from_env()?;
+let sniffer = lager.ble_sniffer("sniffer1");
+```
+
+## 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `name()` | 该句柄所指向的 Net 名称 |
+| `capture()` | 抓包固定时长并返回 pcap |
+| `start()` | 启动一个抓包作业，在嗅探器开始记录时返回 |
+| `job()` | 按 ID 报告一个抓包作业 |
+| `stop()` | 提前停止正在进行的抓包 |
+| `status()` | 报告嗅探器是否在 USB 上、是否忙碌，以及它最近的作业 |
+| `download()` | 从 Lager Box 下载一次抓包的 pcap |
+| `delete()` | 从 Lager Box 删除一次抓包的 pcap |
+
+`download()` 和 `capture()` 不需要 `admin` 特性。
+
+## 类型
+
+### `SnifferOptions`
+
+```rust
+use lager::{AddressType, SnifferOptions};
+
+let opts = SnifferOptions::new(30.0)       // capture time in seconds, 1 to 86400
+    .follow("C0:FF:EE:00:12:34")           // follow this device and its connections
+    .address_type(AddressType::Random)     // the type of the follow address
+    .only_advertising()                    // record the device's advertising only
+    .coded()                               // scan and follow on the LE Coded PHY
+    .rssi_cut_off(-70)                     // drop advertising weaker than -70 dBm
+    .keep();                               // capture() keeps the box copy
+```
+
+| 构建方法 | 说明 |
+|---|---|
+| `new(duration)` | 抓取嗅探器在 `duration` 秒内听到的全部流量。`SnifferOptions::default()` 为 10 秒 |
+| `follow(address)` | 跟踪地址为 `AA:BB:CC:DD:EE:FF` 的设备及其连接 |
+| `address_type(t)` | `AddressType::Public` 或 `AddressType::Random`。不设置时，Box 从设备的第一个广播中取得类型 |
+| `follow_by_name(name)` | 跟踪第一个在传统广播中携带完全相同名称的设备。它不能与 `follow` 或 `coded` 同时使用 |
+| `only_advertising()` | 与 `follow` 或 `follow_by_name` 一起使用时，只记录该设备的广播包，不记录其连接 |
+| `coded()` | 在 LE Coded PHY 上扫描和跟踪 |
+| `rssi_cut_off(dbm)` | 丢弃 RSSI 低于该值的广播包，范围为 -255 至 -10 dBm |
+| `keep()` | 仅供 `capture()` 使用：下载后在 Lager Box 上保留 pcap |
+
+各字段可公开读取。请用 `SnifferOptions::new()` 和构建方法创建该值。结构体字面量无法编译，因此以后新增的字段不会破坏您的代码。
+
+### `SnifferJob`
+
+```rust
+pub struct SnifferJob {
+    pub id: String,                            // the ID for job()
+    pub net: String,
+    pub state: SnifferJobState,                // Starting, Running, Done, Failed
+    pub file: String,                          // pcap path on the Lager Box
+    pub duration: f64,                         // requested seconds
+    pub elapsed: f64,                          // seconds recorded
+    pub packets: u64,                          // packets recorded
+    pub result: Option<SnifferResult>,         // set when the job is Done
+    pub error: Option<String>,                 // why the job failed
+    pub error_kind: Option<SnifferErrorKind>,  // Busy, Invalid, Backend
+    pub file_saved: bool,                      // a failed job kept its packets
+}
+```
+
+对于 `Done` 和 `Failed`，`state.is_finished()` 为 true。较新的 Box 发送的未知状态或错误类型会以 `Unknown` 返回。
+
+### `SnifferResult`
+
+| 字段 | 说明 |
+|---|---|
+| `file` | pcap 文件在 Lager Box 上的路径 |
+| `bytes` | 文件大小 |
+| `packets` | 抓到的包数 |
+| `duration` | 实测的抓包时间（秒） |
+| `port` | 嗅探器的串口 |
+| `stopped` | 是否由 `stop()` 提前结束了抓包 |
+| `firmware` | 嗅探器报告的固件版本 |
+| `followed` | 发送了跟踪请求的地址，或 `None` |
+| `follow_seen` | 是否抓到了被跟踪设备的任何流量；未跟踪时为 `None` |
+
+### `SnifferStatus`
+
+| 字段 | 说明 |
+|---|---|
+| `serial` | Dongle 的 USB 序列号 |
+| `port` | 它的串口；不在 USB 上时为 `None` |
+| `present` | Dongle 是否在 USB 上 |
+| `busy` | 是否有抓包占用它 |
+| `job` | 该嗅探器最近的抓包作业，或 `None` |
+
+### `SnifferCapture`
+
+```rust
+pub struct SnifferCapture {
+    pub pcap: Vec<u8>,     // the pcap file
+    pub job: SnifferJob,   // the finished job
+    pub box_file: String,  // pcap path on the Lager Box
+    pub deleted: bool,     // whether the box copy was deleted
+}
+```
+
+作业状态为 `Done` 时，`is_complete()` 为 true。
+
+## 方法参考
+
+### `capture(options: &SnifferOptions) -> Result<SnifferCapture>`
+
+启动一个抓包作业，每秒查询一次，下载 pcap，并在未设置 `keep()` 时删除 Box 上的副本。
+
+```rust
+let cap = sniffer.capture(&SnifferOptions::new(10.0))?;
+std::fs::write("advertising.pcap", &cap.pcap)?;
+assert!(cap.job.packets > 0, "no Bluetooth LE packets captured");
+```
+
+**返回：** 一个 `SnifferCapture`。嗅探器在抓包中途停止应答时，调用仍会返回此前记录的包。此时 `is_complete()` 为 false，`job.error` 给出原因。
+
+**错误：**
+
+- `Error::Box`（HTTP 400）：某个选项类型错误或超出范围，或两个选项冲突。此时不会访问嗅探器。
+- `Error::Box`（HTTP 409）：另一次抓包占用着嗅探器。
+- `Error::Box`（HTTP 502）：嗅探器不在 USB 上，或没有启动。作业在之后失败且没有记录任何包时，以 HTTP 500 返回。
+- `Error::Timeout`：作业在其时长之后 30 秒内、并且在 `stop()` 之后仍未结束。
+
+如果作业在其时长之后 30 秒内没有结束，`capture()` 会发送 `stop()` 并再等待 10 秒。删除失败时，`deleted` 为 false，调用仍然成功。Box 会在一天后删除旧的抓包。
+
+### `start(options: &SnifferOptions) -> Result<SnifferJob>`
+
+启动一个抓包作业。调用在嗅探器开始记录时返回，因此忙碌、缺失或无应答的嗅探器会在这里失败。crate 为启动预留 30 秒。
+
+### `job(job_id: &str) -> Result<SnifferJob>`
+
+报告具有该 ID 的抓包作业。作业只存在于 Box HTTP 服务器的进程中。Box 重启之后，调用会以 `Error::Box`（HTTP 400）失败。
+
+### `stop() -> Result<SnifferStop>`
+
+提前停止正在进行的抓包。抓包在不到一秒内结束，其 pcap 保留此前记录的包。请查询 `job()` 获取结果。`SnifferStop` 包含 `stopped`、`file` 和 `job`。没有由 Box API 启动的抓包在进行时，`stopped` 为 false。
+
+### `status() -> Result<SnifferStatus>`
+
+报告嗅探器是否在 USB 上、是否忙碌，以及它最近的抓包作业。它不会打开嗅探器。
+
+### `download(file: &str) -> Result<Vec<u8>>`
+
+从 Lager Box 下载一次抓包的 pcap。请传入 `SnifferJob::file` 或 `SnifferResult::file` 报告的路径。文件不存在时，调用会以 `Error::Box`（HTTP 404）失败。
+
+### `delete(file: &str) -> Result<bool>`
+
+从 Lager Box 删除一次抓包的 pcap。该路径上没有文件时，返回值为 false。路径不在 Box 的抓包目录中时，调用会以 `Error::Box`（HTTP 400）失败。
+
+## 示例
+
+### 在 DUT 连接时跟踪它
+
+```rust
+use lager::{LagerBox, SnifferOptions};
+
+let lager = LagerBox::from_env()?;
+let sniffer = lager.ble_sniffer("sniffer1");
+
+let cap = sniffer.capture(&SnifferOptions::new(30.0).follow("C0:FF:EE:00:12:34"))?;
+let result = cap.job.result.as_ref().expect("a finished capture has a result");
+assert_eq!(result.follow_seen, Some(true), "nothing from the DUT was captured");
+std::fs::write("dut.pcap", &cap.pcap)?;
+```
+
+### 测试结束时停止抓包
+
+```rust
+use lager::{LagerBox, SnifferOptions};
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let sniffer = lager.ble_sniffer("sniffer1");
+
+let job = sniffer.start(&SnifferOptions::new(600.0))?;
+// ... drive the DUT ...
+sniffer.stop()?;
+let mut done = sniffer.job(&job.id)?;
+while !done.state.is_finished() {
+    std::thread::sleep(Duration::from_millis(200));
+    done = sniffer.job(&job.id)?;
+}
+let pcap = sniffer.download(&done.file)?;
+sniffer.delete(&done.file)?;
+```
+
+## 说明
+
+- pcap 的链路类型是 `NORDIC_BLE`（272）。Wireshark 和 `tshark` 都能解码。
+- 0.65.0 之前的 Lager Box 无法保存 `ble-sniffer` Net，因此调用会以 `Error::Box`（HTTP 404）失败。提供该角色的 Box 会在 `status().capabilities.net_command_roles` 中列出 `ble-sniffer`。
+- 刷写 Dongle 和添加 Net 的方法参见 [CLI 参考](/source/zh/reference/cli/ble-sniffer#设置嗅探器)。
+- 要从在 Lager Box 上运行的脚本中抓包，请参见 [Python 参考](/source/zh/reference/python/ble-sniffer)。

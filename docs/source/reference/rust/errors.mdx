@@ -31,6 +31,7 @@ variants will not break your build.
 | `Config(String)` | A client-side configuration problem |
 | `Stream(String)` | A streaming session (UART or RTT) failed |
 | `UartInUse { message, held_by }` | Another session holds the UART net or its serial device |
+| `BoxServiceUnavailable { box_host, upstream, attempts, elapsed, retry_safe, cause }` | The gateway is up, but the Lager service behind it does not answer |
 
 ## Variant Reference
 
@@ -53,6 +54,11 @@ The HTTP deadline covers the whole response, including the body. If a box sends 
 headers and then stalls on a JSON body past the deadline, the result is also
 `Error::Timeout`. Before lager-net 0.12, the blocking client reported that case as
 `Error::Decode`.
+
+A raw download, such as `admin().download_file_with_timeout()` or
+`BleSniffer::download()`, works the same way. Before lager-net 0.14, the blocking client
+reported a stalled download as `Error::Connection`. A download that the box cuts short
+by closing the connection is still `Error::Connection`.
 
 ```text
 request to the Lager box timed out: {msg}
@@ -229,6 +235,25 @@ A UART session cannot start when another session holds the net or its serial dev
 To end a session that you no longer need, pass `held_by` to
 `lager.release_uart_session()` and open again. `held_by` names the net to release (box
 0.49.0 or later). When two nets share one device, that is the other net.
+
+### `BoxServiceUnavailable { box_host, upstream, attempts, elapsed, retry_safe, cause }`
+
+The gateway of a gated box is up, but the Lager service behind it does not answer. The
+gateway sends HTTP 502 with `X-Gateway-Error: upstream_unavailable`. This happens for
+about 4 seconds while the service restarts. Added in lager-net 0.14.
+
+The client sends a safe-to-repeat request again until the
+[`RetryPolicy`](/source/reference/rust/client#box-service-restarts) budget is spent.
+`attempts` and `elapsed` say how long it tried. `retry_safe` is false for a request that
+was sent only once. `upstream` names the service the gateway did not reach, such as
+`lager:9000`, when the gateway gives it. `source()` returns the gateway's own response
+as an `Error::Box` with status 502.
+
+```text
+the Lager service on box {box_host} ({upstream}) is not answering; it may be restarting
+(gave up after {attempts} attempts over {elapsed}s). If this persists, check the box
+or run `lager update`
+```
 
 ## Matching
 

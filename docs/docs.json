@@ -258,6 +258,7 @@
                   "source/reference/rust/usb",
                   "source/reference/rust/uart",
                   "source/reference/rust/ble",
+                  "source/reference/rust/ble-sniffer",
                   "source/reference/rust/wifi",
                   "source/reference/rust/blufi",
                   "source/reference/rust/router"
@@ -781,6 +782,7 @@
                   "source/zh/reference/rust/usb",
                   "source/zh/reference/rust/uart",
                   "source/zh/reference/rust/ble",
+                  "source/zh/reference/rust/ble-sniffer",
                   "source/zh/reference/rust/wifi",
                   "source/zh/reference/rust/blufi",
                   "source/zh/reference/rust/router"
