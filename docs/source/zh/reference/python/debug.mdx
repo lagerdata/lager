@@ -107,7 +107,7 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 dbg.disconnect()
 ```
 
-**返回：** 在 J-Link 探针上返回 `dict` - 状态字典。在 OpenOCD 探针上返回 `None`（[#850](https://github.com/lagerdata/lager/issues/850)）。
+**返回：** `dict` - 状态字典，GDB 服务器停止后为 `{'stop': 'ok'}`。J-Link 和 OpenOCD 探针上相同。
 
 ### `reset(halt=False)`
 

@@ -65,11 +65,29 @@ class InterfaceConfigDispatchTests(unittest.TestCase):
         cfg = openocd.interface_config_for_address(self._addr('0403', '6015'))
         self.assertIsNone(cfg)
 
-    def test_olimex_vid_unchanged(self):
-        # Olimex publishes its own VID for the ARM-USB-OCD-H even though
-        # the underlying chip is an FT2232H.
-        cfg = openocd.interface_config_for_address(self._addr('15ba', '002a'))
+    # ---- Olimex (own VID 0x15ba, one stock cfg per model) --------------------
+    # The PIDs are the ``ftdi vid_pid`` lines in OpenOCD 0.12's cfgs. 0x002a
+    # is the ARM-USB-TINY-H, not the OCD-H this test used to expect (#850).
+
+    def test_olimex_arm_usb_ocd_h(self):
+        cfg = openocd.interface_config_for_address(self._addr('15ba', '002b'))
         self.assertEqual(cfg, 'interface/ftdi/olimex-arm-usb-ocd-h.cfg')
+
+    def test_olimex_arm_usb_tiny_h(self):
+        cfg = openocd.interface_config_for_address(self._addr('15ba', '002a'))
+        self.assertEqual(cfg, 'interface/ftdi/olimex-arm-usb-tiny-h.cfg')
+
+    def test_olimex_arm_usb_ocd(self):
+        cfg = openocd.interface_config_for_address(self._addr('15ba', '0003'))
+        self.assertEqual(cfg, 'interface/ftdi/olimex-arm-usb-ocd.cfg')
+
+    def test_olimex_arm_usb_tiny(self):
+        cfg = openocd.interface_config_for_address(self._addr('15ba', '0004'))
+        self.assertEqual(cfg, 'interface/ftdi/olimex-jtag-tiny.cfg')
+
+    def test_unknown_olimex_pid_returns_none(self):
+        cfg = openocd.interface_config_for_address(self._addr('15ba', '0031'))
+        self.assertIsNone(cfg)
 
     # ---- Non-FTDI families (no PID dispatch, but PID change must not break) -
 
@@ -101,6 +119,88 @@ class InterfaceConfigDispatchTests(unittest.TestCase):
         self.assertIsNone(openocd.interface_config_for_address(''))
         self.assertIsNone(openocd.interface_config_for_address(None))
         self.assertIsNone(openocd.interface_config_for_address('not-a-visa-address'))
+
+
+# Every target cfg in OpenOCD 0.12.0's tcl/target/ that _TARGET_PREFIX_MAP may
+# name (the box image installs Debian bookworm's openocd, 0.12.0). Checked
+# against the v0.12.0 tag; a cfg added to the map must be added here only
+# after confirming it ships in that release.
+_OPENOCD_012_TARGETS = {
+    'target/stm32f0x.cfg', 'target/stm32f1x.cfg', 'target/stm32f2x.cfg',
+    'target/stm32f3x.cfg', 'target/stm32f4x.cfg', 'target/stm32f7x.cfg',
+    'target/stm32h7x.cfg', 'target/stm32g0x.cfg', 'target/stm32g4x.cfg',
+    'target/stm32l0.cfg', 'target/stm32l1.cfg', 'target/stm32l4x.cfg',
+    'target/stm32l5x.cfg', 'target/stm32u5x.cfg', 'target/stm32wbx.cfg',
+    'target/stm32wlx.cfg', 'target/nrf51.cfg', 'target/nrf52.cfg',
+    'target/rp2040.cfg', 'target/at91samdXX.cfg', 'target/atsame5x.cfg',
+    'target/lpc1xxx.cfg', 'target/esp32.cfg', 'target/esp32s2.cfg',
+    'target/esp32s3.cfg',
+}
+
+
+class OlimexDiscoveryTests(unittest.TestCase):
+    """#850: an Olimex probe the debug layer can drive must also be listed by
+    the box scanner and opened by udev, with the same PIDs in all three."""
+
+    BOX = os.path.normpath(os.path.join(HERE, '..', '..', '..', 'box'))
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            'usb_scanner_olimex_test',
+            os.path.join(cls.BOX, 'lager', 'http_handlers', 'usb_scanner.py'))
+        cls.scanner = importlib.util.module_from_spec(spec)
+        sys.modules['usb_scanner_olimex_test'] = cls.scanner
+        spec.loader.exec_module(cls.scanner)
+        with open(os.path.join(cls.BOX, 'udev_rules', '99-instrument.rules'),
+                  encoding='utf-8') as f:
+            cls.rules = f.read()
+
+    def test_every_olimex_pid_is_scanned_as_a_debug_probe(self):
+        scanned = {e['pid']: name for name, e in self.scanner.SUPPORTED_USB.items()
+                   if e['vid'] == '15ba'}
+        self.assertEqual(set(scanned), set(openocd._OLIMEX_PID_TO_CFG))
+        for pid, name in scanned.items():
+            self.assertIn('debug', self.scanner.SUPPORTED_USB[name]['net_type'])
+            self.assertEqual(self.scanner.CHANNEL_MAPS[name],
+                             {'debug': ['DEVICE_TYPE']}, name)
+
+    def test_every_olimex_pid_has_a_udev_rule(self):
+        for pid in openocd._OLIMEX_PID_TO_CFG:
+            self.assertIn(
+                f'ATTRS{{idVendor}}=="15ba", ATTRS{{idProduct}}=="{pid}", '
+                f'MODE="0660", GROUP="lager"', self.rules, pid)
+
+
+class TargetConfigDispatchTests(unittest.TestCase):
+    """#850: only name target cfgs the box's OpenOCD actually ships."""
+
+    def test_every_mapped_cfg_ships_in_openocd_012(self):
+        for prefix, cfg in openocd._TARGET_PREFIX_MAP:
+            if cfg is not None:
+                self.assertIn(cfg, _OPENOCD_012_TARGETS, prefix)
+
+    def test_imxrt_parts_have_no_builtin_cfg(self):
+        # Every MIMXRT part used to get imxrt500.cfg, which 0.12 does not
+        # ship and which is the wrong part for an RT10xx/RT11xx anyway.
+        for dev in ('MIMXRT1062', 'MIMXRT1176', 'MIMXRT595S'):
+            self.assertIsNone(openocd.target_config_for_device(dev), dev)
+
+    def test_esp32_c_series_does_not_fall_through_to_esp32(self):
+        for dev in ('ESP32C3', 'ESP32C6', 'ESP32H2'):
+            self.assertIsNone(openocd.target_config_for_device(dev), dev)
+        self.assertEqual(openocd.target_config_for_device('ESP32'),
+                         'target/esp32.cfg')
+        self.assertEqual(openocd.target_config_for_device('ESP32S3'),
+                         'target/esp32s3.cfg')
+
+    def test_known_families_still_map(self):
+        self.assertEqual(openocd.target_config_for_device('STM32F407VG'),
+                         'target/stm32f4x.cfg')
+        self.assertEqual(openocd.target_config_for_device('nRF52840_xxAA'),
+                         'target/nrf52.cfg')
+        self.assertEqual(openocd.target_config_for_device('RP2040_M0_0'),
+                         'target/rp2040.cfg')
 
 
 class BuildOpenOcdCommandTests(unittest.TestCase):
@@ -158,6 +258,29 @@ class BuildOpenOcdCommandTests(unittest.TestCase):
             )
         msg = str(ctx.exception)
         self.assertIn('openocd_config', msg)
+
+    def test_imxrt_without_user_cfg_asks_for_one(self):
+        # Known probe, device family with no 0.12 cfg: refuse with the fix
+        # instead of handing OpenOCD a cfg it cannot find.
+        with self.assertRaises(FileNotFoundError) as ctx:
+            self._build(
+                address='USB0::0x0483::0x374e::SOMESN::INSTR',
+                device='MIMXRT1062',
+                user_config_path=None,
+            )
+        msg = str(ctx.exception)
+        self.assertIn('MIMXRT1062', msg)
+        self.assertIn('set-script', msg)
+
+    def test_imxrt_with_user_cfg_loads_no_builtin_target(self):
+        user_cfg = os.path.abspath(__file__)
+        cmd = self._build(
+            address='USB0::0x0483::0x374e::SOMESN::INSTR',
+            device='MIMXRT1062',
+            user_config_path=user_cfg,
+        )
+        self.assertIn(user_cfg, cmd)
+        self.assertFalse(any(a.startswith('target/') for a in cmd))
 
     def test_unknown_vid_with_user_cfg_succeeds(self):
         # Unknown VID is fine as long as the user supplies their own cfg —

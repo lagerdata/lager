@@ -631,3 +631,46 @@ class TestHazardousCommands(unittest.TestCase):
             if '"M889' in inspect.getsource(fn)
         ]
         self.assertEqual(senders, ["save_position"])
+
+
+class TestArmLookup(unittest.TestCase):
+    """#851: a missing arm raises the documented DeviceNotFoundError."""
+
+    def _ports(self, *ports):
+        return mock.patch.object(rotrics.list_ports, "comports", return_value=list(ports))
+
+    @staticmethod
+    def _port(device, serial_number, vid=0x0483, pid=0x5740):
+        return mock.Mock(device=device, serial_number=serial_number, vid=vid, pid=pid)
+
+    def test_no_arm_raises_device_not_found(self):
+        from lager.automation.arm import DeviceNotFoundError
+        with self._ports(self._port("/dev/ttyUSB0", "X", vid=0x0403, pid=0x6001)):
+            with self.assertRaises(DeviceNotFoundError):
+                rotrics.get_arm_device()
+
+    def test_unknown_serial_raises_device_not_found_with_the_serial(self):
+        from lager.automation.arm import DeviceNotFoundError
+        with self._ports(self._port("/dev/ttyACM0", "AAAA")):
+            with self.assertRaises(DeviceNotFoundError) as ctx:
+                rotrics.get_arm_device("BBBB")
+        self.assertEqual(ctx.exception.serial_number, "BBBB")
+        self.assertIn("BBBB", str(ctx.exception))
+
+    def test_still_a_runtime_error_and_an_arm_error(self):
+        # Callers that caught RuntimeError before keep working.
+        with self._ports():
+            with self.assertRaises(RuntimeError):
+                rotrics.get_arm_device()
+        with self._ports():
+            with self.assertRaises(ArmBackendError):
+                rotrics.get_arm_device()
+
+    def test_package_exports_the_same_class(self):
+        import lager.automation
+        from lager.automation.arm import DeviceNotFoundError
+        self.assertIs(lager.automation.DeviceNotFoundError, DeviceNotFoundError)
+
+    def test_one_arm_is_found(self):
+        with self._ports(self._port("/dev/ttyACM0", "AAAA")):
+            self.assertEqual(rotrics.get_arm_device(), "/dev/ttyACM0")

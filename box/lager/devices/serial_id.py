@@ -19,11 +19,11 @@ carries one, else by USB topology (port) path**. The port-path form pins the
 net to a physical box port — moving the cable breaks it — which is the intended
 trade-off for serial-less adapters.
 
-NOTE: the box already has three other sysfs tty walks (``usb_scanner._walk_ttys``,
-its ``query_instruments`` mirror, and ``uart_bridge._find_device_by_serial``).
+NOTE: the box already has two other sysfs tty walks (``usb_scanner._walk_ttys``
+and ``uart_bridge._find_device_by_serial``).
 Those resolve *all* interfaces of multi-channel chips for the scanner/UART
 paths; this is a deliberately small single-cable resolver for the custom-device
-framework. A future cleanup could unify all four behind one helper.
+framework. A future cleanup could unify all three behind one helper.
 
 The UART net path additionally uses the interface-aware pair below
 (``identity_for_tty`` / ``resolve_identity``): a snapshot taken from a live tty

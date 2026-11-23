@@ -442,8 +442,9 @@ except RuntimeError as e:
 | `NotHomedError` | `lager.automation.arm.arm_net` | The arm is not homed after power-on. |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | Arm didn't reach target position in time |
 | `SettingNotAppliedError` | `lager.automation.arm.arm_net` | The arm reports a different setting from the value written (`set_acceleration`). |
+| `DeviceNotFoundError` | `lager.automation.arm` | No arm is connected, no arm has the given serial number, or the arm cannot be opened. It is also a `RuntimeError`. It is the arm's own class: `lager.DeviceNotFoundError` does not catch it. |
 | `ArmBackendError` | `lager.automation.arm` | Base class of every arm exception above. Catch it to handle any arm error. |
-| `RuntimeError` | builtin | Arm device not found or cannot be opened. `DeviceNotFoundError` is not raised for this ([#851](https://github.com/lagerdata/lager/issues/851)) |
+| `RuntimeError` | builtin | More than one arm is connected and no serial number was given |
 
 ## Notes
 

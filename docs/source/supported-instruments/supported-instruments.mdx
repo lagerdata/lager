@@ -295,6 +295,7 @@ scripts and CI pipelines.
 | FTDI | FT232H (e.g. C232HM cable, Adafruit FT232H breakout) | `lager debug` |
 | FTDI | FT2232H (generic FTDI JTAG cables) | `lager debug` |
 | FTDI | FT4232H (requires custom `openocd_config`) | `lager debug` |
+| Olimex | ARM-USB-OCD-H, ARM-USB-TINY-H, ARM-USB-OCD, ARM-USB-TINY | `lager debug` |
 | Any vendor | CMSIS-DAP compatible (Atmel EDBG, NXP DAPLink, etc.) | `lager debug` |
 
 **Capabilities:**
@@ -321,10 +322,12 @@ scripts and CI pipelines.
   `lager nets add --interface`. See the
   [nets reference](../reference/cli/nets) for the channel-suffix
   syntax.
-- Lager selects the target chip configuration from the device name for
-  the STM32, nRF5x, RP2040/RP2350, ATSAM, LPC, i.MX RT500, and ESP32
-  families. A custom OpenOCD target config drives anything else, including
-  the i.MX RT10xx and RT11xx ([#850](https://github.com/lagerdata/lager/issues/850)).
+- On an OpenOCD probe, Lager selects the target chip configuration from
+  the device name. These families have one: STM32 (except STM32C0), nRF51,
+  nRF52, RP2040, ATSAMD21/D51/E54, LPC1xxx, ESP32, ESP32-S2 and ESP32-S3. The
+  OpenOCD on the box (0.12) has no configuration for the others, including
+  every i.MX RT, nRF53, nRF91, RP2350, LPC55 and ESP32-C3. Attach one with
+  `lager nets set-script <net> <file.cfg>`, or use a J-Link probe.
 - A SEGGER probe with a USB product ID not in the table is still detected,
   as `J-Link`.
 

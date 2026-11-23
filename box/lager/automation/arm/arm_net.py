@@ -55,9 +55,19 @@ class LibraryMissingError(ArmBackendError):
     """Raised when a required library (e.g., VISA library) is missing."""
     pass
 
-class DeviceNotFoundError(ArmBackendError):
-    """Raised when the specified arm device cannot be found or opened."""
-    pass
+class DeviceNotFoundError(ArmBackendError, RuntimeError):
+    """Raised when the specified arm device cannot be found or opened.
+
+    Also a ``RuntimeError``, which is what the lookup raised before this class
+    was used, so existing ``except RuntimeError`` handlers still catch it.
+    This is the arm's own class: ``lager.DeviceNotFoundError`` is the USB hub
+    one, and does not catch it.
+    """
+
+    def __init__(self, message: str = "Arm not found", *,
+                 serial_number: Optional[str] = None):
+        super().__init__(message)
+        self.serial_number = serial_number
 
 class OutOfBoundsError(ArmBackendError, ValueError):
     """Raised when a move target is outside the arm's workspace bounds."""

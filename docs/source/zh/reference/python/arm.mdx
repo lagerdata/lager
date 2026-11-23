@@ -441,8 +441,9 @@ except RuntimeError as e:
 | `NotHomedError` | `lager.automation.arm.arm_net` | 机械臂上电后尚未归位。 |
 | `MovementTimeoutError` | `lager.automation.arm.arm_net` | 机械臂未能及时到达目标位置 |
 | `SettingNotAppliedError` | `lager.automation.arm.arm_net` | 机械臂报告的设置与写入的值不同（`set_acceleration`）。 |
+| `DeviceNotFoundError` | `lager.automation.arm` | 没有连接机械臂、没有机械臂具有给定的序列号，或无法打开机械臂。它同时也是 `RuntimeError`。它是机械臂自己的类：`lager.DeviceNotFoundError` 捕获不到它。 |
 | `ArmBackendError` | `lager.automation.arm` | 上述所有机械臂异常的基类。捕获它即可处理任何机械臂错误。 |
-| `RuntimeError` | 内置 | 找不到机械臂设备，或无法打开它。此时不会引发 `DeviceNotFoundError`（[#851](https://github.com/lagerdata/lager/issues/851)） |
+| `RuntimeError` | 内置 | 连接了多个机械臂且未给出序列号 |
 
 ## 说明
 

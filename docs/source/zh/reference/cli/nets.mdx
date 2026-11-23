@@ -98,7 +98,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 **选项：**
 - `--box TEXT` - Lager Box 名称或 IP
 - `--jlink-script FILE` - 调试 Net 的 J-Link 脚本文件（保存在 Box 上）
-- `--openocd-config FILE` - 调试 Net 的 OpenOCD `.cfg`/`.tcl` 文件（保存在 Box 上）
+- `--openocd-config FILE` - 调试 Net 的 OpenOCD `.cfg`/`.tcl` 文件（保存在 Box 上）。一个 Net 只保存 J-Link 脚本或 OpenOCD 配置之一，因此同时给出 `--jlink-script` 和 `--openocd-config` 会被拒绝
 - `--sda PIN` / `--scl PIN` - `i2c` Net 的自定义 LabJack 引脚
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - `spi` Net 的自定义 LabJack 引脚
 - `--interface A|B|C|D` - FT2232H 或 FT4232H 上 `gpio`、`i2c` 或 `spi` Net 的 FTDI 通道。默认是 `A`。请参阅下面的**多通道 FTDI 调试适配器**。

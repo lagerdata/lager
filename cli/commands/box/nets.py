@@ -563,6 +563,10 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "J-Link_OB": ["debug"],
     "J-Link_OB_2VCOM": ["debug"],
     # debug — OpenOCD-backed probes
+    "Olimex_ARM-USB-OCD-H": ["debug"],
+    "Olimex_ARM-USB-TINY-H": ["debug"],
+    "Olimex_ARM-USB-OCD": ["debug"],
+    "Olimex_ARM-USB-TINY": ["debug"],
     "STLink_v2": ["debug"],
     "STLink_v2_1": ["debug"],
     "STLink_v3_Mini": ["debug"],
@@ -1511,6 +1515,15 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     # validation or save: the saved role string must be the canonical one or
     # the instrument CLIs / box dispatcher refuse to drive the net.
     role = _canonical_role(role)
+
+    # A debug net carries one of jlink_script / openocd_config, never both
+    # (``set-script`` keeps the same rule). Checked before any box call.
+    if jlink_script and openocd_config:
+        raise click.UsageError(
+            "Give --jlink-script or --openocd-config, not both: a debug net "
+            "holds one of them. The J-Link script is for a J-Link probe, the "
+            "OpenOCD config for an OpenOCD probe."
+        )
 
     # Resolve and validate the box name
     resolved_box = resolve_and_validate_box(ctx, box)

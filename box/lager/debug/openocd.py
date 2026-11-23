@@ -99,6 +99,17 @@ _FTDI_PID_TO_CFG = {
     '6010': 'interface/ftdi/olimex-arm-usb-ocd-h.cfg',     # FT2232H
 }
 
+# Olimex probes enumerate under Olimex's own VID (0x15ba), one PID per model.
+# Each model has its own stock cfg in OpenOCD 0.12 (``interface/ftdi/``);
+# the PIDs are the ``ftdi vid_pid`` lines in those files. An unlisted Olimex
+# PID returns None, so the user supplies ``openocd_config``.
+_OLIMEX_PID_TO_CFG = {
+    '002b': 'interface/ftdi/olimex-arm-usb-ocd-h.cfg',     # ARM-USB-OCD-H
+    '002a': 'interface/ftdi/olimex-arm-usb-tiny-h.cfg',    # ARM-USB-TINY-H
+    '0003': 'interface/ftdi/olimex-arm-usb-ocd.cfg',       # ARM-USB-OCD
+    '0004': 'interface/ftdi/olimex-jtag-tiny.cfg',         # ARM-USB-TINY
+}
+
 
 def interface_config_for_address(address):
     """Return the OpenOCD ``-f interface/...`` config for a probe address.
@@ -124,9 +135,9 @@ def interface_config_for_address(address):
     # FTDI: dispatch by PID since the chip family determines the pinout.
     if vid == '0403':
         return _FTDI_PID_TO_CFG.get(pid)
-    # Olimex ARM-USB-OCD-H uses its own VID but is electrically an FT2232H.
+    # Olimex: own VID, FTDI chip inside, one stock cfg per model.
     if vid == '15ba':
-        return 'interface/ftdi/olimex-arm-usb-ocd-h.cfg'
+        return _OLIMEX_PID_TO_CFG.get(pid)
     return None
 
 
@@ -134,10 +145,18 @@ def interface_config_for_address(address):
 # Device → target config map
 # --------------------------------------------------------------------------
 
-# Ordered list of (prefix-regex, target.cfg). Matches are case-insensitive
-# against the J-Link-style device name stored in the net (channel/pin field).
-# This is intentionally heuristic — users with exotic devices set
+# Ordered list of (prefix, target.cfg). Matches are case-insensitive against
+# the J-Link-style device name stored in the net (channel/pin field), first
+# match wins. This is intentionally heuristic — users with exotic devices set
 # ``openocd_config`` themselves.
+#
+# Every cfg named here ships in OpenOCD 0.12.0's ``tcl/target/``, the version
+# the box image installs (Debian bookworm's ``openocd``). A family whose cfg
+# 0.12 lacks maps to None: the prefix is still matched, so it cannot fall
+# through to a shorter prefix (an ESP32-C3 must not get ``esp32.cfg``), and
+# the start fails with a message asking for ``openocd_config``. Families with
+# no 0.12 cfg: STM32C0, nRF53, nRF54, nRF91, RP2350, LPC54xxx, LPC55xx, every
+# i.MX RT (MIMXRT), ESP32-C*/H*/P*.
 _TARGET_PREFIX_MAP = [
     ('STM32F0', 'target/stm32f0x.cfg'),
     ('STM32F1', 'target/stm32f1x.cfg'),
@@ -155,23 +174,24 @@ _TARGET_PREFIX_MAP = [
     ('STM32U5', 'target/stm32u5x.cfg'),
     ('STM32WB', 'target/stm32wbx.cfg'),
     ('STM32WL', 'target/stm32wlx.cfg'),
-    ('STM32C0', 'target/stm32c0x.cfg'),
+    ('STM32C0', None),
     ('NRF51', 'target/nrf51.cfg'),
     ('NRF52', 'target/nrf52.cfg'),
-    ('NRF53', 'target/nrf53.cfg'),
-    ('NRF54', 'target/nrf54l.cfg'),
-    ('NRF91', 'target/nrf91.cfg'),
+    ('NRF53', None),
+    ('NRF54', None),
+    ('NRF91', None),
     ('RP2040', 'target/rp2040.cfg'),
-    ('RP2350', 'target/rp2350.cfg'),
+    ('RP2350', None),
     ('ATSAMD21', 'target/at91samdXX.cfg'),
     ('ATSAMD51', 'target/atsame5x.cfg'),
     ('ATSAME54', 'target/atsame5x.cfg'),
     ('LPC1', 'target/lpc1xxx.cfg'),
-    ('LPC54', 'target/lpc54xxx.cfg'),
-    ('LPC55', 'target/lpc55xx.cfg'),
-    ('MIMXRT', 'target/imxrt500.cfg'),
-    ('ESP32C3', 'target/esp32c3.cfg'),
-    ('ESP32C6', 'target/esp32c6.cfg'),
+    ('LPC54', None),
+    ('LPC55', None),
+    ('MIMXRT', None),
+    ('ESP32C', None),
+    ('ESP32H', None),
+    ('ESP32P', None),
     ('ESP32S2', 'target/esp32s2.cfg'),
     ('ESP32S3', 'target/esp32s3.cfg'),
     ('ESP32', 'target/esp32.cfg'),
@@ -181,7 +201,8 @@ _TARGET_PREFIX_MAP = [
 def target_config_for_device(device):
     """Best-effort map a J-Link device name to an OpenOCD target.cfg.
 
-    Returns None when we can't infer one — caller must rely on a custom
+    Returns None when we can't infer one, or when the device's family has no
+    cfg in the installed OpenOCD — caller must rely on a custom
     ``openocd_config``.
     """
     if not device:
@@ -430,8 +451,10 @@ def _build_openocd_command(
         cmd.extend(['-f', target_cfg])
     elif not user_config_path:
         raise FileNotFoundError(
-            f'No OpenOCD target.cfg known for device {device!r} and no '
-            f'user openocd_config supplied'
+            f'No OpenOCD target.cfg known for device {device!r} in the '
+            f"box's OpenOCD, and the net has no openocd_config. Attach a "
+            f'.cfg that sets up the target (CLI: ``lager nets set-script '
+            f'<net> <file.cfg>``), or use a J-Link probe.'
         )
 
     # When the user attached a custom ``openocd_config`` they've signalled
