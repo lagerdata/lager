@@ -123,7 +123,7 @@ Disconnect from the target device.
 dbg.disconnect()
 ```
 
-**Returns:** `dict` - Status dictionary on a J-Link probe. On an OpenOCD probe it returns `None` ([#850](https://github.com/lagerdata/lager/issues/850)).
+**Returns:** `dict` - Status dictionary, `{'stop': 'ok'}` when the GDB server stopped. The same on J-Link and OpenOCD probes.
 
 ### `reset(halt=False)`
 

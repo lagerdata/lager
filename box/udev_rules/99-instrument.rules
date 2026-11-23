@@ -116,6 +116,14 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="03eb", ATTRS{idProduct}=="2111", MODE="0660"
 # Generic DAPLink: VID=0x0d28, PID=0x0204
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0660", GROUP="lager"
 
+# Olimex JTAG probes (OpenOCD): VID=0x15ba. ARM-USB-OCD-H 0x002b,
+# ARM-USB-TINY-H 0x002a, ARM-USB-OCD 0x0003, ARM-USB-TINY 0x0004. Same PIDs as
+# SUPPORTED_USB in usb_scanner.py and _OLIMEX_PID_TO_CFG in debug/openocd.py.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="15ba", ATTRS{idProduct}=="002b", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="15ba", ATTRS{idProduct}=="002a", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="15ba", ATTRS{idProduct}=="0003", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="15ba", ATTRS{idProduct}=="0004", MODE="0660", GROUP="lager"
+
 # Note: FTDI-based debug adapters (FT232H 0x6014, FT2232H 0x6010, FT4232H
 # 0x6011) already have permissive rules in the UART/SERIAL ADAPTERS section
 # below — no additional rules needed, but OpenOCD ships its own

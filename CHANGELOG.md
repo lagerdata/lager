@@ -91,6 +91,32 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   It raises `NotImplementedError` and names `NetType.Analog` for a scope
   channel, instead of failing with "Invalid mapper type rigol_mso5000".
 
+- **Olimex JTAG probes are listed and open on the box.** The ARM-USB-OCD-H,
+  ARM-USB-TINY-H, ARM-USB-OCD and ARM-USB-TINY use Olimex's own USB vendor ID,
+  which the box scanner and its udev rules did not include, so `lager nets add`
+  never saw them and OpenOCD could not open them. Each model now gets its own
+  stock OpenOCD interface config; before, every Olimex probe got the OCD-H one.
+  (#850)
+
+- **OpenOCD debug nets no longer load target configs the box's OpenOCD lacks.**
+  Every `MIMXRT` device got `target/imxrt500.cfg`, and STM32C0, nRF53, nRF54,
+  nRF91, RP2350, LPC54xxx and LPC55xx devices got configs that OpenOCD 0.12
+  does not ship, so the start failed inside OpenOCD; an ESP32-C3 or C6 got the
+  plain ESP32 config. These devices now stop before OpenOCD starts, with a
+  message to attach a config with `lager nets set-script`. (#850)
+
+- **`DebugNet.disconnect()` returns the same status dict on OpenOCD as on
+  J-Link.** It returned `None` on an OpenOCD probe. (#850)
+
+- **`lager nets add` refuses `--jlink-script` together with
+  `--openocd-config`.** It saved both on one net, which `set-script` does not
+  allow. (#850)
+
+- **A missing robot arm raises `DeviceNotFoundError`.** `get_arm_device` and
+  the Dexarm constructor raised a plain `RuntimeError`, so the documented
+  `lager.automation.arm.DeviceNotFoundError` was never raised. The new error is
+  still a `RuntimeError`. (#851)
+
 ## [0.65.0] - 2026-11-19
 
 ### Added

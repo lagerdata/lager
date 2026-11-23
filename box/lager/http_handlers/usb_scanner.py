@@ -79,7 +79,7 @@ def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]]
 
 
 # ---------------------------------------------------------------------------
-#  Static USB table (mirrors SUPPORTED_USB in query_instruments.py)
+#  Static USB table (the only copy; see the module docstring)
 # ---------------------------------------------------------------------------
 
 SUPPORTED_USB: Dict[str, Dict] = {
@@ -163,10 +163,14 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Atmel_EDBG":        {"vid": "03eb", "pid": "2111", "net_type": ["debug"]},
     # NXP / ARM DAPLink-style CMSIS-DAP adapters.
     "DAPLink":           {"vid": "0d28", "pid": "0204", "net_type": ["debug"]},
-    # FTDI-based debug adapters (Olimex ARM-USB-OCD-H etc.) share PIDs with
-    # the general-purpose FTDI chips already in this table, so we **add**
-    # the debug net_type to the existing FTDI entries below rather than
-    # duplicating them.
+    # Generic FTDI-chip debug cables share PIDs with the general-purpose FTDI
+    # chips above, so those entries carry the debug net_type instead of a
+    # duplicate. Olimex probes have their own VID, one PID per model; each
+    # maps to its stock OpenOCD cfg (``_OLIMEX_PID_TO_CFG`` in debug/openocd.py).
+    "Olimex_ARM-USB-OCD-H":  {"vid": "15ba", "pid": "002b", "net_type": ["debug"]},
+    "Olimex_ARM-USB-TINY-H": {"vid": "15ba", "pid": "002a", "net_type": ["debug"]},
+    "Olimex_ARM-USB-OCD":    {"vid": "15ba", "pid": "0003", "net_type": ["debug"]},
+    "Olimex_ARM-USB-TINY":   {"vid": "15ba", "pid": "0004", "net_type": ["debug"]},
     # usb
     "Acroname_8Port":    {"vid": "24ff", "pid": "0013", "net_type": ["usb"]},
     "Acroname_4Port":    {"vid": "24ff", "pid": "0011", "net_type": ["usb"]},
@@ -389,6 +393,10 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "RP2040_Picoprobe":       {"debug": ["DEVICE_TYPE"]},
     "Atmel_EDBG":             {"debug": ["DEVICE_TYPE"]},
     "DAPLink":                {"debug": ["DEVICE_TYPE"]},
+    "Olimex_ARM-USB-OCD-H":   {"debug": ["DEVICE_TYPE"]},
+    "Olimex_ARM-USB-TINY-H":  {"debug": ["DEVICE_TYPE"]},
+    "Olimex_ARM-USB-OCD":     {"debug": ["DEVICE_TYPE"]},
+    "Olimex_ARM-USB-TINY":    {"debug": ["DEVICE_TYPE"]},
     "Acroname_8Port":         {"usb": ["0", "1", "2", "3", "4", "5", "6", "7"]},
     "Acroname_4Port":         {"usb": ["0", "1", "2", "3"]},
     "YKUSH_Hub":              {"usb": ["1", "2", "3"]},

@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 from serial.tools import list_ports
 
 from .arm_net import ArmBase
+from .arm_net import DeviceNotFoundError
 from .arm_net import MovementTimeoutError
 from .arm_net import NotHomedError
 from .arm_net import OutOfBoundsError
@@ -48,9 +49,11 @@ def get_arm_device(serial_number: Optional[str] = None) -> str:
                 all_ports.append(port.device)
     else:
         if serial_number is not None:
-            raise RuntimeError(f'Arm with USB serial {serial_number} not found')
+            raise DeviceNotFoundError(
+                f'Arm with USB serial {serial_number} not found',
+                serial_number=serial_number)
         if not all_ports:
-            raise RuntimeError('Arm not found!')
+            raise DeviceNotFoundError('Arm not found!')
         elif len(all_ports) > 1:
             raise RuntimeError('Multiple arms found; please supply a serial number')
         else:
@@ -153,7 +156,7 @@ class Dexarm(ArmBase):
         self.ser = serial.Serial(port, 115200, timeout=SERIAL_READ_TIMEOUT_S, write_timeout=5)
         self.is_open = self.ser.isOpen()
         if not self.is_open:
-            raise RuntimeError("Could not open arm")
+            raise DeviceNotFoundError("Could not open arm")
         self.firmware_version = self._read_firmware_version()
 
     # ---- Context manager ----

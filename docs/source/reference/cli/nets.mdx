@@ -98,7 +98,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 **Options:**
 - `--box TEXT` - Lager Box name or IP
 - `--jlink-script FILE` - J-Link script file for debug nets (stored on box)
-- `--openocd-config FILE` - OpenOCD `.cfg`/`.tcl` file for debug nets (stored on box)
+- `--openocd-config FILE` - OpenOCD `.cfg`/`.tcl` file for debug nets (stored on box). A net holds a J-Link script or an OpenOCD config, so `--jlink-script` and `--openocd-config` together are refused
 - `--sda PIN` / `--scl PIN` - Custom LabJack pins for `i2c` nets
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets
 - `--interface A|B|C|D` - FTDI channel for a `gpio`, `i2c` or `spi` net on an FT2232H or FT4232H. The default is `A`. See **Multi-channel FTDI debug adapters** below.

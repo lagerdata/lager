@@ -1140,11 +1140,15 @@ try:
             Only the **per-net** files are cleared. The box-wide cfg written
             from the net record (see :func:`materialise_user_script`) is
             shared with the HTTP debug service and is not ours to remove.
+
+            Returns the same status dict on both backends (``{'stop': 'ok'}``
+            on a clean stop), so a script need not branch on the probe type.
             """
             if self.backend == BACKEND_OPENOCD:
                 try:
-                    return stop_openocd(
+                    stop_openocd(
                         serial=self.serial, tcl_port=self.openocd_tcl_port)
+                    return {'stop': 'ok'}
                 finally:
                     from lager.debug.api import clear_config_file
                     clear_config_file(self.name)

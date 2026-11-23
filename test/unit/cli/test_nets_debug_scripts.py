@@ -587,3 +587,22 @@ class TestInitTargetWarning:
         )
         assert res.exit_code == 0, res.output
         assert 'jlink_script' in fake_box['saves'][-1]
+
+
+class TestAddRefusesBothScripts:
+    """#850: ``nets add`` saved both fields on one net; set-script refuses that."""
+
+    def test_both_options_are_a_usage_error_before_any_box_call(
+            self, monkeypatch, cfg_file, jlink_file):
+        def no_box(*a, **k):
+            raise AssertionError('reached the box before refusing')
+        monkeypatch.setattr('cli.box_storage.resolve_and_validate_box', no_box)
+        monkeypatch.setattr(nets_mod, '_fetch_instruments', no_box)
+        monkeypatch.setattr(nets_mod, '_save_net_http', no_box)
+        result = CliRunner().invoke(nets_group, [
+            'add', 'SWD', 'debug', 'nrf52840',
+            'USB0::0x1366::0x0101::000051014439::INSTR',
+            '--jlink-script', jlink_file, '--openocd-config', cfg_file,
+        ])
+        assert result.exit_code == 2, result.output
+        assert '--jlink-script or --openocd-config, not both' in result.output

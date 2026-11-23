@@ -949,6 +949,12 @@ class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
         self.assertFalse(os.path.exists(mine))
         self.assertTrue(os.path.exists(theirs))
 
+    def test_openocd_disconnect_returns_the_same_dict_as_jlink(self):
+        # #850: the OpenOCD path returned stop_openocd()'s result, which is
+        # always None, while the J-Link path returned a status dict.
+        self.debug_stub.stop_openocd.return_value = None
+        self.assertEqual(self._openocd_net().disconnect(), {'stop': 'ok'})
+
     def test_openocd_cfg_is_cleared_even_when_the_stop_fails(self):
         path = self._write_cfg_for('dbg')
         self.debug_stub.stop_openocd.side_effect = RuntimeError('boom')
@@ -957,10 +963,6 @@ class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self._openocd_net().disconnect()
         self.assertFalse(os.path.exists(path))
-
-    def test_disconnect_returns_the_openocd_result(self):
-        self.debug_stub.stop_openocd.return_value = {'stopped': True}
-        self.assertEqual(self._openocd_net().disconnect(), {'stopped': True})
 
     def test_disconnect_is_safe_with_no_script_present(self):
         dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
