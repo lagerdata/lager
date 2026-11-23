@@ -6,11 +6,38 @@ description: Control solar panel simulation nets
 Simulate solar panel characteristics for testing solar-powered devices. A solar net drives an
 EA PSB bidirectional supply in its photovoltaic simulation mode.
 
-<Warning>
-A solar net has no `Net.get()` path. The CLI saves a solar net with the role `solar`, and
-`NetType` has no `solar` role, so `Net.get('SOLAR', type=NetType.PowerSupply2Q)` raises
-`InvalidNetError`. Use the module functions on this page instead. They take the net name. See [#844](https://github.com/lagerdata/lager/issues/844).
-</Warning>
+A script can drive a solar net in two ways. `Net.get()` returns a net object whose reads
+return numbers. The module functions take the net name and print their results.
+
+## Net Object
+
+```python
+from lager import Net, NetType
+
+pv = Net.get('SOLAR', type=NetType.Solar)
+pv.enable()
+try:
+    pv.irradiance(1000)
+    print(pv.voc(), pv.mpp_voltage(), pv.mpp_current())
+finally:
+    pv.disable()
+```
+
+| Method | Description |
+|--------|-------------|
+| `enable()` | Connect and start photovoltaic simulation mode |
+| `disable()` | Stop the simulation and disconnect |
+| `irradiance(value=None)` | Set the irradiance (W/m², 0-1500) when given, then return the irradiance |
+| `resistance(value=None)` | Set the dynamic panel resistance (ohm) when given, then return it |
+| `mpp_current()` | Return the maximum power point current (A) |
+| `mpp_voltage()` | Return the maximum power point voltage (V) |
+| `voc()` | Return the open-circuit voltage (V) |
+| `temperature()` | Return the simulated cell temperature (°C) |
+
+Each read returns a `float`, or `None` when the instrument gives no number.
+`set_to_solar_mode()` and `stop_solar_mode()` are other names for `enable()` and `disable()`.
+An irradiance outside 0-1500 or a resistance that is not positive raises `ValueError`
+before the box sends a command. The calls use the same box driver as `lager solar`.
 
 ## Import
 

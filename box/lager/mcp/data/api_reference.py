@@ -348,6 +348,44 @@ API_REFERENCE: dict[str, dict] = {
             '    eload.disable()\n'
         ),
     },
+    "Solar": {
+        "net_type_enum": "NetType.Solar",
+        "get_pattern": 'pv = Net.get("solar1", type=NetType.Solar)',
+        "methods": [
+            {"name": "enable", "sig": "enable()",
+             "desc": "Connect and start photovoltaic simulation mode"},
+            {"name": "disable", "sig": "disable()",
+             "desc": "Stop the simulation and disconnect"},
+            {"name": "irradiance", "sig": "irradiance(value=None) -> float | None",
+             "desc": "Set the irradiance (0-1500 W/m^2) when given; return the irradiance"},
+            {"name": "resistance", "sig": "resistance(value=None) -> float | None",
+             "desc": "Set the dynamic panel resistance (ohm) when given; return it"},
+            {"name": "mpp_current", "sig": "mpp_current() -> float | None",
+             "desc": "Current at the maximum power point (A)"},
+            {"name": "mpp_voltage", "sig": "mpp_voltage() -> float | None",
+             "desc": "Voltage at the maximum power point (V)"},
+            {"name": "temperature", "sig": "temperature() -> float | None",
+             "desc": "Simulated cell temperature (C)"},
+            {"name": "voc", "sig": "voc() -> float | None",
+             "desc": "Open-circuit voltage (V)"},
+        ],
+        "gotchas": [
+            "A solar net drives an EA PSB supply in PV simulation mode; it has no set_voltage().",
+            "Reads return None when the instrument gives no number.",
+            "Call disable() in a finally block so the simulation does not keep running.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'pv = Net.get("solar1", type=NetType.Solar)\n'
+            'try:\n'
+            '    pv.enable()\n'
+            '    pv.irradiance(800)\n'
+            '    print("Voc:", pv.voc(), "V")\n'
+            'finally:\n'
+            '    pv.disable()\n'
+        ),
+    },
     "Thermocouple": {
         "net_type_enum": "NetType.Thermocouple",
         "get_pattern": 'tc = Net.get("temp1", type=NetType.Thermocouple)',
@@ -760,6 +798,7 @@ _DRIVER_CLASSES: dict[str, str] = {
     "Usb":            "lager.automation.usb_hub.usb_net_wrapper.USBNetWrapper",
     "Router":         "lager.protocols.mikrotik.router.MikroTikRouter",
     "Hsm":            "lager.security.hsm.hsm_net.HsmBase",
+    "Solar":          "lager.power.solar.solar_net_wrapper.SolarNetWrapper",
     "Arm":            "lager.automation.arm.rotrics.Dexarm",
     "Webcam":         "lager.automation.webcam.webcam_net_wrapper.WebcamNetWrapper",
     # The Wifi NET TYPE, which gates one DUT's internet access through an Asus

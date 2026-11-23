@@ -1884,6 +1884,49 @@ class RigolMSO5000AnalogMapper:
         self.trace_settings = TraceSettings_RigolMSO5000FunctionMapper(self, self.net, self.device)
         self.cursor = Cursor_RigolMSO5000FunctionMapper(self, self.net, self.device)
         self._frames = None
+        self._scope_hs = None
+
+    # Cursors over the captured samples, the sample rate and the capability
+    # report are the daemon driver's (``RigolScope``), not the SCPI driver's
+    # behind ``self.device``, so falling through to it answered "Function not
+    # found". They go to the hardware service's ``scope_hs`` driver, the one
+    # the `lager scope` route and the web UI use, so a script, both CLIs and
+    # the web UI read and move one set of cursors.
+    @property
+    def _daemon(self):
+        if self._scope_hs is None:
+            from ..device import Device
+            from ..net import _scope_device_info
+            record = dict(self.device.net_info or {})
+            record.setdefault("name", getattr(self.net, "name", None))
+            # A cursor read takes a capture, which can outlast the proxy's
+            # 10 s default; 30 s is what the `lager scope` route allows.
+            self._scope_hs = Device("scope_hs", _scope_device_info(record), timeout=30.0)
+        return self._scope_hs
+
+    def set_cursors(self, time=None, volts=None, channel=None):
+        """Place the time pair, the voltage pair, or both, over the samples."""
+        return self._daemon.set_cursors(time=time, volts=volts, channel=channel)
+
+    def get_cursors(self):
+        """Where the sample cursors are, without taking a capture."""
+        return self._daemon.get_cursors()
+
+    def clear_cursors(self):
+        """Remove both sample cursor pairs."""
+        return self._daemon.clear_cursors()
+
+    def measure_cursors(self, channel=None, timeout=None):
+        """Read the sample cursors against a capture."""
+        return self._daemon.measure_cursors(channel=channel, timeout=timeout)
+
+    def get_sample_rate(self):
+        """The scope's current sample rate, in samples per second."""
+        return self._daemon.get_sample_rate()
+
+    def capabilities(self, refresh=False):
+        """What the scope supports, as the oscilloscope daemon reports it."""
+        return self._daemon.capabilities(refresh=refresh)
 
     # Samples cannot cross the hardware service's JSON proxy (see the
     # PicoScope mapper), so they come from a driver in the script's process.

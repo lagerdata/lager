@@ -73,7 +73,7 @@ class TestReferenceColumn:
         ("power-supply", "PowerSupply"),
         ("supply", "PowerSupply"),
         ("power-supply-2q", "PowerSupply"),
-        ("solar", "PowerSupply"),
+        ("solar", "Solar"),
         ("batt", "Battery"),
         ("SCOPE", "Analog"),
         ("mikrotik", "Router"),
@@ -92,8 +92,11 @@ class TestReferenceColumn:
 
     def test_solar_now_has_a_reference(self):
         """The drift this table exists to end: solar nets had roles but no
-        API reference, so plan_firmware_test handed back no methods for them."""
-        assert get_reference_for_type("solar") is API_REFERENCE["PowerSupply"]
+        API reference, so plan_firmware_test handed back no methods for them.
+        It is the solar net's own, not the supply's: a solar net has no
+        set_voltage()."""
+        assert get_reference_for_type("solar") is API_REFERENCE["Solar"]
+        assert NET_TYPES["solar"].net_type == "Solar"
 
     def test_hsm_has_a_reference(self):
         assert get_reference_for_type("hsm") is API_REFERENCE["Hsm"]

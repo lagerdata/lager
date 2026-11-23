@@ -258,7 +258,7 @@ Available net types:
 |---------|-------------|-------------|
 | `NetType.Analog` | `analog`, `scope`, `scope-channel` | Oscilloscope. A `scope` net is the instrument; a `scope-channel` net is one of its channels |
 | `NetType.Logic` | `logic` | Logic analyzer input |
-| `NetType.Waveform` | `waveform` | Not implemented. No driver backs this type, so `Net.get()` raises an error. See [#844](https://github.com/lagerdata/lager/issues/844) |
+| `NetType.Waveform` | `waveform` | Not implemented. No driver backs this type, so `Net.get()` raises `NotImplementedError` |
 | `NetType.Battery` | `battery` | Battery simulator |
 | `NetType.PowerSupply` | `power-supply` | Power supply |
 | `NetType.ELoad` | `eload` | Electronic load |
@@ -282,7 +282,8 @@ Available net types:
 | `NetType.Rotation` | `rotation` | Rotary encoder |
 | `NetType.Wifi` | `wifi` | WiFi module |
 | `NetType.Actuate` | `actuate` | Actuator control |
-| `NetType.PowerSupply2Q` | `power-supply-2q` | Two-quadrant power supply. Solar nets are saved with the role `solar` and do not use it; see [Solar Simulation](/source/reference/python/solar) |
+| `NetType.PowerSupply2Q` | `power-supply-2q` | Two-quadrant power supply. Solar nets use `NetType.Solar` |
+| `NetType.Solar` | `solar` | Solar simulator; see [Solar Simulation](/source/reference/python/solar) |
 
 ## Properties
 

@@ -26,12 +26,13 @@ The SDK supports various net types for different hardware:
 | NetType | Description | Hardware |
 |---------|-------------|----------|
 | `NetType.PowerSupply` | Programmable power supply | Rigol DP700/DP800, Keysight E36200/E36300, Keithley 2281S, Siglent SPD1000X, EA PSB |
-| `NetType.PowerSupply2Q` | Two-quadrant supply. Not used by solar nets; see [Solar](./solar) | -- |
+| `NetType.PowerSupply2Q` | Two-quadrant supply. Solar nets use `NetType.Solar` | -- |
+| `NetType.Solar` | Solar simulator; see [Solar](./solar) | EA PSB |
 | `NetType.Battery` | Battery simulator | Keithley 2281S |
 | `NetType.ELoad` | Electronic load | Rigol DL3000 |
 | `NetType.Analog` | Oscilloscope (`scope` and `scope-channel` nets) | Rigol MSO5000, Rigol DS1000Z, PicoScope |
 | `NetType.Logic` | Logic analyzer input | Rigol MSO5000 |
-| `NetType.Waveform` | Not implemented | -- |
+| `NetType.Waveform` | Not implemented. `Net.get()` raises `NotImplementedError` | -- |
 | `NetType.GPIO` | Digital I/O | LabJack T7/U3/U6, MCC USB-202, FT232H/FT2232H/FT4232H, Aardvark, YKUSH3 |
 | `NetType.ADC` | Analog-to-digital converter | LabJack T7/U3/U6, MCC USB-202 |
 | `NetType.DAC` | Digital-to-analog converter | LabJack T7/U3/U6, MCC USB-202 |

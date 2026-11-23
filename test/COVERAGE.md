@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 3969 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5493 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5522 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10319** |
+| | **Total gated** | **10348** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 353 files)
+### Local Unit Tests (`test/unit/` -- 354 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 191 files)
+#### Box Unit Tests (`test/unit/box/` -- 192 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -603,6 +603,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_logic_net_type.py` | `lager logic`'s workers must resolve nets under `NetType.from_role(LOGIC_ROLE)`; `Net.get` matches on type equality, so a mismatch is a silent no-op rather than an error |
 | `test_rigol_mso5000_la.py` | The MSO5000 driver's logic-analyzer surface: the SCPI each method emits, D0 surviving a falsy-channel check, out-of-range channels and bad pods refused, every accepted spelling of the display size, and the uncrossed `LogicDisplaySize`. Walks net.py's Logic branches and the logic mapper to assert every name they call exists on the driver -- the check whose absence let ten undefined methods ship |
+| `test_net_get_scope_solar_waveform.py` | `Net.get` gaps: a Rigol MSO5000 analog net's sample cursors, `get_sample_rate()` and `capabilities()` reach the `scope_hs` driver the `lager scope` route uses, not the SCPI driver (#849); `NetType.Solar` returns a wrapper over the `solar_hs` adapter whose reads return numbers and whose out-of-range values are refused before the instrument; `NetType.Waveform` raises `NotImplementedError` naming `NetType.Analog` (#844) |
 | `test_net_ready.py` | `wait_for_net`: polling a net through the re-enumerate / hardware-service-restart window, deadline honoured without overshoot, probe selection, and a progress callback that cannot break the wait |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention; the 2281S supply read returning at once in the battery simulator |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |

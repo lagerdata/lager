@@ -76,6 +76,21 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   recorded before the loss were still saved. Now the request returns the job,
   and the job reports the failure and the saved file.
 
+- **Rigol MSO5000 scope nets have the sample cursors, `get_sample_rate()` and
+  `capabilities()`.** On a Rigol `Net.get` net, `set_cursors`, `get_cursors`,
+  `clear_cursors`, `measure_cursors`, `get_sample_rate` and `capabilities` failed
+  with "Function not found". They now use the same box driver as `lager scope`,
+  so a script and the CLI read the same cursors.
+
+- **Solar nets work through `Net.get`.** `Net.get(name, type=NetType.Solar)`
+  returns a solar net with `enable()`, `disable()`, `irradiance()`,
+  `resistance()`, `mpp_current()`, `mpp_voltage()`, `voc()` and `temperature()`,
+  which return numbers. Before, no `NetType` matched the `solar` role.
+
+- **`Net.get(name, type=NetType.Waveform)` says that no driver backs the type.**
+  It raises `NotImplementedError` and names `NetType.Analog` for a scope
+  channel, instead of failing with "Invalid mapper type rigol_mso5000".
+
 ## [0.65.0] - 2026-11-19
 
 ### Added
