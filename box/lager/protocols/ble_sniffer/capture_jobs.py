@@ -120,6 +120,9 @@ def start_job(net: str, driver: BleSnifferBase, options: CaptureOptions,
               out: Path) -> CaptureJob:
     """Start a capture on a background thread; return when the sniffer records.
 
+    A capture that records and then fails is returned as a job whose
+    ``state`` is ``failed``, however soon after the start it fails.
+
     Raises:
         ValueError: An option is invalid.
         BleSnifferBusyError: A capture already holds the sniffer.
@@ -136,7 +139,10 @@ def start_job(net: str, driver: BleSnifferBase, options: CaptureOptions,
     if not job._ready.wait(_START_TIMEOUT_S):
         logger.warning("ble-sniffer: capture job %s still starting after %.0f s",
                        job.id, _START_TIMEOUT_S)
-    if job.state == "failed":
+    # Raise only for a capture that never recorded. One that recorded and then
+    # failed (the sniffer was unplugged, say) is a job like any other: the
+    # capture thread may get there before this check, so the job reports it.
+    if job.state == "failed" and job._ctx is None:
         with _jobs_lock:
             _jobs.pop(job.id, None)
         # The original exception: rebuilding one from job.error would repeat

@@ -70,6 +70,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   the Nth notification arrives; it used to wait for one more, and timed out (or
   hung with no timeout) when exactly N arrived.
 
+- **A `ble-sniffer` capture that loses its dongle right after it starts is
+  reported as a failed job.** The capture start request could instead answer
+  with the "stopped answering" error, depending on timing, while the packets
+  recorded before the loss were still saved. Now the request returns the job,
+  and the job reports the failure and the saved file.
+
 ## [0.65.0] - 2026-11-19
 
 ### Added
