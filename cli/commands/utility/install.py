@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import shutil
 from pathlib import Path
@@ -152,6 +153,28 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
         return dev_path
 
     raise FileNotFoundError(f"Deployment script not found: {script_name}")
+
+
+def box_sudo_needs_a_terminal(ssh_host, identity_args, isatty=None) -> bool:
+    """True when the deploy will need a sudo password and cannot ask for it.
+
+    False whenever stdin is a terminal (sudo asks there), and when `sudo -n
+    true` succeeds on the box (no password needed). An ssh failure counts as
+    "no": the connectivity check above already passed, and the deploy script
+    reports a real sudo failure itself.
+    """
+    isatty = isatty or (lambda: sys.stdin.isatty())
+    if isatty():
+        return False
+    try:
+        probe = subprocess.run(
+            ["ssh", *identity_args, "-o", "BatchMode=yes", ssh_host, "sudo -n true"],
+            capture_output=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # 255 is ssh's own failure, not sudo's answer.
+    return probe.returncode not in (0, 255)
 
 
 def _format_duration(seconds):
@@ -596,6 +619,18 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
                              version=version, yes=yes, fork=fork,
                              skip_jlink=skip_jlink, skip_picoscope=skip_picoscope)
         return
+
+    # The deploy's step 2 needs the box's sudo password, and sudo reads it
+    # from a terminal. Without one (a pipe, CI, an agent's shell) the install
+    # used to fail there, minutes in. Ask now instead.
+    if box_sudo_needs_a_terminal(ssh_host, ssh_identity_args(identity)):
+        LagerError(
+            f"`lager install` needs {user}'s sudo password on {ip}, and there is "
+            "no terminal to ask in.",
+            cause="The box has no passwordless sudo for this user, and this "
+                  "command's input is a pipe or a script.",
+            fixes=["Run the same `lager install` command in a terminal window."],
+        ).die()
 
     # A gateway left with no configuration refuses every connection whatever
     # this install does, so say so before the operator waits on a deploy and

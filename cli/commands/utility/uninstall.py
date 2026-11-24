@@ -1229,7 +1229,10 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     if not purge_config:
         click.echo()
         click.secho("Note: /etc/lager was kept (saved nets, box config, key registrations).", fg='yellow')
-        click.secho("Its lock.json was cleared — the lock server it described is gone.", fg='yellow')
+        if priv_results.get(LOCK_STATE_PRIV_STEP[0]) == "OK":
+            click.secho("Its lock.json was cleared — the lock server it described is gone.", fg='yellow')
+        else:
+            click.secho("Its lock.json was NOT cleared (see the FAILED step above).", fg='yellow')
     elif priv_results.get("config_backup") == "OK":
         click.echo()
         click.secho(f"/etc/lager was backed up to {backup_dir}/ on the box:", fg='yellow')
@@ -1270,7 +1273,12 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     if not box_name:
         box_name = get_box_name_by_ip(ip)
 
-    if box_name:
+    if box_name and failed_steps:
+        # A box that did not uninstall cleanly is still there to re-run the
+        # uninstall against; forgetting its name made that re-run need --ip.
+        click.echo()
+        click.echo(f"Kept '{box_name}' in .lager config: the uninstall did not finish.")
+    elif box_name:
         click.echo()
         if yes or click.confirm(f"Remove '{box_name}' from local .lager configuration?", default=True):
             deleted = delete_box(box_name)
@@ -1299,3 +1307,8 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
                 )
         else:
             click.echo(f"Kept '{box_name}' in .lager config.")
+
+    if failed_steps:
+        # The summary says FAILED; the exit status has to agree, or a script
+        # (or `lager install`'s own reinstall flow) carries on as if it worked.
+        ctx.exit(1)
