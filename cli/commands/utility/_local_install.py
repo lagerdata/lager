@@ -108,7 +108,17 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
         click.echo(f"Installing Lager Box {version} on this Mac.")
     click.echo("This sets up a background agent for your instruments and a "
                "container for the Box.")
-    if not (os.path.isdir(macos_box.ETC_DIR) and os.access(macos_box.ETC_DIR, os.W_OK)):
+    if macos_box.config_dir_needs_sudo():
+        # Checked before any question: the sudo step comes a minute into the
+        # install, and without a terminal it can only fail there.
+        if macos_box.sudo_needs_a_terminal():
+            raise LagerError(
+                f"`lager install` needs your Mac password once, to create {macos_box.ETC_DIR}, "
+                "and there is no terminal to ask in.",
+                cause="sudo reads the password from a terminal; this command's input "
+                      "is a pipe or a script.",
+                fixes=["Run `lager install` in a Terminal window, or create the directory "
+                       "first and run it again:"] + macos_box.config_dir_fixes()[:-1])
         click.echo(f"Your password is asked for once, to create {macos_box.ETC_DIR}.")
     for flag, why in ignored_options(ctx):
         click.secho(f"Ignoring {flag}: {why}.", fg='yellow')
@@ -151,7 +161,7 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
     for line in result.skipped:
         click.secho(f"Not set up -- {line}", fg='yellow')
     if result.skipped:
-        click.echo("Install what is missing and run `lager install` again to add it.")
+        click.echo("Install the missing parts and run `lager install` again to add them.")
         click.echo()
     click.secho("Installation complete!", fg='green', bold=True)
     click.secho(f"Saved as '{name}'. You can now use: lager hello --box {name}", fg='cyan')

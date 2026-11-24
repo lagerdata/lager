@@ -221,8 +221,8 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
     for line in outcome.get("skipped") or []:
         click.secho(f"Not set up -- {line}", fg='yellow')
     if outcome.get("skipped"):
-        click.echo("Install what is missing on the Mac and run this command "
-                   "again to add it.")
+        click.echo("Install the missing parts on the Mac and run this command "
+                   "again to add them.")
         click.echo()
     click.secho("Installation complete!", fg='green', bold=True)
     click.secho(f"Saved as '{name}'. You can now use: lager hello --box {name}", fg='cyan')
