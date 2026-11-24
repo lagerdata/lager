@@ -51,13 +51,13 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` | 3989 (+3 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5610 (+17 skipped) |
+| `unit (cli)` | `test/unit/cli/` | 4005 (+3 xfailed) |
+| `unit (box)` | `test/unit/box/` | 5637 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **10453** |
+| | **Total gated** | **10496** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 363 files)
+### Local Unit Tests (`test/unit/` -- 367 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 198 files)
+#### Box Unit Tests (`test/unit/box/` -- 201 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -605,6 +605,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_probe_lock.py` | One J-Link operation per probe at a time, since J-Link lets a second client interleave with a flash and corrupt its RAMCode download: a second thread or process waits for the first, the wait gives up with `ProbeBusyError` naming the holder, the lock is re-entrant within a thread, a holder that dies releases it, separate probes never block each other, and `holds_probe` holds a generator's lock for its whole life (released on close) while keeping its return value; a thread that waits behind another logs it, naming the holder |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
+| `test_labjack_handle_connection.py` | A T7 opens over USB unless `LAGER_LABJACK_CONNECTION` says otherwise, and a device not found on a named connection fails after two tries, inside the hardware service's 8 s lock deadline; a replugged T7 opens on the next call |
+| `test_labjack_ljm_constants.py` | A Mac Box hands LJM its constants file from `LAGER_LJM_CONSTANTS_FILE` and leaves LJM alone without it; the missing-library message names this platform's library file |
 | `test_labjack_gpio_wait_for_level.py` | `LabJackGPIO.wait_for_level` against a fake ljm: the timeout runs from the call, so a slow `eStreamStart` counts against it (the old code started the clock after it, and a 0.4 s timeout took 0.7 s); the call never returns before the timeout; the returned elapsed time still runs from the stream start; and the stream is stopped once |
 | `test_labjack_model_routing.py` | LabJack model disambiguation across the DAC dispatcher, the LJM batch-read grouping and the device-lock identity: a non-T7 LabJack must reach none of the three T7 paths, and the T7's own routing is byte-for-byte unchanged. Also that the ADC, DAC and GPIO dispatchers refuse a bare `LabJack`, a T4 or a T8 with an error that lists the supported models, and that every listed model routes to a driver |
 | `test_labjack_ud.py` | LabJack UD-series (U3) drivers and handle manager against a fake u3 module: pin-name mapping, device selection by serial, and the analog/digital pin mux -- which has no T7 counterpart and fails silently, since a line read in the wrong mode returns a plausible number rather than an error. Also the UD DAC's 0.04-4.95 V range and its absent readback. Also that the scanner omits FIO0-FIO3 from the U3's gpio channels -- they are the U3-HV's fixed high-voltage analog inputs, and while they were advertised a net on them was accepted and then failed at first use. Also the U3 SPI and I2C drivers against a fake `u3.spi()`/`u3.i2c()` written from the LabJackPython source rather than from the drivers: the odd-packet padding SPI must trim and I2C must not, the AckArray bit order (bit 0 is the LAST data byte, so a partially acknowledged write is non-zero and a ported `acks == 0` check would call it success), the unshifted address, the 50/50/52 byte limits, and a transaction that fails when a pin is left in analog mode -- with a negative control that neuters the mux call and asserts the transaction then breaks, so a pass cannot be coincidental |
@@ -643,6 +645,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_python_service_multipart.py` | `parse_multipart` after the move off `cgi.FieldStorage`: byte-exact binary fields, repeated names, and the `.py`/`.zip` to BytesIO rule |
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
+| `test_start_box_host_paths.py` | `start_box.sh`'s box_config host-path loop, run verbatim: an existing file or directory is left alone with no warning, a missing path is created |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
 | `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
 | `test_run_record.py` | The box's run record: RFC 8785 canonical JSON (UTF-16 key order, ECMAScript numbers), instrument serial numbers read from net addresses (instrument vs adapter), the record-store box ID and MAC-derived hardware ID, sanitizing what the client asserts, script assertions, the exit reason for every way a run ends (exited, timeout vs a script's own 124, cancelled, disconnected, start-failed, lost on restart), the sequence counter, and the two recording modes -- local keeps no bytes, collected retains them by hash and refuses a run it cannot record, saying why and how to fix it (ownership vs disk space); every record validates against the published schema |
@@ -713,7 +716,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_scope_ui_stream.py` | The web scope's credit-paced stream and pushed state: one credit returned for each frame received, only the newest frame kept for drawing, extra credit for a slow round trip, every control following the daemon's state except a field being edited, and an unplug dropping the live session so a replug can Start without a stop first, taking the last trace off the plot, and resetting the header's trigger status, sample rate and points |
 | `test_usb_scanner_picoscope.py` | PicoScope discovery in `usb_scanner.py`: every Pico Technology product ID is recognized, and the channel count comes from the device rather than from a static table |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 141 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 142 files)
 
 | File | What it tests |
 |------|---------------|
@@ -753,6 +756,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_hsm_cli.py` | `lager hsm`: the password comes from `--password-stdin`, then `LAGER_HSM_PASSWORD`, then a hidden prompt, and no subcommand has a `--password` option; `delete` and `reset` confirm (and refuse `--password-stdin` without `--yes`); the request each subcommand sends; `sign` data and output forms; the CLI choice lists match the box driver |
 | `test_etc_lager_perms_helper.py` | `cli/deployment/security/etc_lager_perms.sh`, the root-owned helper that replaces install's `sudo find` and recursive `sudo chown`: the REAL script runs under `sh` with the real `find` and a recording `chown`. Everything under `/etc/lager` goes to uid 33 and the caller's group except `authorized_keys.d`, which is pruned; every `chown` carries `-h`, so a symbolic link's target is never re-owned; and any argument, a caller that is not root, and a group that is not a plain number are each refused before anything is touched |
 | `test_install_sudo_handoff.py` | `lager install` hands the deploy script the box-config sudoers text in its environment, so one sudo session writes both files: the text is exactly what the other writer installs, a name that is not a plain unix username gets nothing, and a stale variable in the operator's shell is never inherited. Over a faked transport, install opens no terminal when the grant is already live, and warns of a prompt only on the branch that prompts |
+| `test_install_terminal_precheck.py` | `lager install --ip` asks the box `sudo -n true` before deploying when stdin is not a terminal, and an ssh failure is not taken for sudo's answer |
 | `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |
@@ -776,7 +780,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_nets_add_ftdi_interface.py` | `lager nets add --interface`: the channel saved as `params.interface`, and refused for a channel the part lacks, an I2C/SPI net on a non-MPSSE channel, a non-FTDI instrument, and a debug net (pointed at the `@B` suffix). Also that the channel is part of a net's identity -- the same pin on two channels is two nets, no interface compares as A, a hand-saved `1` equals `B` -- that a second debug net on another channel suffix is accepted while a single-target probe keeps one, and that the CLI's channel tables agree with `box/lager/util/ftdi_url.py` |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_all_names.py` | `lager nets add-all` naming: a four-channel scope gets `oscilloscope1` and `scope1`-`scope4` with no duplicate, a name saved under another role is not reused, and a second scope continues the indices |
-| `test_nets_add_coverage.py` | `lager nets add` accepts the instruments the scanner detects (DP832, E36312A, SPD1168X, USB-202, Phidget, J-Link Base Compact) and refuses a U3's FIO0-FIO3 as custom pins; `add-batch` saves `params` (LabJack pins, FTDI channel) and a uart device path, and saves nothing when any record has an unknown key, a bad `params` value, an unsupported role or an ambiguous address |
+| `test_nets_add_coverage.py` | `lager nets add` accepts the instruments the scanner detects (DP832, E36312A, SPD1168X, USB-202, Phidget, J-Link Base Compact) and refuses a U3's FIO0-FIO3 as custom pins; `add-batch` saves `params` (LabJack pins, FTDI channel) and a uart device path, and saves nothing when any record has an unknown key, a bad `params` value, an unsupported role or an ambiguous address. `--jlink-script`/`--openocd-config` store the script base64 once, and refuse a file that is already base64 (a copy of the `saved_nets.json` field) or both flags together |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery. Also channel-rejection messaging: a rejected channel names the valid ones, a U3 high-voltage pin is pointed at AIN0-AIN3, and add-batch applies the same check while staying permissive for hardware the scan does not find. Also that add-batch creates a Siglent SPD1168X `power-supply` net with an explicit instrument at a LAN or USB address and refuses other roles |
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation. `--list` shows a cable's product and durable path (by-id, or by-path when the cable has no serial), and still renders records from boxes that predate those fields |
 | `test_nets_cache_invalidation.py` | Every `lager nets` and Net-Manager write drops the box's cached `lager debug` nets, so `flash`/`erase` stop sending the old J-Link script; a broken cache never fails the command |
