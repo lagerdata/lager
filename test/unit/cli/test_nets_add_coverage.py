@@ -245,3 +245,63 @@ def test_an_ambiguous_address_is_refused(tmp_path):
     assert result.exit_code == 1, output
     assert "No nets were saved." in output
     assert box.saved_nets == []
+
+
+# ---------------------------------------------------------------------------
+# --jlink-script / --openocd-config take the script itself
+# ---------------------------------------------------------------------------
+
+_JLINK_SCRIPT = b"void ResetTarget(void) {\n  JLINK_ExecCommand(\"SetResetType = 2\");\n}\n"
+
+
+def _debug_add(tmp_path, *flags):
+    return _invoke(["add", "swd", "debug", "DEVICE_TYPE", JLINK_BASE["address"],
+                    "--box", "b", *flags])
+
+
+def test_a_jlink_script_is_stored_base64_once(fake_box, tmp_path):
+    import base64
+    script = tmp_path / "reset.JLinkScript"
+    script.write_bytes(_JLINK_SCRIPT)
+    result, output = _debug_add(tmp_path, "--jlink-script", str(script))
+    assert result.exit_code == 0, output
+    assert base64.b64decode(fake_box.saved_nets[0]["jlink_script"]) == _JLINK_SCRIPT
+
+
+def test_a_script_copied_from_saved_nets_is_refused(fake_box, tmp_path):
+    """saved_nets.json holds the script base64-encoded; passing that text
+    stored it encoded twice and J-Link dropped it without a word."""
+    import base64
+    copied = tmp_path / "from-saved-nets.txt"
+    copied.write_bytes(base64.b64encode(_JLINK_SCRIPT) + b"\n")
+    result, output = _debug_add(tmp_path, "--jlink-script", str(copied))
+    assert result.exit_code == 1
+    assert "looks base64-encoded" in output and "base64 -d" in output
+    assert fake_box.saved_nets == []
+
+
+def test_an_encoded_openocd_config_is_refused_too(fake_box, tmp_path):
+    import base64
+    copied = tmp_path / "cfg.txt"
+    copied.write_bytes(base64.b64encode(b"adapter driver ftdi\ntransport select swd\n"))
+    result, output = _debug_add(tmp_path, "--openocd-config", str(copied))
+    assert result.exit_code == 1 and "looks base64-encoded" in output
+
+
+def test_both_script_flags_are_refused(fake_box, tmp_path):
+    script = tmp_path / "reset.JLinkScript"
+    script.write_bytes(_JLINK_SCRIPT)
+    cfg = tmp_path / "probe.cfg"
+    cfg.write_bytes(b"adapter driver ftdi\n")
+    result, output = _debug_add(tmp_path, "--jlink-script", str(script),
+                                "--openocd-config", str(cfg))
+    assert result.exit_code == 1 and "not both" in output
+    assert fake_box.saved_nets == []
+
+
+def test_short_or_plain_text_is_not_mistaken_for_base64():
+    assert not nets_mod._looks_like_encoded_script(_JLINK_SCRIPT)
+    assert not nets_mod._looks_like_encoded_script(b"abcd")
+    import base64
+    assert not nets_mod._looks_like_encoded_script(base64.b64encode(bytes(range(256))))
+    assert nets_mod._looks_like_encoded_script(base64.b64encode(b"two\nlines of text\n"))
