@@ -39,6 +39,13 @@ RESET = '\033[0m'
 BUILTIN_MODELS = ("LI_ION4_2", "NIMH1_2", "NICD1_2", "LEAD_ACID12", "NIMH12")
 
 
+
+# The 2281S-20-6's battery-simulator over-current limit. 6.1 A, not the 6 A
+# output rating: the instrument holds and reports 6.10 A (seen on JUL-9), so
+# a value read back with `lager battery ocp` must be writable again. Set
+# writes ignore SCPI -222 (out of range), so this cap is what stops a bad value.
+OCP_MAX_A = 6.1
+
 class KeithleyBattery(BatteryNet):
     """
     Battery-simulator backend for Keithley 2281S-20-6.
@@ -776,8 +783,8 @@ class KeithleyBattery(BatteryNet):
             return
         if float(value) < 0.001:  # Minimum practical current limit
             raise BatteryBackendError("OCP limit must be at least 1mA (0.001A)")
-        if float(value) > 6.0:  # 2281S-20-6 max current
-            raise BatteryBackendError("OCP limit exceeds instrument maximum (6.0A)")
+        if float(value) > OCP_MAX_A:
+            raise BatteryBackendError(f"OCP limit exceeds instrument maximum ({OCP_MAX_A}A)")
         self._set_with_output_management(f":BATT:SIM:CURR:PROT {value}", ignore_codes=(-222,))
         time.sleep(0.05)
 
