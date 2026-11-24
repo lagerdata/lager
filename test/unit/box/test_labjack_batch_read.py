@@ -175,6 +175,49 @@ class LockIdentityTests(unittest.TestCase):
         self.assertEqual(seen, ["labjack:ANY"])
 
 
+def _post_with(handle_mod_attrs, payload):
+    handle_mod = types.ModuleType("lager.io.labjack_handle")
+    for k, v in handle_mod_attrs.items():
+        setattr(handle_mod, k, v)
+    with patch.dict(sys.modules, {"lager.io.labjack_handle": handle_mod}):
+        return hw.app.test_client().post("/labjack/batch_read", json=payload)
+
+
+class DeviceErrorHeaderTests(unittest.TestCase):
+    """Why nets came back null travels in X-Lager-Device-Error, so
+    `lager nets state` can say it instead of "no value from instrument"."""
+
+    def test_an_unplugged_t7_names_the_open_error(self):
+        def not_found():
+            raise RuntimeError("LabJack T7 not found on USB: check that it is plugged in (1227)")
+        resp = _post_with({"get_labjack_handle": not_found, "ljm": _FakeLJM(), "_LJM_ERR": None},
+                          {"nets": NETS, "device_id": T7_DEVICE_ID})
+        self.assertEqual(resp.get_json(), {n["name"]: None for n in NETS})
+        self.assertIn("not found on USB", resp.headers.get("X-Lager-Device-Error", ""))
+
+    def test_a_missing_ljm_library_is_named(self):
+        resp = _post_with({"get_labjack_handle": lambda: 1, "ljm": None,
+                           "_LJM_ERR": "libLabJackM.dylib is not available"},
+                          {"nets": NETS, "device_id": T7_DEVICE_ID})
+        self.assertEqual(resp.get_json(), {n["name"]: None for n in NETS})
+        self.assertIn("LJM library not available", resp.headers["X-Lager-Device-Error"])
+        self.assertIn("libLabJackM.dylib", resp.headers["X-Lager-Device-Error"])
+
+    def test_no_header_when_every_net_read(self):
+        resp, _ = _post({"nets": NETS, "device_id": T7_DEVICE_ID})
+        self.assertNotIn("X-Lager-Device-Error", resp.headers)
+
+    def test_the_header_is_one_bounded_ascii_line(self):
+        def noisy():
+            raise RuntimeError("line one\nline two \u2014 " + "x" * 1000)
+        resp = _post_with({"get_labjack_handle": noisy, "ljm": _FakeLJM(), "_LJM_ERR": None},
+                          {"nets": NETS, "device_id": T7_DEVICE_ID})
+        value = resp.headers["X-Lager-Device-Error"]
+        self.assertNotIn("\n", value)
+        self.assertLessEqual(len(value), hw._DEVICE_ERROR_HEADER_MAX)
+        value.encode("ascii")
+
+
 class ReadOnlyTests(unittest.TestCase):
     """A state probe must not reconfigure the instrument."""
 
