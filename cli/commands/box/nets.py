@@ -1771,15 +1771,10 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     if is_uart_device_path:
         net_data["device_path"] = channel
 
-    # Handle J-Link script / OpenOCD config for debug nets. A debug net holds
-    # one or the other (set-script enforces the same), and the file must be
+    # Handle J-Link script / OpenOCD config for debug nets. The file must be
     # the script itself: saved_nets.json stores it base64-encoded, and a copy
     # of that field passed here used to be encoded again and silently dropped
-    # by J-Link.
-    if role == "debug" and jlink_script and openocd_config:
-        click.secho("Error: pass --jlink-script or --openocd-config, not both: "
-                    "a debug net holds one script.", fg='red', err=True)
-        ctx.exit(1)
+    # by J-Link. Both flags together are refused at the top of the command.
     for flag, path, field in (("--jlink-script", jlink_script, "jlink_script"),
                               ("--openocd-config", openocd_config, "openocd_config")):
         if not path:

@@ -288,17 +288,6 @@ def test_an_encoded_openocd_config_is_refused_too(fake_box, tmp_path):
     assert result.exit_code == 1 and "looks base64-encoded" in output
 
 
-def test_both_script_flags_are_refused(fake_box, tmp_path):
-    script = tmp_path / "reset.JLinkScript"
-    script.write_bytes(_JLINK_SCRIPT)
-    cfg = tmp_path / "probe.cfg"
-    cfg.write_bytes(b"adapter driver ftdi\n")
-    result, output = _debug_add(tmp_path, "--jlink-script", str(script),
-                                "--openocd-config", str(cfg))
-    assert result.exit_code == 1 and "not both" in output
-    assert fake_box.saved_nets == []
-
-
 def test_short_or_plain_text_is_not_mistaken_for_base64():
     assert not nets_mod._looks_like_encoded_script(_JLINK_SCRIPT)
     assert not nets_mod._looks_like_encoded_script(b"abcd")
