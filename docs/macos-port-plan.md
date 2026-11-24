@@ -1568,3 +1568,52 @@ libusb from the bench Mac would break other formulae.
 Also on 2026-11-23: the branch was rebased onto `main` at v0.65.0 (the
 only conflicts were test counts in `test/COVERAGE.md`); the local Box now
 runs the v0.65.0 image.
+
+### Fixes from the 2026-11-23 release validation
+
+Found by a fresh install on a second Mac (T7 only) and on three Linux Boxes
+(JUL-29, JUL-30, JUL-9). One commit each; ledger entries where Linux code moved.
+
+- **LJM** (`2269c6bc`): `lager install` installs LabJack's LJM on a Mac. The T4/T7/T8
+  did not work on a clean Mac before; the bench Macs had LJM from LabJack's installer.
+- **Unplugged T7** (closes the "Seen, not fixed" item above): the T7 is opened over
+  `"USB"` instead of `"ANY"` (`LAGER_LABJACK_CONNECTION` restores `ANY`), and a device
+  not found on USB fails after 2 tries instead of 5. With `ANY`, LJM fell into network
+  discovery: on a Mac with VPN interfaces up it ran over 15 minutes, holding the
+  service lock, and every call failed "device busy" until the agent was restarted;
+  replugging did not help. It affects Linux too: the open changes from ANY to USB.
+- **`lager nets state`** names the driver's error (LJM missing, T7 not found) instead
+  of "no value from instrument": `/labjack/batch_read` returns it in
+  `X-Lager-Device-Error`.
+- **`--skip-jlink`** leaves out the ARM GDB too, in the Homebrew list and the install.
+- **No terminal**: `lager install` on a Mac fails before any question when sudo will
+  need a password and stdin is not a terminal, and lists the commands one per line.
+  `lager install --ip` asks the box the same thing (`sudo -n true`) before deploying.
+- **`nets add --jlink-script`/`--openocd-config`** refuse a file that is already
+  base64 (a copy of the `saved_nets.json` field), and refuse both flags together.
+- **Linux uninstall** exits 1 when a step FAILED, keeps the saved box then, and no
+  longer says lock.json was cleared when that step failed.
+- **`start_box.sh`** stops warning "Could not create /usr/bin/lsusb" for box_config
+  mounts of existing files.
+- **Keithley 2281S OCP** accepts up to 6.1 A, the value the instrument itself reports.
+- **Webcam**: a saved stream's pid is checked against its command line before it is
+  reused or signalled. After an update the pids start over, and `webcam stop` could
+  SIGTERM an unrelated process.
+
+Still open from that run:
+- **After a T7 replug, AIN reads lag one setpoint.** Once calls failed while the T7 was
+  out (so lager closed and reopened the handle), the first `adc` after each `dac`
+  returned the previous value; the next read was right. The agent itself measured
+  the stale value (logged in the ADC driver), on one handle shared by both threads.
+  A restarted agent, a standalone process with the same LJM, and a standalone
+  process driving lager's own handle manager and T7 drivers through the same
+  unplug and reopen all read correctly. Rewriting the AIN config on reopen and
+  `ljm.closeAll()` before the reopen did not help. Workaround: restart the agent.
+  With no calls while the T7 is out, LJM reconnects its handle and nothing lags.
+- LJM rejects `LJM_OPEN_TCP_DEVICE_TIMEOUT_MS`/`LJM_OPEN_USB_DEVICE_TIMEOUT_MS` in
+  `labjack_handle.get_handle` with 1299 (LJME_INVALID_CONFIG_NAME) on the Mac, so the
+  2 s open timeouts are never applied. Not checked on Linux.
+- Streams are not restarted after an update (the state does
+not record the box IP the viewer page embeds); `lager install --ip --yes` does not
+save the box (a Linux Box stores no name of its own); the T7 recovery case needs no
+self-restart once the open fails fast, so `_restart_address` still leaves LabJack out.
