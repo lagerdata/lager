@@ -1381,7 +1381,7 @@ def labjack_batch_read():
 
     if ljm_mod is None:
         logger.debug("labjack/batch_read: LJM not available: %s", _LJM_ERR)
-        return jsonify(results)
+        return _batch_read_response(results, f"LabJack LJM library not available: {_LJM_ERR}")
 
     # Lock on the identity the CALLER resolved. /invoke locks on `device_id`
     # from _physical_device_id() -- "labjack:" + the net's address -- so a
@@ -1407,6 +1407,7 @@ def labjack_batch_read():
         resp = jsonify(results)
         resp.headers['X-Lager-Device-Busy'] = '1'
         return resp
+    errors = []
     try:
         try:
             handle = get_labjack_handle()
@@ -1428,6 +1429,7 @@ def labjack_batch_read():
                         results[n["name"]] = "HIGH (1)" if val else "LOW (0)"
                 except Exception as e:
                     logger.debug("batch_read gpio: %s", e)
+                    errors.append(f"gpio: {e}")
 
             if adc_nets:
                 try:
@@ -1445,6 +1447,7 @@ def labjack_batch_read():
                         results[n["name"]] = "%.4fV" % float(v)
                 except Exception as e:
                     logger.debug("batch_read adc: %s", e)
+                    errors.append(f"adc: {e}")
 
             if dac_nets:
                 try:
@@ -1462,15 +1465,37 @@ def labjack_batch_read():
                         results[n["name"]] = "%.4fV" % float(v)
                 except Exception as e:
                     logger.debug("batch_read dac: %s", e)
+                    errors.append(f"dac: {e}")
 
         except Exception as e:
             logger.warning("labjack/batch_read failed: %s", e)
+            errors.append(str(e))
     finally:
         device_lock.release()
 
     if any(v is not None for v in results.values()):
         _note_ok(device_id)
-    return jsonify(results)
+    return _batch_read_response(results, errors[0] if errors else None)
+
+
+_DEVICE_ERROR_HEADER_MAX = 300
+
+
+def _batch_read_response(results, error):
+    """The batch-read body, plus why nets came back null when that is known.
+
+    The body keeps its contract (net name to value, null when unreadable). The
+    X-Lager-Device-Error header carries the driver's error, one line and
+    bounded, so `lager nets state` can show "LJM library not available" or
+    "not found on USB" instead of a generic "no value from instrument". It is
+    left off when every net was read.
+    """
+    resp = jsonify(results)
+    if error and any(v is None for v in results.values()):
+        line = " ".join(str(error).split())
+        resp.headers['X-Lager-Device-Error'] = (
+            line.encode('ascii', 'replace').decode('ascii')[:_DEVICE_ERROR_HEADER_MAX])
+    return resp
 
 
 def _cleanup_device_cache():
