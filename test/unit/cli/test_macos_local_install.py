@@ -267,8 +267,7 @@ def test_the_picoscope_app_is_installed_through_the_cask_only_when_missing(tmp_p
 def test_optional_steps_give_a_reason_instead_of_failing(layout, tmp_path):
     with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
         assert "libusb" in macos_box.build_labjack_library(layout, _Runner())
-    with mock.patch.object(macos_box.shutil, "which", return_value=None), \
-            mock.patch.object(macos_box.os.path, "exists", return_value=False):
+    with mock.patch.object(macos_box, "find_cargo", return_value=str(tmp_path / "no-cargo")):
         assert "Rust" in macos_box.build_scope_daemon(layout, tmp_path, _Runner())
     layout.lib_dir.mkdir(parents=True)
     (layout.lib_dir / "liblabjackusb.dylib").write_text("")
@@ -480,7 +479,7 @@ def test_the_agent_is_asked_to_load_libusb_on_its_own_library_path(layout):
 
 
 def test_libusb_is_installed_only_when_the_agent_cannot_load_one(layout, tmp_path):
-    steps = ("build_labjack_library", "ensure_rust", "build_scope_daemon",
+    steps = ("build_labjack_library", "install_ljm_library", "ensure_rust", "build_scope_daemon",
              "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb", "start_agent",
              "start_container", "check_platform", "ensure_config_dir", "write_state")
     for loads, expected_installs in ((None, 0), ("cannot load libusb", 1)):

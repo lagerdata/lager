@@ -665,21 +665,33 @@ class StaleControllerTests(unittest.TestCase):
 
 
 class FindGdbTests(unittest.TestCase):
+    # GDB_DIRS points at directories under a temp dir: os.path is never patched
+    # (test/unit/test_no_global_os_path_patches.py).
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.homebrew = os.path.join(tmp.name, "opt", "homebrew", "bin")
+        self.usr_local = os.path.join(tmp.name, "usr", "local", "bin")
+        os.makedirs(self.homebrew)
+        os.makedirs(self.usr_local)
+        dirs = patch.object(darwin_debug, "GDB_DIRS", (self.homebrew, self.usr_local))
+        dirs.start()
+        self.addCleanup(dirs.stop)
+
     def test_path_is_searched_before_the_fixed_directories(self):
+        open(os.path.join(self.homebrew, "arm-none-eabi-gdb"), "w").close()
         with patch.object(darwin_debug.shutil, "which",
-                          lambda name: "/usr/bin/" + name if name == "arm-none-eabi-gdb" else None), \
-                patch.object(darwin_debug.os.path, "exists", lambda path: False):
+                          lambda name: "/usr/bin/" + name if name == "arm-none-eabi-gdb" else None):
             self.assertEqual(darwin_debug.find_gdb(), "/usr/bin/arm-none-eabi-gdb")
 
     def test_homebrew_is_found_without_it_on_path(self):
-        with patch.object(darwin_debug.shutil, "which", lambda name: None), \
-                patch.object(darwin_debug.os.path, "exists",
-                             lambda path: path == "/opt/homebrew/bin/arm-none-eabi-gdb"):
-            self.assertEqual(darwin_debug.find_gdb(), "/opt/homebrew/bin/arm-none-eabi-gdb")
+        gdb = os.path.join(self.homebrew, "arm-none-eabi-gdb")
+        open(gdb, "w").close()
+        with patch.object(darwin_debug.shutil, "which", lambda name: None):
+            self.assertEqual(darwin_debug.find_gdb(), gdb)
 
     def test_none_when_there_is_no_arm_gdb(self):
-        with patch.object(darwin_debug.shutil, "which", lambda name: None), \
-                patch.object(darwin_debug.os.path, "exists", lambda path: False):
+        with patch.object(darwin_debug.shutil, "which", lambda name: None):
             self.assertIsNone(darwin_debug.find_gdb())
 
 
