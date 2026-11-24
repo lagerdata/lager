@@ -1128,7 +1128,7 @@ def _relative_to_box(tilde_path):
     return tilde_path.replace('~/box/', '', 1)
 
 
-def _build_hash_shell_cmd():
+def _build_hash_shell_cmd(root='"$HOME/box"'):
     """Shell snippet that prints a hash of the docker-build inputs.
 
     Covers both the individual files in `_BUILD_HASH_INPUTS` and every file
@@ -1157,6 +1157,11 @@ def _build_hash_shell_cmd():
     changes the hash — which is the point, since an additive-copy bug used to
     leave deleted files in the build context. Only the root is dropped.
 
+    `root` is the shell expression for the tree to hash, `"$HOME/box"` by
+    default. `lager box-config` passes the directory its bounce resolved,
+    which can be ~/box/box (see commands/box/_start_script.py); hashing
+    relative to it keeps the value comparable with /etc/lager/build-hash.
+
     `__pycache__` and `.pyc` files are excluded. They are derived artifacts
     regenerated on the box, so hashing them would make the value unstable and
     wipe the image on every run; any real change to a `.py` is caught by the
@@ -1165,7 +1170,7 @@ def _build_hash_shell_cmd():
     paths = ' '.join(_relative_to_box(p) for p in _BUILD_HASH_INPUTS)
     dirs = ' '.join(_relative_to_box(d) for d in _BUILD_HASH_SOURCE_DIRS)
     return (
-        'out=$(cd "$HOME/box" 2>/dev/null && { '
+        'out=$(cd ' + root + ' 2>/dev/null && { '
         'for f in ' + paths + '; do '
         '[ -f "$f" ] && sha256sum "$f"; '
         'done; '

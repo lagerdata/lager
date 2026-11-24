@@ -161,6 +161,13 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   run the script with `bash`, so a copy checked out without the executable
   bit still starts.
 
+- **`lager box-config apply`, `restart`, `repair` and the automatic rollback
+  no longer rebuild an image that is already current.** They reuse the
+  `lager` image when the box's code matches the build recorded by the last
+  `lager install` or `lager update`, and say so; otherwise they build as
+  before. This saves about a minute per bounce, and keeps a cold build from
+  running past the bounce's SSH timeout.
+
 ## [0.65.0] - 2026-11-19
 
 ### Added
