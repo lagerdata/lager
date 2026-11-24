@@ -31,7 +31,11 @@ from . import _shim_verbs as verbs
 from ._host_ops import apt_install, sysctl_apply, udev_apply
 from ._mount_prep import ensure_host_path_owned, manual_fix_command
 from ._pip_validation import is_direct_ref, validate_on_pypi
-from ._start_script import MANUAL_START_HINT, start_box_command
+from ._start_script import (
+    MANUAL_START_HINT,
+    SKIPPED_BUILD_MARKER,
+    start_box_command,
+)
 from ._ssh import default_ssh_runner, resolve_box_user
 
 # How long we'll wait for the box's HTTP API to come up after start_box.sh
@@ -2066,7 +2070,9 @@ def _bounce_container_rc(
     # Not a hardcoded `cd ~/box && ./start_box.sh`: on a box whose tracked tree
     # sits under ~/box/box, that path is an older copy (see _start_script).
     env = [(_NETWORK_SWITCH_CONFIRM_ENV, "1")] if confirm_network_switch else []
-    command = start_box_command(env)
+    # A bounce never changes what the image is built from, so the box skips
+    # the rebuild when the image matches the tree (see skip_build_if_current).
+    command = start_box_command(env, skip_build_when_current=True)
     try:
         rc, stdout, stderr = default_ssh_runner(
             resolved_box,
@@ -2094,6 +2100,9 @@ def _bounce_container_rc(
         return _BOUNCE_CONFIG_NOT_APPLIED
 
     if rc == 0:
+        if SKIPPED_BUILD_MARKER in (stdout or ""):
+            click.echo("  Image unchanged since the last install or update; "
+                       "reused it without rebuilding.")
         # Say what the container-side package steps did. Only [ERROR] lines were
         # ever relayed, and only on rc 3, so a successful apply printed nothing
         # about pip/cargo/npm at all -- which made "installed three crates" and

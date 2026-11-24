@@ -52,19 +52,72 @@ RESOLVE_START_DIR = (
 )
 
 
-def start_box_command(env: Iterable[tuple[str, str]] = (), args: str = "") -> str:
+SKIP_BUILD_VAR = "_lager_skip_build"
+
+
+def skip_build_if_current() -> str:
+    """Shell snippet: set SKIP_BUILD_VAR to 1 when the image is current.
+
+    A bounce never changes what the image is built from. box_config only
+    feeds `docker run` arguments and the post-start pip/cargo/npm steps, so
+    rebuilding on every bounce bought nothing: about a minute with a warm
+    Docker cache, and a cold build can outlast the bounce's SSH timeout.
+
+    "Current" means a `lager` image exists AND the tree this bounce will run
+    hashes to /etc/lager/build-hash, which `lager install` and `lager update`
+    write from the same hasher once their image is in place. The hash is taken
+    over the resolved directory, so a ~/box/box tree is measured as itself.
+    Anything else builds as before: no image, no recorded hash, or a tree that
+    changed since the last install or update (for example a git update that
+    did not go through `lager update`). A wrong skip would start new code on
+    an old image, so every doubt resolves to building.
+    """
+    # Lazy: utility.update is large and imports from commands.box.
+    from ..utility.update import _build_hash_shell_cmd
+
+    current = _build_hash_shell_cmd(f'"${START_DIR_VAR}"')
+    return (
+        f'{SKIP_BUILD_VAR}=""; '
+        "if docker image inspect lager >/dev/null 2>&1; then "
+        f"_lager_cur=$({current}); "
+        # Overridable only so unit tests need not write /etc/lager.
+        '_lager_rec=$(cat "${LAGER_BUILD_HASH_FILE:-/etc/lager/build-hash}" '
+        "2>/dev/null); "
+        'if [ -n "$_lager_cur" ] && [ "$_lager_cur" = "$_lager_rec" ]; then '
+        f"{SKIP_BUILD_VAR}=1; fi; fi"
+    )
+
+
+def start_box_command(
+    env: Iterable[tuple[str, str]] = (),
+    args: str = "",
+    *,
+    skip_build_when_current: bool = False,
+) -> str:
     """Shell command that runs the deployed start_box.sh.
 
     `env` pairs are prefixed to the `bash` invocation as `NAME=value`, so they
     reach start_box.sh and nothing else. Values are inserted verbatim: pass
     literals or `"$var"` references set earlier in the same command.
+
+    `skip_build_when_current` adds `skip_build_if_current` and passes its
+    verdict as LAGER_SKIP_BUILD. start_box.sh treats an empty value as unset.
     """
+    env = list(env)
+    steps = [RESOLVE_START_DIR]
+    if skip_build_when_current:
+        steps.append(skip_build_if_current())
+        env.append(("LAGER_SKIP_BUILD", f'"${SKIP_BUILD_VAR}"'))
     prefix = "".join(f"{name}={value} " for name, value in env)
     suffix = f" {args}" if args else ""
     return (
-        f'{RESOLVE_START_DIR}; cd "${START_DIR_VAR}" && '
-        f"{prefix}bash ./start_box.sh{suffix}"
+        "; ".join(steps)
+        + f'; cd "${START_DIR_VAR}" && {prefix}bash ./start_box.sh{suffix}'
     )
+
+
+# start_box.sh's line when LAGER_SKIP_BUILD is set; the bounce reports it.
+SKIPPED_BUILD_MARKER = "Skipping build (LAGER_SKIP_BUILD set"
 
 
 # For operator-facing hints: where to look when running it by hand.

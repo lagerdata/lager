@@ -16,6 +16,10 @@
 Each fake script records which copy ran. The deployed copies are written
 WITHOUT the executable bit, as git checks them out, so a direct
 `./start_box.sh` cannot run them and only a `bash` invocation passes.
+
+The same harness covers the build skip: a fake `docker` reports an image only
+when told to, and the recorded build hash is written with the hasher that
+`lager install` and `lager update` use.
 """
 
 import os
@@ -32,7 +36,7 @@ def _fake_script(label):
     # Records which copy ran, from which directory, and the env the bounce set.
     return (
         "#!/bin/bash\n"
-        f'echo "{label}|$(pwd)|${{LAGER_APPLY_NETWORK_SWITCH:-}}|$*" '
+        f'echo "{label}|$(pwd)|${{LAGER_APPLY_NETWORK_SWITCH:-}}|$*|${{LAGER_SKIP_BUILD:-}}" '
         '>> "$HOME/ran"\n'
     )
 
@@ -49,7 +53,9 @@ class _BoxHome:
         # Any docker call from the bounce must not reach the real daemon.
         self.bin = os.path.join(self.home, "bin")
         os.makedirs(self.bin)
-        self.write(os.path.join(self.bin, "docker"), "#!/bin/sh\nexit 1\n", mode=0o755)
+        self.write(os.path.join(self.bin, "docker"),
+                   '#!/bin/sh\n[ -f "$HOME/has_image" ]\n', mode=0o755)
+        self.hash_file = os.path.join(self.home, "build-hash")
 
     def cleanup(self):
         self._tmp.cleanup()
@@ -71,7 +77,8 @@ class _BoxHome:
     def run(self, cmd, timeout=60):
         env = {
             "HOME": self.home,
-            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "LAGER_BUILD_HASH_FILE": self.hash_file,
         }
         p = subprocess.run(["sh", "-c", cmd], env=env, capture_output=True, check=False,
                            text=True, timeout=timeout)
@@ -163,6 +170,117 @@ class BounceResolvesTheDeployedScript(unittest.TestCase):
         self.assertEqual(ran, [])
 
 
+class BounceSkipsTheBuildOnlyWhenTheImageIsCurrent(unittest.TestCase):
+    """LAGER_SKIP_BUILD is set only when a `lager` image exists AND the tree
+    the bounce runs hashes to the recorded build hash. Every other case must
+    build, because a wrong skip starts new code on an old image."""
+
+    def setUp(self):
+        self.home = _BoxHome()
+        self.addCleanup(self.home.cleanup)
+
+    def _tree(self, root, body="v1"):
+        self.home.write(os.path.join(root, "lager", "docker", "box.Dockerfile"),
+                        f"FROM scratch # {body}\n")
+        self.home.write(os.path.join(root, "lager", "nets", "net.py"), f"# {body}\n")
+
+    def _record_hash_of(self, root_expr):
+        """What `lager install` / `lager update` write, from the same hasher."""
+        from cli.commands.utility.update import _build_hash_shell_cmd
+        rc, out, err = self.home.run(_build_hash_shell_cmd(root_expr))
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(out.strip(), "the hasher measured nothing")
+        with open(self.home.hash_file, "w") as f:
+            f.write(out)
+
+    def _image(self):
+        open(os.path.join(self.home.home, "has_image"), "w").close()
+
+    def _skip_value(self):
+        def runner(_box, cmd, timeout=None, **_kw):
+            return self.home.run(cmd)
+
+        with patch.object(box_config_cli, "default_ssh_runner", side_effect=runner):
+            rc = box_config_cli._bounce_container_rc(None, "test-box")
+        self.assertEqual(rc, box_config_cli._BOUNCE_OK)
+        ran = self.home.ran()
+        self.assertEqual(len(ran), 1, ran)
+        return ran[0][4]
+
+    def test_current_image_on_a_flat_box_skips_the_build(self):
+        self.home.top()
+        self._tree(self.home.box)
+        self._record_hash_of('"$HOME/box"')
+        self._image()
+        self.assertEqual(self._skip_value(), "1")
+
+    def test_current_image_for_a_nested_tree_skips_the_build(self):
+        """The nested tree is measured as itself, with the same relative
+        paths, so it matches what an update of that tree records."""
+        self.home.top(label="stale-top", mode=0o755)
+        self._tree(self.home.box, body="old")
+        self.home.nested_tree()
+        self._tree(self.home.nested, body="new")
+        self._record_hash_of('"$HOME/box/box"')
+        self._image()
+        self.assertEqual(self._skip_value(), "1")
+
+    def test_no_image_builds(self):
+        self.home.top()
+        self._tree(self.home.box)
+        self._record_hash_of('"$HOME/box"')
+        self.assertEqual(self._skip_value(), "")
+
+    def test_tree_changed_since_the_recorded_hash_builds(self):
+        self.home.top()
+        self._tree(self.home.box)
+        self._record_hash_of('"$HOME/box"')
+        self._tree(self.home.box, body="edited")
+        self._image()
+        self.assertEqual(self._skip_value(), "")
+
+    def test_hash_recorded_for_the_stale_top_level_tree_builds(self):
+        """The image matches the older top-level tree, but the bounce runs
+        the newer nested one, so the image is not current for it."""
+        self.home.top(label="stale-top", mode=0o755)
+        self._tree(self.home.box, body="old")
+        self.home.nested_tree()
+        self._tree(self.home.nested, body="new")
+        self._record_hash_of('"$HOME/box"')
+        self._image()
+        self.assertEqual(self._skip_value(), "")
+
+    def test_no_recorded_hash_builds(self):
+        self.home.top()
+        self._tree(self.home.box)
+        self._image()
+        self.assertEqual(self._skip_value(), "")
+
+    def test_an_empty_tree_never_matches_an_empty_record(self):
+        self.home.top()
+        open(self.home.hash_file, "w").close()
+        self._image()
+        self.assertEqual(self._skip_value(), "")
+
+    def test_the_cli_says_when_it_reused_the_image(self):
+        stdout = ("[1/1] Skipping build (LAGER_SKIP_BUILD set; image already "
+                  "built by caller)\n")
+        with patch.object(box_config_cli, "default_ssh_runner",
+                          return_value=(0, stdout, "")), \
+             patch.object(box_config_cli.click, "echo") as echo:
+            box_config_cli._bounce_container_rc(None, "test-box")
+        said = " ".join(str(c.args[0]) for c in echo.call_args_list if c.args)
+        self.assertIn("reused it without rebuilding", said)
+
+    def test_the_marker_matches_start_box_sh(self):
+        """The CLI keys its message on start_box.sh's own line; if that line
+        is reworded the message silently stops, so pin the two together."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        script = os.path.join(here, "..", "..", "..", "box", "start_box.sh")
+        with open(script) as f:
+            self.assertIn(_start_script.SKIPPED_BUILD_MARKER, f.read())
+
+
 class BounceCommandShape(unittest.TestCase):
     """The command text itself, for the properties a fake home cannot show."""
 
@@ -178,6 +296,10 @@ class BounceCommandShape(unittest.TestCase):
             self.assertIn("bash ./start_box.sh", cmd)
             # Every mention of the script is an argument to bash.
             self.assertNotRegex(cmd, r"(?<!bash )\./start_box\.sh")
+
+    def test_passes_the_skip_verdict_to_start_box_sh(self):
+        cmd = self._command()
+        self.assertIn('LAGER_SKIP_BUILD="$_lager_skip_build" bash ./start_box.sh', cmd)
 
     def test_uses_the_shared_resolver(self):
         self.assertIn(_start_script.RESOLVE_START_DIR, self._command())
