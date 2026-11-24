@@ -51,6 +51,16 @@ class _Runner:
         return _done()
 
 
+@pytest.fixture(autouse=True)
+def _a_terminal_is_assumed(monkeypatch):
+    """No test may run the real `sudo -n true`. The tests of the check itself
+    call _real_sudo_check."""
+    monkeypatch.setattr(macos_box, "sudo_needs_a_terminal", lambda *a, **k: False)
+
+
+_real_sudo_check = macos_box.sudo_needs_a_terminal
+
+
 @pytest.fixture
 def layout(tmp_path):
     return macos_box.Layout(home=tmp_path)
@@ -539,6 +549,41 @@ def test_config_dir_needs_sudo_only_when_missing(tmp_path):
     assert run.calls[0][0][0] == "sudo" and "chown me" in run.calls[0][0][-1]
 
 
+def test_the_manual_fix_is_one_command_per_line(tmp_path):
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path / "absent")):
+        with pytest.raises(LagerError) as caught:
+            macos_box.ensure_config_dir(_Runner(), user="me")
+    fixes = caught.value.fixes
+    assert fixes[:3] == [f"sudo mkdir -p {tmp_path / 'absent'}",
+                         f"sudo chown me {tmp_path / 'absent'}",
+                         f"chmod 700 {tmp_path / 'absent'}"]
+    assert not any("&&" in fix for fix in fixes)
+
+
+def test_sudo_needs_a_terminal_only_without_one_and_without_a_credential():
+    asked = _Runner()
+    assert _real_sudo_check(asked, isatty=lambda: True) is False
+    assert asked.calls == [], "with a terminal, sudo is not even asked"
+    assert _real_sudo_check(_Runner([(lambda a, k: a[:2] == ["sudo", "-n"], _done(0))]),
+                            isatty=lambda: False) is False
+    assert _real_sudo_check(_Runner([(lambda a, k: a[:2] == ["sudo", "-n"], _done(1))]),
+                            isatty=lambda: False) is True
+
+
+def test_no_terminal_fails_before_any_question(lager_home, tmp_path, monkeypatch):
+    from cli.commands.utility.install import install
+    monkeypatch.setattr(macos_box, "sudo_needs_a_terminal", lambda *a, **k: True)
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "ETC_DIR", str(tmp_path / "etc")), \
+            mock.patch.object(macos_box, "install") as provision:
+        result = CliRunner().invoke(install, [], obj={}, input="y\nbench\n")
+    assert result.exit_code != 0
+    assert "no terminal" in result.output
+    assert "Continue?" not in result.output
+    assert f"sudo mkdir -p {tmp_path / 'etc'}" in result.output
+    provision.assert_not_called()
+
+
 def test_state_files_match_what_a_linux_install_writes(tmp_path):
     with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)):
         macos_box.write_state("0.64.0", "0.64.1", "v0.64.0")
@@ -634,7 +679,9 @@ def test_what_homebrew_will_install_is_known_before_the_install(tmp_path):
         assert macos_box.homebrew_installs() == [
             "libusb", "OrbStack (Docker)", "SEGGER J-Link", "PicoScope 7", "Rust", "an ARM GDB"]
         assert macos_box.homebrew_installs(["jlink", "picoscope"]) == [
-            "libusb", "OrbStack (Docker)", "an ARM GDB"]
+            "libusb", "OrbStack (Docker)"], "--skip-jlink leaves the ARM GDB out too"
+        assert macos_box.homebrew_installs(["picoscope"]) == [
+            "libusb", "OrbStack (Docker)", "SEGGER J-Link", "an ARM GDB"]
     with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
         assert macos_box.homebrew_installs() == [], "no Homebrew: nothing to install with"
 
@@ -663,11 +710,11 @@ def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, t
                                    source=tmp_path, skip=["jlink", "picoscope"])
     assert result.ready == [macos_box.USB_INSTRUMENTS, "LabJack U3/U6 support",
                             "LabJack T4/T7/T8 support"]
-    assert result.skipped == ["RTT auto-detection: no Homebrew"]
-    for left_out in ("ensure_jlink", "ensure_picoscope_app", "ensure_rust",
-                     "build_scope_daemon"):
+    assert result.skipped == [], "nothing J-Link needs is attempted under --skip-jlink"
+    for left_out in ("ensure_jlink", "ensure_arm_gdb", "ensure_picoscope_app",
+                     "ensure_rust", "build_scope_daemon"):
         called[left_out].assert_not_called()
-    assert "Leaving out J-Link debugging (--skip-jlink)." in lines
+    assert "Leaving out J-Link debugging and its ARM GDB (--skip-jlink)." in lines
     assert "Leaving out PicoScope support (--skip-picoscope)." in lines
 
 

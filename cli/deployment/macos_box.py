@@ -368,6 +368,36 @@ def ensure_source(layout: Layout, version: str, run: Run = _run,
     return target
 
 
+def config_dir_fixes(user: Optional[str] = None) -> List[str]:
+    """The commands that create ``/etc/lager`` by hand, one per line.
+
+    One line each, not an ``&&`` chain: a chain is easy to mangle when it is
+    pasted, and a viewer that escapes ``&`` turns it into ``&amp;&amp;``.
+    """
+    user = user or os.environ.get("USER") or str(os.getuid())
+    return [f"sudo mkdir -p {ETC_DIR}", f"sudo chown {user} {ETC_DIR}",
+            f"chmod 700 {ETC_DIR}", "Then run `lager install` again."]
+
+
+def config_dir_needs_sudo() -> bool:
+    """True when ``/etc/lager`` has to be created (or taken over) with sudo."""
+    return not (os.path.isdir(ETC_DIR) and os.access(ETC_DIR, os.W_OK))
+
+
+def sudo_needs_a_terminal(run: Run = _run, isatty=None) -> bool:
+    """True when sudo would have to ask for a password and cannot.
+
+    sudo reads the password from the terminal. Without one (a pipe, CI, an
+    agent's shell) it fails with "a terminal is required", minutes into the
+    install. Asked up front instead: no terminal, and no cached sudo
+    credential or passwordless rule (`sudo -n true` fails).
+    """
+    isatty = isatty or (lambda: sys.stdin.isatty())
+    if isatty():
+        return False
+    return run(["sudo", "-n", "true"], timeout=10).returncode != 0
+
+
 def ensure_config_dir(run: Run = _run, user: Optional[str] = None) -> bool:
     """Create ``/etc/lager`` owned by the user. True if ``sudo`` was needed."""
     if os.path.isdir(ETC_DIR) and os.access(ETC_DIR, os.W_OK):
@@ -383,8 +413,7 @@ def ensure_config_dir(run: Run = _run, user: Optional[str] = None) -> bool:
             f"The CLI did not create {ETC_DIR}.",
             cause="It is the Box's configuration directory and needs "
                   "administrator rights to create, once.",
-            fixes=[f"sudo mkdir -p {ETC_DIR} && sudo chown {user} {ETC_DIR} "
-                   f"&& chmod 700 {ETC_DIR}", "Then run `lager install` again."])
+            fixes=config_dir_fixes(user))
     return True
 
 
@@ -1049,7 +1078,9 @@ def homebrew_installs(skip: Sequence[str] = ()) -> List[str]:
             wanted.append("PicoScope 7")
         if not os.path.exists(find_cargo()):
             wanted.append("Rust")
-    if homebrew_prefix_with(f"bin/{ARM_GDB}") is None:
+    # The ARM GDB serves only debug probes, and J-Link is the only one a Mac
+    # Box drives today, so --skip-jlink leaves it out too.
+    if "jlink" not in skip and homebrew_prefix_with(f"bin/{ARM_GDB}") is None:
         wanted.append("an ARM GDB")
     return wanted
 
@@ -1168,10 +1199,10 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
                  or build_scope_daemon(layout, source, run, echo))
         optional("PicoScope support", lambda: ensure_picoscope_app(run, echo))
     if "jlink" in skip:
-        echo("Leaving out J-Link debugging (--skip-jlink).")
+        echo("Leaving out J-Link debugging and its ARM GDB (--skip-jlink).")
     else:
         optional("J-Link debugging", lambda: ensure_jlink(run, echo))
-    optional("RTT auto-detection", lambda: ensure_arm_gdb(run, echo))
+        optional("RTT auto-detection", lambda: ensure_arm_gdb(run, echo))
     echo("Starting the host agent...")
     start_agent(layout, source, run)
 
@@ -1223,7 +1254,7 @@ def uninstall(*, purge_config: bool = False, echo=print, run: Run = _run,
     try:
         docker, env = find_docker(run)
     except LagerError:
-        echo("Docker is not running; the Box container was not removed.")
+        echo("Docker does not answer, so the Box container was not removed.")
     if docker:
         run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
         if not keep_images:
