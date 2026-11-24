@@ -1,0 +1,163 @@
+---
+title: Setting Up a Lager Box on a Mac
+description: Turn the Apple silicon Mac in front of you into a Lager Box
+---
+
+Your Mac can be the Lager Box itself. Plug instruments into it and run `lager install`.
+Then every `lager` command and `lager python` script works with them.
+
+<Note>
+The macOS Box is new. Most instruments that work on a Linux Box work on a Mac, but some
+are not supported yet. See [What Is Not Supported Yet](#what-is-not-supported-yet)
+before you rely on one.
+</Note>
+
+---
+
+## How It Works
+
+A Linux Box runs its Box software in a Docker container that reaches the USB instruments
+directly. Docker on a Mac cannot pass USB devices into a container, so a Mac Box runs in
+two parts:
+
+- a **host agent**, a background service in your login session, that owns the USB
+  instruments; and
+- the **Box container**, which runs your scripts and the `lager` services. It has no
+  device access and asks the agent for each instrument.
+
+`lager install` sets up both. You do not run or configure the agent yourself.
+
+---
+
+## What You Need
+
+- An **Apple silicon** Mac (M1 or later). Intel Macs are not supported.
+- A current macOS. The port is developed and tested on macOS 14 and later.
+- **Docker Desktop** or **OrbStack**, installed and running.
+- **Homebrew** (recommended). The installer uses it for libusb, SEGGER J-Link and the
+  ARM GDB. Without it, those pieces are reported as "Not set up".
+- **Python 3.10 or higher** and the Lager CLI: `pip3 install lager-cli`.
+- An administrator account. The installer asks for your password once, to create
+  `/etc/lager`.
+
+---
+
+## Step 1: Run the Installer in a Terminal
+
+Open **Terminal** and run:
+
+```bash
+lager install
+```
+
+With no `--ip`, `lager install` installs on this Mac. Before it starts it:
+
+- lists what Homebrew will install, and which installers ask for your password
+  (SEGGER J-Link does);
+- asks to continue, and what name to save the Box under (default `local`).
+
+It then:
+
+- creates `/etc/lager` (your password is asked for once, by `sudo`);
+- downloads the Box image (several GB the first time);
+- sets up the host agent, LabJack support (U3/U6 and T4/T7/T8), J-Link and the ARM GDB;
+- starts the agent and the Box container.
+
+At the end, a **Set up:** line lists what is ready. A **Not set up:** line lists each
+part it did not install, with the reason.
+
+<Warning>
+Run it in a terminal window, because the password prompt needs one. From a pipe, a
+script or CI, the installer stops at once. It prints the commands that create
+`/etc/lager` by hand:
+
+```bash
+sudo mkdir -p /etc/lager
+sudo chown $USER /etc/lager
+chmod 700 /etc/lager
+```
+
+After those, `lager install` needs no password.
+</Warning>
+
+Useful options:
+
+| Option | Effect |
+|---|---|
+| `--skip-jlink` | Leave out SEGGER J-Link and the ARM GDB |
+| `--skip-picoscope` | Leave out PicoScope and the scope daemon (needs Rust) |
+| `--yes` | Accept the defaults without asking |
+
+---
+
+## Step 2: Verify
+
+```bash
+lager hello --box local
+```
+
+Use the name you chose in Step 1 instead of `local` if you changed it.
+
+---
+
+## Step 3: Add Nets
+
+Nets are added the same way as on a Linux Box ([Setting Up
+Instruments](/source/getting-started/setting-up-instruments)), with these differences.
+
+- **Serial ports have Linux-style names.** Inside the Box, the Mac's `/dev/cu.*` ports
+  are called `ttyUSB0`, `ttyUSB1`, ... (USB serial adapters) and `ttyACM0`, ... (USB CDC
+  devices such as a J-Link VCOM), numbered in sorted order. There are no
+  `/dev/serial/by-id` names, so a net copied from a Linux Box needs its port renamed.
+- **`lager instruments` opens no port on a Mac.** It reads the USB registry and shows
+  the serial port of each adapter that it recognizes.
+- **A LabJack T7 reports no serial number** on macOS, so its address ends in `::::INSTR`.
+  Only one T7 per Mac can be told apart.
+
+---
+
+## Recovering
+
+If an instrument stops answering:
+
+1. Unplug it and plug it back in, then try the command again.
+2. Restart the host agent:
+   ```bash
+   launchctl kickstart -k gui/$(id -u)/com.lagerdata.lager-host
+   ```
+3. Restart the Box container: `docker restart lager`.
+
+<Note>
+After you plug in a LabJack T7 again, an ADC read after a DAC change can show
+the old value. To stop this, restart the host agent (step 2).
+</Note>
+
+Running `lager install` again repairs an install in place and keeps your nets.
+
+---
+
+## Uninstalling
+
+```bash
+lager uninstall
+```
+
+This removes the agent, the container and the agent's files. `/etc/lager` (your saved
+nets) is kept; add `--purge-config` to remove it too.
+
+---
+
+## What Is Not Supported Yet
+
+These work on a Linux Box but not yet on a Mac Box:
+
+- OpenOCD debug probes (J-Link works);
+- Rigol oscilloscopes and logic analyzers (PicoScope works);
+- serial-port supplies (Rigol DP700, EA PSB), DexArm, and nets pinned by
+  `/dev/serial/by-id` or `by-path`;
+- webcams and HDMI capture;
+- Bluetooth (BLE) and BluFi;
+- `lager diagnose`, DFU, and `lager update --check` for a local Box.
+
+Not planned: WiFi control, and scripts that use raw USB, pyftdi or bleak directly.
+Those fail with a clear message.
