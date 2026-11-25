@@ -33,9 +33,12 @@ import os
 import re
 import tempfile
 import time
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-LEVELS = ("low", "high")
+# Vendor-neutral helpers, shared with every power-up backend. Re-exported here
+# because this module's callers and tests have always found them here.
+from .power_up.base import LEVELS, iter_declared, normalize_level, public
+from .power_up.base import PowerUpError as BootConfigError
 
 # T7 DIO numbering: FIO0-7 = 0-7, EIO0-7 = 8-15, CIO0-3 = 16-19, MIO0-2 = 20-22.
 _T7_BLOCKS = {"FIO": (0, 8), "EIO": (8, 8), "CIO": (16, 4), "MIO": (20, 3)}
@@ -61,22 +64,6 @@ RECORD_FILE = os.environ.get("LAGER_LABJACK_BOOT_RECORD",
                              "/etc/lager/labjack_boot_config.json")
 
 
-class BootConfigError(RuntimeError):
-    """The boot configuration cannot be checked or written as asked."""
-
-
-def normalize_level(value) -> Optional[str]:
-    """``"low"``/``"high"`` for a declared level, ``None`` for unset.
-
-    Raises ValueError for anything else. No default: LOW is the asserting
-    level of an active-low line, and an input net must stay undeclared.
-    """
-    if value is None:
-        return None
-    text = str(value).strip().lower()
-    if text in LEVELS:
-        return text
-    raise ValueError(f"power_up must be 'low' or 'high', got {value!r}")
 
 
 def t7_pin_to_dio(pin) -> int:
@@ -349,28 +336,6 @@ def u3_apply(device, declared: Dict[int, str], drive) -> Dict[str, Any]:
     after.pop("_target", None)
     after["written"] = True
     return after
-
-
-def public(plan: Dict[str, Any], nets: Dict[int, str]) -> Dict[str, Any]:
-    """The JSON-safe report for one device: pins keyed by net, not DIO."""
-    out = {k: v for k, v in plan.items() if not k.startswith("_") and k != "pins"}
-    out["pins"] = [dict(info, net=nets.get(dio), dio=dio)
-                   for dio, info in sorted(plan["pins"].items())]
-    return out
-
-
-def iter_declared(entries: Iterable[Tuple[int, str, str]]):
-    """``(declared {dio: level}, nets {dio: name})``; refuses two nets on one pin."""
-    declared: Dict[int, str] = {}
-    names: Dict[int, str] = {}
-    for dio, level, name in entries:
-        if dio in declared and declared[dio] != level:
-            raise BootConfigError(
-                f"nets '{names[dio]}' and '{name}' share a pin but declare "
-                f"different power-up levels")
-        declared[dio] = level
-        names.setdefault(dio, name)
-    return declared, names
 
 
 __all__ = [

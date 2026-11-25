@@ -188,6 +188,16 @@ def test_a_device_error_fails_the_apply(box):
     assert "LabJack (labjack:" + T7 + ")" in result.output
 
 
+def test_the_title_comes_from_the_reported_backend(box):
+    # A newer box can report a family this CLI has no label for: it is named
+    # generically rather than called a LabJack.
+    box.plan = {"mode": "plan", "undeclared": [], "in_sync": False,
+                "devices": [{"device_id": "other:1", "backend": "other", "error": "x"}]}
+    result = _invoke("apply-power-up", "--check")
+    assert "Device (other:1)" in result.output
+    assert "LabJack" not in result.output.split("Device (other:1)")[0]
+
+
 def test_json_report(box):
     result = _invoke("apply-power-up", "--check", "--json")
     assert result.exit_code == 1

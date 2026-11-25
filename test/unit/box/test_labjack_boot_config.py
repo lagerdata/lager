@@ -278,13 +278,13 @@ class HelperTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
-    """labjack_boot_config_hs: nets resolve through the GPIO dispatcher."""
+    """power_up_hs + the LabJack backend: nets resolve through the GPIO dispatcher."""
 
-    def _adapter(self, resolved):
+    def _adapter(self, resolved, instrument="LabJack_T7"):
         import sys
         import types
         from unittest.mock import patch
-        from lager import labjack_boot_config_hs as hs
+        from lager import power_up_hs as hs
         disp = types.ModuleType("lager.io.gpio.dispatcher")
         disp._dispatcher = MagicMock()
         disp._dispatcher._resolve_net_and_driver.side_effect = lambda n: resolved[n]
@@ -295,7 +295,7 @@ class AdapterTests(unittest.TestCase):
         q = patch.object(pkg, "dispatcher", disp, create=True)
         q.start()
         self.addCleanup(q.stop)
-        return hs.LabJackBootConfigAdapter("PUMP")
+        return hs.create_device({"name": "PUMP", "instrument": instrument})
 
     def test_t7_plan_uses_the_driver_handle(self):
         from lager.io.gpio.labjack_t7 import LabJackGPIO
@@ -311,14 +311,53 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(report["pins"][0]["dio_name"], "FIO3")
         drv.output.assert_not_called()
 
+    def test_the_report_names_its_backend_and_storage(self):
+        report = self._adapter({}).run("plan", [])
+        self.assertEqual(report["backend"], "labjack")
+        self.assertEqual(report["storage"], "flash")
+        self.assertTrue(report["coverage"])
+        self.assertTrue(report["in_sync"])
+
     def test_a_non_labjack_driver_is_refused(self):
         adapter = self._adapter({"PUMP": (MagicMock(), 3)})
         with self.assertRaises(bc.BootConfigError):
             adapter.run("plan", [{"name": "PUMP", "power_up": "low"}])
 
+    def test_an_instrument_with_no_backend_is_refused(self):
+        from lager.io.gpio.power_up import PowerUpError
+        with self.assertRaises(PowerUpError):
+            self._adapter({}, instrument="Aardvark").run("plan", [])
+
     def test_unknown_mode_is_refused(self):
         with self.assertRaises(ValueError):
             self._adapter({}).run("write", [])
+
+
+class RegistryTests(unittest.TestCase):
+    """lager.io.gpio.power_up: which instruments can hold a power-up level."""
+
+    def test_labjack_t7_and_u3_have_the_flash_backend(self):
+        from lager.io.gpio import power_up
+        for instrument in ("LabJack_T7", "labjack t7", "LabJack_U3", "LABJACK-U3"):
+            with self.subTest(instrument=instrument):
+                backend = power_up.backend_for(instrument)
+                self.assertIsNotNone(backend)
+                self.assertEqual(backend.family, "labjack")
+                self.assertEqual(backend.storage, "flash")
+
+    def test_other_instruments_have_none(self):
+        from lager.io.gpio import power_up
+        for instrument in ("LabJack_U6", "USB-202", "Aardvark", "", None):
+            with self.subTest(instrument=instrument):
+                self.assertIsNone(power_up.family_for(instrument))
+                self.assertIsNone(power_up.backend_for(instrument))
+
+    def test_the_labjack_module_reexports_the_shared_helpers(self):
+        from lager.io.gpio.power_up import base
+        self.assertIs(bc.BootConfigError, base.PowerUpError)
+        self.assertIs(bc.normalize_level, base.normalize_level)
+        self.assertIs(bc.iter_declared, base.iter_declared)
+        self.assertIs(bc.public, base.public)
 
 
 if __name__ == "__main__":

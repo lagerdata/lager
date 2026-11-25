@@ -2,22 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-hardware_service adapter for LabJack power-up (boot) levels.
+LabJack T7 / U3 power-up backend: the level is stored in the LabJack's flash.
 
-One instance per LabJack, under that LabJack's ``device_id`` lock, so a check
-or a save never interleaves with a gpo/gpi/adc/dac call on the same device.
 Each declared net is resolved through the GPIO dispatcher, the same path
 ``lager gpo`` takes, so pins are parsed and driven exactly as they are there.
-The boot-config logic is in ``lager.io.gpio.labjack_boot_config``.
+The boot-config logic itself is in ``lager.io.gpio.labjack_boot_config``.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from .base import PowerUpBackend
 
-class LabJackBootConfigAdapter:
-    def __init__(self, netname: str) -> None:
-        self._netname = netname
+
+class LabJackBackend(PowerUpBackend):
+    family = "labjack"
+    label = "LabJack"
+    storage = "flash"
+    coverage = ("The LabJack applies these levels itself as it boots, before any "
+                "host software runs; until then its pins are pulled-up inputs.")
 
     @staticmethod
     def _resolve(nets: List[Dict[str, Any]]):
@@ -56,16 +59,10 @@ class LabJackBootConfigAdapter:
             drivers[dio] = drv
         return kind, context, entries, drivers
 
-    def run(self, mode: str = "plan", nets=None, allow_undeclared: bool = False):
-        """Check (``mode="plan"``) or write (``mode="apply"``) one LabJack.
-
-        ``nets`` is ``[{"name", "power_up"}, ...]`` for the nets on this
-        LabJack. Returns the device report from ``labjack_boot_config.public``.
-        """
+    def run(self, mode, nets, allow_undeclared=False):
+        """Check (``mode="plan"``) or write (``mode="apply"``) one LabJack."""
         from lager.io.gpio import labjack_boot_config as bc
 
-        if mode not in ("plan", "apply"):
-            raise ValueError(f"mode must be 'plan' or 'apply', got {mode!r}")
         kind, context, entries, drivers = self._resolve(list(nets or []))
         if kind is None:
             return {"model": None, "pins": [], "in_sync": True, "written": False}
@@ -90,5 +87,4 @@ class LabJackBootConfigAdapter:
         return bc.public(report, names)
 
 
-def create_device(net_info, **_):
-    return LabJackBootConfigAdapter((net_info or {}).get("name"))
+BACKEND = LabJackBackend()
