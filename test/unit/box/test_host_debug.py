@@ -299,6 +299,42 @@ class DebugRpcTests(unittest.TestCase):
                 self._call(method="flash", args=["/c/x"], firmware=firmware)
                 self.assertTrue(self.dbg.flashed[0].endswith(suffix), self.dbg.flashed[0])
 
+    def test_a_flash_file_suffix_comes_from_the_supported_types(self):
+        for name, suffix in (("APP.HEX", ".hex"), ("fw.Elf", ".elf"), ("raw.BIN", ".bin")):
+            with self.subTest(name=name):
+                firmware = {"name": name, "data": base64.b64encode(b"\x01").decode()}
+                self._call(method="flash", args=["/c/x", 0x0], firmware=firmware)
+                self.assertTrue(self.dbg.flashed[0].endswith(suffix), self.dbg.flashed[0])
+
+    def test_an_unsupported_flash_file_type_is_refused_before_a_file_is_written(self):
+        firmware = {"name": "app.axf", "data": base64.b64encode(b"\x01").decode()}
+        with patch.object(debug_rpc.tempfile, "mkstemp") as mkstemp:
+            resp = self._call(method="flash", args=["/c/app.axf"], firmware=firmware)
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.get_json()["error"], "Unsupported firmware file type: .axf")
+        self.assertEqual(resp.get_json()["type"], "ValueError")
+        mkstemp.assert_not_called()
+        self.assertIsNone(self.dbg.flashed)
+
+    def test_flash_address_by_name_reaches_the_probe(self):
+        firmware = {"name": "app.bin", "data": base64.b64encode(b"\x01").decode()}
+        resp = self._call(method="flash", args=["/c/app.bin"],
+                          kwargs={"flash_address": 0x8000000}, firmware=firmware)
+        self.assertEqual(resp.get_json(), {"result": "flashed"})
+        self.assertEqual(self.dbg.flashed[2], 0x8000000)
+
+    def test_flash_takes_no_argument_but_the_address(self):
+        # A kwarg such as firmware_path would otherwise reach DebugNet.flash().
+        firmware = {"name": "app.bin", "data": base64.b64encode(b"\x01").decode()}
+        for args, kwargs in ((["/c/app.bin"], {"firmware_path": "/etc/hosts"}),
+                             (["/c/app.bin", 0x0, "extra"], {}),
+                             (["/c/app.bin", 0x0], {"flash_address": 0x0})):
+            with self.subTest(args=args, kwargs=kwargs):
+                resp = self._call(method="flash", args=args, kwargs=kwargs, firmware=firmware)
+                self.assertEqual(resp.status_code, 400)
+        self.assertIsNone(self.dbg.flashed)
+        self.assertEqual(self.made, [])
+
     def test_path_keys_in_the_net_record_are_dropped(self):
         net_info = {"instrument": "J-Link", "jlink_script_path": "/etc/hosts",
                     "openocd_config_path": "/tmp/x.cfg", "jlink_script": "QUJD"}
