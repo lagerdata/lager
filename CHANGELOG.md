@@ -14,11 +14,42 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 ### Added
 
+- **A Lager Box can run on an Apple silicon Mac.** `lager install` with no
+  `--ip` installs a Box on the Mac it runs on, and `lager install --ip <mac>`
+  installs one on another Mac. A host agent owns the USB instruments, and the
+  Box container asks it for each one. See the "Setting Up a Lager Box on a Mac"
+  page.
+
+- **The Mac installer sets up the vendor libraries.** It installs LabJack LJM
+  (no admin rights needed), libusb, SEGGER J-Link and the ARM GDB, and reports
+  each one it cannot set up as "Not set up". `--skip-jlink` leaves out J-Link
+  and the ARM GDB.
+
+- **`lager update` and `lager uninstall` work on a Mac Box.** With no `--box` or
+  `--ip`, they act on the Box on this machine.
+
 - **`lager defaults add --energy-net`, `--i2c-net` and `--spi-net`.** `lager
   energy`, `lager i2c` and `lager spi` already fell back to a default net, but no
   option could set one. Each has a matching `lager defaults delete` subcommand.
 
 ### Changed
+
+- **Behavior change: a LabJack T7 opens over USB.** It opened with `ANY`, and an
+  unplugged T7 then searched the network and held the device lock for minutes.
+  A T7 that is not on USB now fails in seconds with "not found on USB". Set
+  `LAGER_LABJACK_CONNECTION=ANY` on the box for a T7 reached over the network.
+
+- **User scripts no longer get `PIGPIO_ADDR`.** The box no longer looks for a
+  pigpio container. A value that the caller passes with `--env` still reaches
+  the script.
+
+- **`lager install` and `lager uninstall` with no target act on this
+  machine.** On Linux they connect to 127.0.0.1 over SSH. Before, they stopped
+  with "Either --box or --ip is required".
+
+- **`lager install --ip` checks for a terminal before it deploys.** When the box
+  needs a sudo password and stdin is not a terminal, it stops before it changes
+  the box.
 
 - **Behavior change: `lager i2c` addresses and `lager spi --fill` read a bare
   number as decimal.** Hex now needs a `0x` prefix. Before, a value of one or
@@ -47,6 +78,36 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   Pressing Enter at the prompt no longer turns the output off.
 
 ### Fixed
+
+- **`lager debug` memory reads of 16 KiB and more work.** J-Link Commander
+  reads counts as hex, and lager sent them in decimal. Reads are now split at
+  0x4000 items.
+
+- **Firmware runs after `lager debug <net> flash` on a non-DA1469x J-Link
+  target.** The core stayed halted until a reset.
+
+- **`lager nets state` shows why a LabJack net is unreadable.** It names the
+  driver's error (LJM missing, T7 not found on USB) instead of "no value from
+  instrument".
+
+- **`lager uninstall` exits 1 when a step failed.** It exited 0, said that
+  lock.json was cleared, and deleted the saved box. It now keeps the saved box,
+  so the uninstall can run again by name.
+
+- **Install and update no longer warn "Could not create /usr/bin/dfu-util" or
+  `/usr/bin/lsusb`.** `start_box.sh` took an existing file mount for a missing
+  directory.
+
+- **`lager battery <net> ocp` accepts 6.1 A on a Keithley 2281S.** That is the
+  value the instrument reports, so a value read back can be written again.
+
+- **`lager webcam stop` signals only its own stream.** After an update, a saved
+  pid could name another process, and `webcam start` could answer "already
+  running" for a stream that was gone.
+
+- **`lager nets add --jlink-script` and `--openocd-config` refuse a file that is
+  already base64.** A copy of the `saved_nets.json` field was encoded twice, and
+  J-Link dropped it without an error.
 
 - **Turning off supply protection from a script acts on the net's own output.**
   `disable_ocp()`, `disable_ovp()` and `get_monitor_state()` on a supply net
