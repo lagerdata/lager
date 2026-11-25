@@ -474,5 +474,79 @@ class Usb202SelfRestartTests(unittest.TestCase):
         self.assertEqual(hw._restart_address(_ADDRESS, 'usb202:X'), _ADDRESS)
 
 
+class LabJackU3SelfRestartTests(unittest.TestCase):
+    """A LabJack U3 gpio/adc/dac net reaches /invoke with
+    ``labjack:<instrument>:<address>`` and no ``address``. A U3 replugged while
+    the service runs is invisible to its Exodriver until the process is
+    replaced, so the stale-view error must reach the self-restart, gated on the
+    U3's address. Only that error: a T7, a Mac Box, and an ordinary U3 failure
+    must not restart the service."""
+
+    _VISA = 'USB0::0x0CD5::0x0003::port-1-1.2::INSTR'
+    _ID = 'labjack:labjack_u3:' + _VISA
+    _STALE = ("No free LabJack U3 on USB port 1-1.2. The kernel lists 1 on the bus, "
+              "one on that port, but this process's usb view is stale (it sees 0); "
+              "a restart of the hardware service clears it.")
+    _HELD = ("No free LabJack U3 on USB port 1-1.2. The net is pinned to that port: "
+             "plug the device back in there, or re-add the net for its new port.")
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        with hw.device_locks_meta_lock:
+            hw.device_locks.clear()
+        self.client = hw.app.test_client()
+
+        from lager.util import self_restart
+        self.restart = MagicMock()
+        self.restart.looks_like_open_failure = self_restart.looks_like_open_failure
+        patcher = patch.object(hw, '_self_restart', self.restart)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('LAGER_HOSTLINK', None)
+
+    def _invoke(self, device_id, message):
+        net_info = {'name': 'u3pin', 'instrument': 'LabJack_U3',
+                    'device_id': device_id}
+        hw.device_cache[('gpio_hs', hw.get_net_info_hash(net_info))] = \
+            _StaleInventoryUsb202(message)
+        return self.client.post('/invoke', json={
+            'device': 'gpio_hs', 'function': 'input', 'args': [], 'kwargs': {},
+            'net_info': net_info})
+
+    def test_the_restart_address_is_the_u3s_visa_address(self):
+        self.assertEqual(hw._restart_address(None, self._ID), self._VISA)
+
+    def test_a_t7_or_an_unaddressed_labjack_gets_none(self):
+        self.assertIsNone(hw._restart_address(None, 'labjack:USB0::0x0CD5::0x0007::1::INSTR'))
+        self.assertIsNone(hw._restart_address(None, 'labjack:ANY'))
+        self.assertIsNone(hw._restart_address(None, 'labjack:labjack_u3:ANY'))
+
+    def test_a_mac_box_gets_none(self):
+        os.environ['LAGER_HOSTLINK'] = '1'
+        self.assertIsNone(hw._restart_address(None, self._ID))
+
+    def test_a_stale_view_restarts_on_the_u3s_address(self):
+        resp = self._invoke(self._ID, self._STALE)
+        self.assertEqual(resp.status_code, 503)
+        self.assertTrue(resp.get_json()['error'].startswith('restarting:'))
+        self.restart.self_restart_after_reply.assert_called_once()
+        self.assertEqual(self.restart.self_restart_after_reply.call_args.args[0], self._VISA)
+
+    def test_a_u3_another_process_holds_does_not_restart(self):
+        resp = self._invoke(self._ID, self._HELD)
+        self.assertEqual(resp.status_code, 500)
+        self.restart.self_restart_after_reply.assert_not_called()
+
+    def test_a_stale_view_on_a_mac_box_does_not_restart(self):
+        os.environ['LAGER_HOSTLINK'] = '1'
+        resp = self._invoke(self._ID, self._STALE)
+        self.assertEqual(resp.status_code, 500)
+        self.restart.self_restart_after_reply.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

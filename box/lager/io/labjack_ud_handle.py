@@ -81,6 +81,19 @@ _DEVICE_TYPES = {
 # _TOPOLOGY_ADDRESSED in lager/http_handlers/usb_scanner.py.
 PORT_PREFIX = "port-"
 
+# USB vendor/product id per model, for comparing this process's view of the bus
+# with the kernel's.
+_USB_IDS = {
+    "u3": (0x0CD5, 0x0003),
+}
+_SYSFS_USB = "/sys/bus/usb/devices"
+_SYSFS_PORT = re.compile(r"^\d+-\d+(\.\d+)*$")
+
+# Appended to the no-free-device error when the process's USB view is stale.
+# lager.util.self_restart.OPEN_FAILURE_MARKERS matches it, so hardware_service
+# restarts itself for this case and no other.
+STALE_VIEW_MARKER = "this process's usb view is stale"
+
 
 def _debug(msg: str) -> None:
     """Debug logging when LAGER_LABJACK_DEBUG environment variable is set."""
@@ -287,6 +300,45 @@ def _libusb() -> Any:
             ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_int]
         _libusb_lib = lib
     return _libusb_lib
+
+
+def _sysfs_ids(port: str) -> Optional[Tuple[int, int]]:
+    """The (vid, pid) the kernel lists on USB port *port*, or None."""
+    if not _SYSFS_PORT.match(port):
+        return None
+    values = []
+    for name in ("idVendor", "idProduct"):
+        try:
+            with open(os.path.join(_SYSFS_USB, port, name)) as fh:
+                values.append(int(fh.read().strip(), 16))
+        except (OSError, ValueError):
+            return None
+    return values[0], values[1]
+
+
+def _stale_view(model: str, port: str, count: int) -> Optional[int]:
+    """How many devices of *model* the kernel lists, when this process's view
+    of the bus is stale; None otherwise.
+
+    Stale means the kernel lists the model on *port* and lists more of the
+    model than this process's Exodriver ``deviceCount`` reports. That is the
+    state a replugged U3 leaves behind: the container's libusb learns of new
+    devices from udev, which does not run there, so a long-lived process keeps
+    counting 0 while a fresh one counts 1. A device another process holds is
+    still counted, so it never reads as stale and never asks for a restart.
+    Linux only, and never on a Box whose USB is on a host agent
+    (``LAGER_HOSTLINK``): restarting the container cannot help there.
+    """
+    ids = _USB_IDS.get(model)
+    if ids is None or not sys.platform.startswith("linux") \
+            or os.environ.get("LAGER_HOSTLINK") == "1":
+        return None
+    if _sysfs_ids(port) != ids:
+        return None
+    from ..util.self_restart import enumerated_usb_ids
+    listed = enumerated_usb_ids()
+    on_bus = len((listed or {}).get(ids, []))
+    return on_bus if on_bus > count else None
 
 
 def usb_port_of(device: Any, lib: Any = None) -> Optional[str]:
@@ -514,6 +566,14 @@ class LabJackUDHandleManager:
                 device.close()
             except Exception as e:
                 _debug(f"error closing devNumber {number}: {e}")
+        on_bus = _stale_view(model, port, count)
+        if on_bus is not None:
+            raise RuntimeError(
+                f"No free LabJack {model.upper()} on USB port {port}. The "
+                f"kernel lists {on_bus} on the bus, one on that port, but "
+                f"{STALE_VIEW_MARKER} (it sees {count}); a restart of the "
+                f"hardware service clears it."
+            )
         raise RuntimeError(
             f"No free LabJack {model.upper()} on USB port {port}. The net is "
             f"pinned to that port: plug the device back in there, or re-add "

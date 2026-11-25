@@ -25,6 +25,7 @@ differences from the T7 that a copied driver would have inherited wrongly.
 import ctypes
 import os
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import MagicMock, patch
@@ -681,6 +682,86 @@ class PortAddressTests(_UDTestCase):
         self.assertIn("USB port 1-9", str(cm.exception))
         self.assertTrue(self.a.closed)
         self.assertTrue(self.b.closed)
+
+    def _kernel_lists(self, on_port=(0x0CD5, 0x0003), on_bus=1):
+        """What sysfs reports: the ids on the port, and the U3s on the bus."""
+        from lager.util import self_restart
+        for target, value in (
+                (patch.object(udh, "_sysfs_ids", lambda port: on_port), None),
+                (patch.object(self_restart, "enumerated_usb_ids",
+                              lambda: {(0x0CD5, 0x0003): [None] * on_bus}), None),
+                (patch.object(udh.sys, "platform", "linux"), None),
+                (patch.dict(os.environ), None)):
+            target.start()
+            self.addCleanup(target.stop)
+        os.environ.pop("LAGER_HOSTLINK", None)
+
+    def _error_for_port(self, port="1-1.2"):
+        with self.assertRaises(RuntimeError) as cm:
+            udh.get_ud_device("u3", "port-" + port)
+        return str(cm.exception)
+
+    def test_a_u3_the_kernel_lists_but_this_process_cannot_see_is_a_stale_view(self):
+        # The replug case: the kernel has the U3 back, this process's
+        # Exodriver counts none.
+        from lager.util import self_restart
+        self.bus = []
+        self._kernel_lists()
+        message = self._error_for_port()
+        self.assertIn(udh.STALE_VIEW_MARKER, message)
+        self.assertIn("USB port 1-1.2", message)
+        self.assertTrue(self_restart.looks_like_open_failure(RuntimeError(message)))
+
+    def test_a_u3_another_process_holds_is_not_a_stale_view(self):
+        # Exodriver still counts a device another process holds, so the
+        # counts agree and the old message stands: a restart cannot help.
+        from lager.util import self_restart
+        self.bus = [self.b]
+        self.b.usb_port = "1-1.2"
+        self.b.open()                      # claimed elsewhere
+        self._kernel_lists(on_bus=1)
+        message = self._error_for_port()
+        self.assertNotIn(udh.STALE_VIEW_MARKER, message)
+        self.assertIn("plug the device back in there", message)
+        self.assertFalse(self_restart.looks_like_open_failure(RuntimeError(message)))
+
+    def test_an_unplugged_u3_is_not_a_stale_view(self):
+        self.bus = []
+        self._kernel_lists(on_port=None, on_bus=0)
+        self.assertNotIn(udh.STALE_VIEW_MARKER, self._error_for_port())
+
+    def test_another_device_on_the_port_is_not_a_stale_view(self):
+        self.bus = []
+        self._kernel_lists(on_port=(0x0CD5, 0x0007))
+        self.assertNotIn(udh.STALE_VIEW_MARKER, self._error_for_port())
+
+    def test_a_mac_box_never_reports_a_stale_view(self):
+        self.bus = []
+        self._kernel_lists()
+        os.environ["LAGER_HOSTLINK"] = "1"
+        self.assertNotIn(udh.STALE_VIEW_MARKER, self._error_for_port())
+
+    def test_off_linux_never_reports_a_stale_view(self):
+        self.bus = []
+        self._kernel_lists()
+        with patch.object(udh.sys, "platform", "darwin"):
+            self.assertNotIn(udh.STALE_VIEW_MARKER, self._error_for_port())
+
+    def test_a_port_name_that_is_not_a_sysfs_port_is_not_read(self):
+        with patch("builtins.open") as opened:
+            self.assertIsNone(udh._sysfs_ids("../../etc"))
+            self.assertIsNone(udh._sysfs_ids("1-1/../.."))
+        opened.assert_not_called()
+
+    def test_sysfs_ids_reads_the_ports_vendor_and_product(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "1-1.2"))
+            for name, value in (("idVendor", "0cd5\n"), ("idProduct", "0003\n")):
+                with open(os.path.join(root, "1-1.2", name), "w") as fh:
+                    fh.write(value)
+            with patch.object(udh, "_SYSFS_USB", root):
+                self.assertEqual(udh._sysfs_ids("1-1.2"), (0x0CD5, 0x0003))
+                self.assertIsNone(udh._sysfs_ids("1-9"))
 
     def test_a_port_open_is_not_recorded_as_first_found(self):
         udh.get_ud_device("u3", "port-1-1.2")
