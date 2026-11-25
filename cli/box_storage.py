@@ -125,7 +125,8 @@ def save_boxes(boxes: Dict[str, str]) -> None:
         json.dump(data, f, indent=2)
 
 
-def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[str] = None) -> None:
+def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[str] = None,
+            python_port: Optional[int] = None, platform: Optional[str] = None) -> None:
     """Add a box to the local storage.
 
     Args:
@@ -133,15 +134,37 @@ def add_box(name: str, ip: str, user: Optional[str] = None, version: Optional[st
         ip: IP address
         user: Optional username (if None and version is None, stores in legacy format)
         version: Optional version/branch name (e.g., "staging", "main")
+        python_port: Optional script-service port, recorded only for a Box
+            that does not publish it on the default (a Box on macOS). When
+            not given, a port already recorded for a Box at ``ip`` is kept,
+            so editing or re-adding that Box does not lose it.
+        platform: Optional operating system of the Box, recorded only when it
+            is not Linux ("macos"). Kept across a re-add like ``python_port``.
     """
     boxes = _load_global_boxes()
-    if user or version:
+    if python_port is None:
+        for existing in boxes.values():
+            if isinstance(existing, dict) and existing.get("ip") == ip \
+                    and "python_port" in existing:
+                python_port = existing["python_port"]
+                break
+    if platform is None:
+        for existing in boxes.values():
+            if isinstance(existing, dict) and existing.get("ip") == ip \
+                    and "platform" in existing:
+                platform = existing["platform"]
+                break
+    if user or version or python_port is not None or platform:
         # New format with user and/or version
         box_dict = {"ip": ip}
         if user:
             box_dict["user"] = user
         if version:
             box_dict["version"] = version
+        if python_port is not None:
+            box_dict["python_port"] = python_port
+        if platform:
+            box_dict["platform"] = platform
         boxes[name] = box_dict
     else:
         # Legacy format (just IP string)
@@ -244,6 +267,34 @@ def get_box_name_by_ip(ip: str) -> Optional[str]:
         if box_ip == ip:
             return name
     return None
+
+
+# The port a Box's script-execution service is published on. 5000 on every
+# Linux Box. A Box on macOS publishes it elsewhere, because the system's
+# AirPlay receiver holds 5000 there; the installer records the port it used.
+DEFAULT_PYTHON_SERVICE_PORT = 5000
+PYTHON_SERVICE_PORT_KEY = "python_port"
+
+
+def get_python_service_port(ip: str) -> int:
+    """The script-execution port for the Box at ``ip``.
+
+    ``DEFAULT_PYTHON_SERVICE_PORT`` unless a saved Box with that address
+    records another one. A value that is not a usable port is ignored, and so
+    is any failure to read the saved Boxes: this must never be the reason a
+    command cannot reach a Box that is on the default port.
+    """
+    try:
+        boxes = load_boxes()
+    except Exception:
+        return DEFAULT_PYTHON_SERVICE_PORT
+    for box_info in boxes.values():
+        if not isinstance(box_info, dict) or box_info.get("ip") != ip:
+            continue
+        port = box_info.get(PYTHON_SERVICE_PORT_KEY)
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+            return port
+    return DEFAULT_PYTHON_SERVICE_PORT
 
 
 def delete_box(name: str) -> bool:

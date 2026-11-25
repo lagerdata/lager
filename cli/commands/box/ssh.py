@@ -131,6 +131,11 @@ def ssh(ctx, box, command):
     if command:
         ssh_cmd.append(' '.join(shlex.quote(arg) for arg in command))
 
+    # The Box on this Mac is this machine: a local shell, not SSH. None for
+    # every other Box, which keeps the command built above.
+    from ._macos_target import local_shell_argv
+    ssh_cmd = local_shell_argv(resolved_box, command) or ssh_cmd
+
     try:
         # Heartbeat keeps a long interactive session alive; release runs on
         # normal exit, Ctrl-C, ctx.exit, and process death (atexit).

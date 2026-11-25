@@ -598,6 +598,26 @@ class Net:
                     net.device = mapper_factory(net, net.device_type, item)
                     return net
 
+                if (os.environ.get("LAGER_HOSTLINK") == "1"
+                        and role in (NetType.GPIO, NetType.ADC, NetType.DAC)):
+                    # This container has no USB; the host agent drives these.
+                    from ..hostlink.io_proxy import for_role
+                    return for_role(item['role'], name, item)
+
+                if (os.environ.get("LAGER_HOSTLINK") == "1"
+                        and role in (NetType.Thermocouple, NetType.WattMeter,
+                                     NetType.EnergyAnalyzer, NetType.Hsm,
+                                     NetType.Rotation, NetType.Actuate, NetType.Arm)):
+                    # Same reason; the whole driver object lives in the agent.
+                    from ..hostlink.net_proxy import open_net
+                    return open_net(name, item['role'])
+
+                if (os.environ.get("LAGER_HOSTLINK") == "1"
+                        and role in (NetType.SPI, NetType.I2C)):
+                    # Same reason: the dispatchers hand out host-side drivers.
+                    from ..hostlink.bus_proxy import install
+                    install()
+
                 if role == NetType.GPIO:
                     # Check for instrument type - support MCC_USB-202, FT232H, or default to LabJack
                     instrument = item.get('instrument', '').lower()

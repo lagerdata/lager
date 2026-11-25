@@ -1506,6 +1506,13 @@ except Exception:  # fallback no-op if debug module not available
     _debug_available = False
 
 
+# A Box whose container cannot reach the probe (macOS) starts with
+# LAGER_HOSTLINK=1 and gets a debug net that calls the host instead. Unset,
+# which is every Linux Box, nothing below runs and nothing changes.
+import os as _os  # noqa: E402
+if _os.environ.get('LAGER_HOSTLINK') == '1':
+    from ..hostlink.debug_proxy import make_debug  # type: ignore  # noqa: E402,F811
+
 # Re-export DebugNet for type hints (use _NullDebug as fallback type)
 if not _debug_available:
     DebugNet = _NullDebug  # type: ignore

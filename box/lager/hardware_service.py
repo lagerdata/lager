@@ -477,6 +477,39 @@ def _is_visa_session_error(exc):
     return any(kw in error_msg for kw in _VISA_SESSION_ERROR_KEYWORDS)
 
 
+# A network-attached instrument holds a TCP connection, and a TCP connection
+# that drops (instrument power-cycled, cable pulled, switch rebooted) fails
+# differently from a USB session: the OS reports "Connection reset by peer" on
+# the first call and "Broken pipe" on every call after. Neither matches
+# _VISA_SESSION_ERROR_KEYWORDS, so the dead driver stayed in device_cache and
+# the instrument stayed unusable until this service restarted, even once it
+# was back on the network.
+#
+# Recognised by exception type first, because that is exact, and by message as
+# a fallback for a driver that re-raises with only the text.
+#
+# Scoped to TCPIP addresses on purpose. libusb reports a stalled endpoint as
+# "[Errno 32] Pipe error" -- same errno, different meaning -- and a USB device
+# must keep the recovery behaviour it has today.
+_DROPPED_CONNECTION_TYPES = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+_DROPPED_CONNECTION_KEYWORDS = ('broken pipe', 'connection reset', 'connection abort')
+
+
+def _is_dropped_network_session(exc, address):
+    """True when a TCPIP-addressed instrument's connection has dropped."""
+    if not str(address or '').upper().startswith('TCPIP'):
+        return False
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _DROPPED_CONNECTION_TYPES):
+            return True
+        current = current.__cause__ or current.__context__
+    error_msg = str(exc).lower()
+    return any(kw in error_msg for kw in _DROPPED_CONNECTION_KEYWORDS)
+
+
 def _create_device_with_retry(module, device_name, net_info):
     """Create device with one retry on VISA session errors.
 
@@ -780,9 +813,12 @@ def invoke():
                 logger.warning(f"{what} refused: {e}")
                 return jsonify({'error': str(e), 'error_type': 'not-ready'}), 503
 
-            # Check if this is a stale VISA session error on a cached device
+            # Check if this is a stale VISA session error on a cached device,
+            # or a network instrument whose connection dropped. Both mean the
+            # cached driver is dead and a fresh one may work.
             mod = module_cache.get(cache_key)
-            if _is_visa_session_error(e) and mod and hasattr(mod, 'create_device'):
+            if ((_is_visa_session_error(e) or _is_dropped_network_session(e, address))
+                    and mod and hasattr(mod, 'create_device')):
                 logger.warning(f"VISA session error on cached {device_name}.{function_name}, recreating device: {e}")
                 # Remove stale device from cache and release its USB claim before
                 # opening a new session on the same address. Without the close,
