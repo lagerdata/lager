@@ -641,8 +641,6 @@ class PythonExecutor:
 
         try:
             # Get environment info (we're running inside the container now)
-            # PIGPIO_ADDR should be set by the container environment
-            pigpio_addr = os.environ.get('PIGPIO_ADDR', '172.18.0.2')  # Docker-internal default for pigpio container
             this_host = os.environ.get('LAGER_HOST', '172.17.0.1')  # Docker bridge default; set by start_box.sh
 
             # Handle module upload
@@ -676,7 +674,6 @@ class PythonExecutor:
             # Build environment variables
             env_dict = self._build_env_vars(
                 env_vars=env_vars,
-                pigpio_addr=pigpio_addr,
                 this_host=this_host,
                 module_folder=module_folder,
                 output_channel=output_channel,
@@ -938,7 +935,6 @@ class PythonExecutor:
     def _build_env_vars(
         self,
         env_vars,
-        pigpio_addr,
         this_host,
         module_folder,
         output_channel,
@@ -953,7 +949,6 @@ class PythonExecutor:
 
         Args:
             env_vars: List of environment variable strings from client
-            pigpio_addr: IP address of pigpio container
             this_host: Host IP address (Docker interface)
             module_folder: Path to the module folder on host
             output_channel: Output channel file object
@@ -977,7 +972,6 @@ class PythonExecutor:
 
         # Standard Lager environment variables
         env_dict.update({
-            'PIGPIO_ADDR': pigpio_addr,
             'LAGER_HOST': this_host,
             'LAGER_HOST_MODULE_FOLDER': module_folder,
             'LAGER_STDOUT_IS_STDERR': str(stdout_is_stderr),

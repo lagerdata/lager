@@ -349,7 +349,8 @@ class DirectIPSession:
         import json
 
         # Use IP address only (not ssh_host which includes username)
-        url = f'http://{self.ip_address}:5000/python/kill'
+        from ..box_storage import get_python_service_port
+        url = f'http://{self.ip_address}:{get_python_service_port(self.ip_address)}/python/kill'
         payload = {
             'lager_process_id': lager_process_id,
             'signal': sig
@@ -487,7 +488,8 @@ class DirectHTTPSession:
             box_ip: IP address of box (Tailscale, VPN, local, or public IP)
         """
         self.box_ip = box_ip
-        self.base_url = f'http://{box_ip}:5000'
+        from ..box_storage import get_python_service_port
+        self.base_url = f'http://{box_ip}:{get_python_service_port(box_ip)}'
 
         # Use pooled session for connection reuse, create if needed
         if box_ip not in DirectHTTPSession._session_pool:

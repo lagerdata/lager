@@ -1658,6 +1658,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             )
 
             if not memory_data:
+                logger.warning('J-Link memory read of %d bytes at %#x returned no data',
+                               length, start_addr)
                 self.send_error_response(500, "Memory read returned no data")
                 return
 

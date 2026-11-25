@@ -429,8 +429,19 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
             stored_user = get_box_user(box)
             user = stored_user or "lagerdata"
     elif ip is None:
-        click.secho("Error: Either --box or --ip is required", fg='red', err=True)
-        ctx.exit(1)
+        # Neither --box nor --ip: uninstall from this machine. A remote
+        # uninstall, everything below, is untouched by this branch.
+        from ._local_install import uninstall_locally, local_ssh_target
+        # On Linux this machine is a Box like any other, reached over SSH
+        # at its own loopback address: the steps below run unchanged.
+        local_target = local_ssh_target(user)
+        if local_target is None:
+            uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run,
+                              keep_docker_images=keep_docker_images)
+            return
+        ip, user = local_target
+        click.echo(f"No --box or --ip: uninstalling from this machine, "
+                   f"over SSH as {user}@{ip}.")
     else:
         if user is None:
             user = "lagerdata"
@@ -443,6 +454,25 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
         for line in VALID_FORMATS_CHEATSHEET:
             click.echo(line, err=True)
         ctx.exit(1)
+
+    # A loopback address on a Mac is the Box installed on that Mac. False on
+    # every other platform, where the SSH path below is unchanged.
+    from ._local_install import is_local_target
+    if is_local_target(ip):
+        from ._local_install import uninstall_locally
+        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run,
+                          keep_docker_images=keep_docker_images)
+        return
+
+    # A saved Box recorded as a Mac at install is removed by its own steps.
+    # Decided from the saved record alone; no Linux Box records a platform.
+    from ._remote_macos import saved_macos_box
+    if saved_macos_box(ip):
+        from ._remote_macos import uninstall_remote_macos
+        uninstall_remote_macos(ctx, ip=ip, user=user, purge_config=purge_config,
+                               yes=yes, dry_run=dry_run,
+                               keep_docker_images=keep_docker_images)
+        return
 
     ssh_host = f"{user}@{ip}"
 

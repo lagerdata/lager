@@ -81,7 +81,6 @@ kill_container_process('python', signal.SIGTERM)
 #### Constants
 
 - `CONTAINER_NAME = 'python'`: Default Python container name
-- `PIGPIO_CONTAINER_NAME = 'pigpio'`: Pigpio container name
 - `LAGER_NETWORK_NAME = 'lagernet'`: Docker network name
 
 ### `process.py` - Process Output Streaming
