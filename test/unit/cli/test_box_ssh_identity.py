@@ -25,6 +25,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+import re
 import unittest
 from unittest import mock
 
@@ -1153,7 +1154,10 @@ class UninstallDeregisters(_CommandCase):
             calls.append(cmd)
             remote = cmd[-1]
             if remote.startswith("cat ") and uninstall_mod._PRIV_RESULTS_PATH in remote:
-                return _proc(0, "lock_state=OK\n")
+                # A healthy box: every step the session ran reports OK.
+                return _proc(0, "".join(
+                    f"{name}=OK\n" for c in calls
+                    for name in re.findall(r'echo "(\w+)=OK"', c[-1])))
             return _proc(0, "ok")
 
         pool = mock.Mock()

@@ -323,7 +323,7 @@ class RoundTripTests(unittest.TestCase):
 
 class StandInSelectionTests(unittest.TestCase):
     def test_only_absent_linux_usb_serial_names_go_to_the_host(self):
-        with patch.object(serial_proxy.os.path, "exists", lambda path: False):
+        with patch.object(serial_proxy, "_device_exists", lambda path: False):
             for port in ("/dev/ttyUSB0", "/dev/ttyACM12"):
                 self.assertTrue(serial_proxy.is_host_port(port), port)
             for port in ("/dev/ttyS0", "/dev/ttyUSB", "/dev/ttyUSB0x", "COM3", "loop://",
@@ -331,7 +331,7 @@ class StandInSelectionTests(unittest.TestCase):
                 self.assertFalse(serial_proxy.is_host_port(port), port)
 
     def test_port_that_exists_in_the_container_is_opened_natively(self):
-        with patch.object(serial_proxy.os.path, "exists", lambda path: True):
+        with patch.object(serial_proxy, "_device_exists", lambda path: True):
             self.assertFalse(serial_proxy.is_host_port("/dev/ttyUSB0"))
 
     def test_other_ports_and_subclasses_get_the_native_class(self):
@@ -341,7 +341,7 @@ class StandInSelectionTests(unittest.TestCase):
         class Mine(serial_proxy.Serial):
             pass
 
-        with patch.object(serial_proxy.os.path, "exists", lambda path: False):
+        with patch.object(serial_proxy, "_device_exists", lambda path: False):
             self.assertIsInstance(Mine(), Mine)
 
     def test_install_replaces_serial_once(self):

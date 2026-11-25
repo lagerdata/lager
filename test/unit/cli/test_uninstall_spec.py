@@ -529,6 +529,51 @@ class DryRunQueries(unittest.TestCase):
         self.assertIn("not necessarily absent", result.output)
 
 
+class AnUnsavedMacIsUninstalledAsAMac(unittest.TestCase):
+    """A Mac with no saved record (installed from another machine) answers
+    `uname -s` with Darwin and takes the Mac steps, not the Linux ones, which
+    would leave its launchd agent running."""
+
+    def _run(self, uname):
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            remote = cmd[-1]
+            seen.append(remote)
+            if remote == "echo ok":
+                return mock.Mock(returncode=0, stdout="ok", stderr="")
+            if remote == "uname -s":
+                return mock.Mock(returncode=0 if uname else 255,
+                                 stdout=(uname or "") + "\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        pool = mock.Mock()
+        pool.ensure_connection.return_value = False
+        with mock.patch.object(u.subprocess, "run", fake_run), \
+                mock.patch.object(u, "get_ssh_connection_pool", return_value=pool), \
+                mock.patch("cli.commands.utility._remote_macos.uninstall_remote_macos") \
+                as mac:
+            result = CliRunner().invoke(u.uninstall, ["--ip", "10.0.0.1", "--yes", "--dry-run"])
+        return result, seen, mac
+
+    def test_darwin_takes_the_mac_steps(self):
+        result, seen, mac = self._run("Darwin")
+        self.assertEqual(result.exit_code, 0, result.output)
+        mac.assert_called_once()
+        self.assertEqual(mac.call_args.kwargs["ip"], "10.0.0.1")
+        self.assertTrue(mac.call_args.kwargs["dry_run"])
+        # Nothing Linux-specific was asked after the answer.
+        self.assertEqual(seen[seen.index("uname -s") + 1:], [])
+
+    def test_linux_and_a_failed_query_stay_on_the_linux_path(self):
+        for uname in ("Linux", None, "Darwin-ish", ""):
+            with self.subTest(uname=uname):
+                result, seen, mac = self._run(uname)
+                self.assertEqual(result.exit_code, 0, result.output)
+                mac.assert_not_called()
+                self.assertGreater(len(seen), seen.index("uname -s") + 1)
+
+
 class LocalConfigCleanupReport(unittest.TestCase):
     """delete_box() writes the global ~/.lager only; every read merges it with
     the project .lager files found walking up from the cwd. A box defined in
@@ -700,7 +745,7 @@ class _Drive(unittest.TestCase):
 
     MANAGED_BOX = "etc=1\ncp=1\nothers=gateway\nnets=3"
 
-    def drive(self, args, *, state=MANAGED_BOX, priv_ok=None):
+    def drive(self, args, *, state=MANAGED_BOX, priv_ok=None, box_name=None):
         remotes = []
 
         def fake_run(cmd, **_kwargs):
@@ -709,8 +754,10 @@ class _Drive(unittest.TestCase):
             if remote == u.CONFIG_STATE_QUERY:
                 return mock.Mock(returncode=0, stdout=state, stderr="")
             if remote.startswith("cat ") and u._PRIV_RESULTS_PATH in remote:
-                ok = priv_ok if priv_ok is not None else (
-                    "config_backup=OK\netc_lager=OK\nlock_state=OK\n")
+                # A healthy box: every step the session ran reports OK.
+                ok = priv_ok if priv_ok is not None else "".join(
+                    f"{name}=OK\n" for r in remotes
+                    for name in re.findall(r'echo "(\w+)=OK"', r))
                 return mock.Mock(returncode=0, stdout=ok, stderr="")
             return mock.Mock(returncode=0, stdout="ok", stderr="")
 
@@ -718,7 +765,7 @@ class _Drive(unittest.TestCase):
         pool.ensure_connection.return_value = False
         with mock.patch.object(u.subprocess, "run", fake_run), \
                 mock.patch.object(u, "get_ssh_connection_pool", return_value=pool), \
-                mock.patch.object(u, "get_box_name_by_ip", return_value=None), \
+                mock.patch.object(u, "get_box_name_by_ip", return_value=box_name), \
                 mock.patch.object(bs, "acquire_box_lock", return_value=("acquired", {})), \
                 mock.patch.object(bs, "release_box_lock", return_value=True), \
                 mock.patch.object(bs, "get_lock_holder", return_value="test-holder"), \
@@ -762,6 +809,33 @@ class DefaultKeepsConfig(_Drive):
         self.assertIn("Left running (not lager's): gateway", result.output)
         self.assertFalse([r for r in remotes if "docker" in r and "gateway" in r
                           and r != u.CONFIG_STATE_QUERY and ("rm" in r or "stop" in r)])
+
+
+class FailedStepsAreReported(_Drive):
+    """Seen on a real Box: "Clearing box lock state... FAILED", then exit 0,
+    "Its lock.json was cleared", and the box's name deleted from ~/.lager."""
+
+    def test_a_failed_step_exits_non_zero(self):
+        result, _ = self.drive(["--yes"], priv_ok="")
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("Uninstall finished with FAILED steps", result.output)
+
+    def test_the_lock_claim_is_not_made_when_it_failed(self):
+        result, _ = self.drive(["--yes"], priv_ok="")
+        self.assertNotIn("Its lock.json was cleared", result.output)
+        self.assertIn("lock.json was NOT cleared", result.output)
+
+    def test_a_clean_uninstall_still_exits_zero_and_says_cleared(self):
+        result, _ = self.drive(["--yes"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Its lock.json was cleared", result.output)
+
+    def test_the_saved_box_is_kept_when_a_step_failed(self):
+        with mock.patch.object(u, "delete_box") as delete:
+            result, _ = self.drive(["--yes"], priv_ok="", box_name="bench-1")
+        delete.assert_not_called()
+        self.assertIn("Kept 'bench-1' in .lager config: the uninstall did not finish.",
+                      result.output)
 
 
 class FlagErrors(_Drive):

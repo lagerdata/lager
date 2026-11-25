@@ -298,3 +298,39 @@ class TestPythonServicePort:
         self._save(global_lager, {"mac": {"ip": "127.0.0.1", "python_port": 8301}})
         assert DirectHTTPSession("127.0.0.1").base_url == "http://127.0.0.1:8301"
         assert DirectHTTPSession("10.0.0.6").base_url == "http://10.0.0.6:5000"
+
+
+class TestAddBoxKeepsOnlyItsOwnRecord:
+    """add_box keeps python_port and platform from the record it replaces,
+    never from another saved Box that has the same address."""
+
+    def _boxes(self, lager_file):
+        return json.loads(lager_file.read_text())["BOXES"]
+
+    def test_re_adding_the_same_box_keeps_its_port_and_platform(self, global_lager):
+        add_box("mac", "10.0.0.5", user="me", version="1.0.0",
+                python_port=8301, platform="macos")
+        add_box("mac", "10.0.0.5", user="me", version="2.0.0")
+        assert self._boxes(global_lager)["mac"] == {
+            "ip": "10.0.0.5", "user": "me", "version": "2.0.0",
+            "python_port": 8301, "platform": "macos"}
+
+    def test_another_box_at_the_same_address_inherits_nothing(self, global_lager):
+        # A leftover Mac record, then a Linux Box at a reused IP.
+        add_box("old-mac", "10.0.0.5", user="me", python_port=8301, platform="macos")
+        add_box("bench", "10.0.0.5", user="lagerdata", version="1.0.0")
+        assert self._boxes(global_lager)["bench"] == {
+            "ip": "10.0.0.5", "user": "lagerdata", "version": "1.0.0"}
+
+    def test_a_box_given_a_new_address_is_still_the_same_box(self, global_lager):
+        # A Mac whose DHCP lease changed, edited with --ip: still a Mac.
+        add_box("mac", "10.0.0.5", user="me", python_port=8301, platform="macos")
+        add_box("mac", "10.0.0.9", user="me")
+        assert self._boxes(global_lager)["mac"] == {
+            "ip": "10.0.0.9", "user": "me", "python_port": 8301, "platform": "macos"}
+
+    def test_a_linux_box_is_stored_exactly_as_before(self, global_lager):
+        add_box("plain", "10.0.0.7")
+        add_box("withuser", "10.0.0.8", user="lagerdata")
+        assert self._boxes(global_lager) == {
+            "plain": "10.0.0.7", "withuser": {"ip": "10.0.0.8", "user": "lagerdata"}}

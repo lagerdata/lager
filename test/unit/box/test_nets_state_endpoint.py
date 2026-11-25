@@ -362,6 +362,31 @@ class LabJackBatchProbeTests(unittest.TestCase):
         payload = mock.call_args[1]["json"]["nets"]
         self.assertEqual(len(payload), 4)
 
+    def test_the_driver_error_becomes_the_nets_cause(self):
+        """An unplugged T7 or a missing LJM said only "no value from
+        instrument"; the endpoint's X-Lager-Device-Error now reaches the net."""
+        resp = self._mock_post({"gpio1": None, "gpio2": None, "adc1": None, "dac1": None})
+        resp.headers = {"X-Lager-Device-Error":
+                        "LabJack T7 not found on USB: check that it is plugged in"}
+        causes, codes = {}, {}
+        import requests as _req
+        with patch.object(_req, "post", return_value=resp):
+            nets_handler._brief_labjack_batch(self.MIXED_BENCH, causes=causes, codes=codes)
+        self.assertEqual(set(causes), {"gpio1", "gpio2", "adc1", "dac1"})
+        self.assertIn("not found on USB", causes["adc1"])
+        self.assertEqual(codes["adc1"], nets_handler.CODE_ABSENT)
+
+    def test_a_net_that_read_gets_no_cause(self):
+        resp = self._mock_post({"gpio1": "HIGH (1)", "gpio2": None,
+                                "adc1": "1.0000V", "dac1": "0.0000V"})
+        resp.headers = {"X-Lager-Device-Error": "gpio: LJM error 1224"}
+        causes, codes = {}, {}
+        import requests as _req
+        with patch.object(_req, "post", return_value=resp):
+            nets_handler._brief_labjack_batch(self.MIXED_BENCH, causes=causes, codes=codes)
+        self.assertEqual(causes, {"gpio2": "gpio: LJM error 1224"})
+        self.assertEqual(codes, {}, "only a not-found error is classed as absent")
+
     # A real bench T7 address -- the serial field is genuinely empty on this
     # hardware. Every other case here uses address "ANY", which is precisely
     # what hid the lock bug: with "ANY", _physical_device_id returns

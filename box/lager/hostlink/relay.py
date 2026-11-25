@@ -234,6 +234,11 @@ class Link:
     def forward(self, method: str, path: str, headers: Dict[str, str],
                 body: Optional[bytes]) -> Tuple[int, Dict[str, str], bytes]:
         """Send one request to the agent and return its response verbatim."""
+        if not is_origin_path(path):
+            # The URL is the agent's base URL plus this path: "@other.host/x"
+            # or "//other.host/x" would send the link token somewhere else.
+            raise LinkError(400, protocol.error_body(
+                protocol.ERR_BAD_REQUEST, "Request path must start with a single '/'."))
         endpoint, negotiated = self.ready_endpoint()
         resp = self._send(endpoint, negotiated, method, path, headers, body)
         if resp.status in (401, 426):
@@ -260,6 +265,14 @@ class Link:
                 "agent": dict(self._agent_info) if self._negotiated is not None else {},
                 "last_error": self._last_error,
             }
+
+
+def is_origin_path(path: str) -> bool:
+    """True for an origin-form request target ("/invoke", "/a?b=c"): one
+    leading slash, then no whitespace or control characters."""
+    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+        return False
+    return not any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7f for ch in path)
 
 
 def make_handler(link: Link):

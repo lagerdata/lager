@@ -18,6 +18,7 @@ says the link is sound and nothing about hardware.
 
 import json
 import os
+import socket
 import stat
 import tempfile
 import threading
@@ -109,6 +110,23 @@ class EndpointRecordTests(unittest.TestCase):
 
     def test_the_agent_never_listens_beyond_loopback_by_default(self):
         self.assertEqual(config.DEFAULT_BIND, "127.0.0.1")
+
+    def test_a_record_cannot_move_the_agent_off_loopback(self):
+        # The record is in a directory the container can write.
+        token = config.new_token()
+        for bind in ("0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "host.docker.internal",
+                     "example.com", "127.0.0.1.example.com"):
+            with self.subTest(bind=bind):
+                os.makedirs(os.path.dirname(self.path), exist_ok=True)
+                with open(self.path, "w") as fh:
+                    json.dump({"token": token, "port": 4000, "bind": bind}, fh)
+                with self.assertRaisesRegex(config.EndpointError, "loopback"):
+                    config.load_endpoint(self.path)
+        for bind in ("127.0.0.1", "127.0.0.2", "::1", "localhost"):
+            with self.subTest(bind=bind):
+                with open(self.path, "w") as fh:
+                    json.dump({"token": token, "port": 4000, "bind": bind}, fh)
+                self.assertEqual(config.load_endpoint(self.path).bind, bind)
 
     def test_ensure_does_not_rotate_an_existing_token(self):
         first = config.ensure_endpoint(self.path)
@@ -324,6 +342,39 @@ class RelayTests(unittest.TestCase):
         seen = self.agent_app.seen_headers[-1]
         self.assertEqual(seen["Authorization"], auth.bearer_header(self.endpoint.token))
         self.assertNotIn("callers-own-secret", json.dumps(seen))
+
+    def test_a_request_target_cannot_send_the_token_to_another_host(self):
+        # A listener standing in for someone else's host.
+        other = socket.socket()
+        other.bind(("127.0.0.1", 0))
+        other.listen(5)
+        other.settimeout(0.5)
+        self.addCleanup(other.close)
+        evil = f"127.0.0.1:{other.getsockname()[1]}"
+        for target in (f"@{evil}/x", f"//{evil}/x", f"http://{evil}/x", "invoke", "*"):
+            with self.subTest(target=target):
+                with socket.create_connection(("127.0.0.1", self.relay.port), timeout=5) as c:
+                    c.sendall(f"GET {target} HTTP/1.1\r\nHost: x\r\n"
+                              "Connection: close\r\n\r\n".encode())
+                    reply = b""
+                    while True:
+                        data = c.recv(4096)
+                        if not data:
+                            break
+                        reply += data
+                # Never the other host. "//host/x" is collapsed to "/host/x" by
+                # http.server before the relay sees it, so it reaches the agent
+                # as an ordinary path; the rest the relay refuses itself.
+                with self.assertRaises(socket.timeout):
+                    other.accept()
+                if not target.startswith("//"):
+                    self.assertTrue(reply.startswith(b"HTTP/1.1 400"), reply[:80])
+
+    def test_origin_paths(self):
+        for path in ("/invoke", "/a?b=c", "/v1/debug/call"):
+            self.assertTrue(relay.is_origin_path(path), path)
+        for path in ("", "invoke", "@h/x", "//h/x", "http://h/x", "/a b", "/a\r\nX: y", "/\x00"):
+            self.assertFalse(relay.is_origin_path(path), path)
 
     def test_a_driver_error_passes_through_unchanged(self):
         resp = requests.post(self.url + "/invoke", json={"function": "fail"}, timeout=10)

@@ -34,6 +34,18 @@ def _done(code=0, out="", err=""):
     return subprocess.CompletedProcess([], code, out, err)
 
 
+# The real check, kept for its own tests below. Everywhere else in this file
+# it is answered "no": pytest's stdin is not a terminal, so left live it would
+# open a real SSH connection to the test's made-up host.
+_REAL_MAC_SUDO_CHECK = _remote_macos.mac_sudo_needs_a_terminal
+
+
+@pytest.fixture(autouse=True)
+def _no_live_sudo_probe(monkeypatch):
+    monkeypatch.setattr(_remote_macos, "mac_sudo_needs_a_terminal",
+                        lambda *a, **k: False)
+
+
 @pytest.fixture
 def lager_home(tmp_path, monkeypatch):
     monkeypatch.setenv("LAGER_CONFIG_FILE_DIR", str(tmp_path))
@@ -149,6 +161,37 @@ def test_the_runner_reports_an_install(runner):
                                               source=Path("/src"), skip=["picoscope"])
 
 
+@pytest.mark.parametrize("extra, skip", [
+    ([], ()),                                         # an install: skip nothing
+    (["--reuse-skips"], None),                        # an update: what the Mac recorded
+    (["--reuse-skips", "--skip", "jlink"], ["jlink"]),  # explicit flags still win
+])
+def test_the_runner_reuses_the_recorded_skips_only_on_an_update(runner, extra, skip):
+    installer = mock.Mock(PYTHON_SERVICE_PORT=8301)
+    installer.install.return_value = SimpleNamespace(
+        box_version="9.9.9", image="img", skipped=[], ready=[])
+    args = runner.parse(["--result", "r", "install", "--version", "v9.9.9",
+                         "--cli-version", "9.9.9", *extra])
+    runner.run(args, installer)
+    assert installer.install.call_args.kwargs["skip"] == skip
+
+
+def test_a_remote_update_asks_the_mac_to_reuse_its_skips(lager_home):
+    sent = []
+    with mock.patch.object(_remote_macos, "ship_installer"), \
+            mock.patch.object(macos_box, "running_from_checkout", return_value=None), \
+            mock.patch.object(_remote_macos, "run_remote",
+                              side_effect=lambda h, i, a: sent.append(a) or
+                              {"ok": True, "box_version": "2.0.0", "python_port": 8301}):
+        for update, flags in ((True, {}), (False, {}), (True, {"skip_jlink": True})):
+            _remote_macos.install_remote_macos(
+                mock.Mock(params={}), ssh_host="me@h", ip="10.0.0.5", user="me", box="mac",
+                identity_args=[], version="v2.0.0", yes=True, update=update, **flags)
+    assert "--reuse-skips" in sent[0]
+    assert "--reuse-skips" not in sent[1]
+    assert "--reuse-skips" not in sent[2] and "--skip jlink" in sent[2]
+
+
 def test_the_runner_keeps_an_error_structured(runner, tmp_path):
     installer = mock.Mock()
     installer.uninstall.side_effect = runner.LagerError(
@@ -199,7 +242,12 @@ def test_a_pull_is_retried_without_the_credential_store():
     run = mock.Mock(return_value=_done(0, "unix:///var/run/docker.sock\n"))
     env = macos_box.anonymous_env("docker", {"PATH": "/bin"}, run)
     assert env["DOCKER_HOST"] == "unix:///var/run/docker.sock"
-    assert Path(env["DOCKER_CONFIG"]).is_dir() and not list(Path(env["DOCKER_CONFIG"]).iterdir())
+    # Not an empty directory: from one, the Docker CLI picks the keychain
+    # helper anyway and sends a stale GHCR login, which GHCR refuses even
+    # for a public image. An empty login for the registry turns that off.
+    config = json.loads((Path(env["DOCKER_CONFIG"]) / "config.json").read_text())
+    assert config == {"auths": {"ghcr.io": {}}}
+    assert "credsStore" not in config and "credHelpers" not in config
     run.reset_mock()
     kept = macos_box.anonymous_env("docker", {"DOCKER_HOST": "unix:///x"}, run)
     assert kept["DOCKER_HOST"] == "unix:///x"
@@ -259,18 +307,96 @@ def test_a_failed_copy_is_an_error(popen):
 def test_only_tracked_source_files_that_exist_are_copied(popen, tmp_path):
     (tmp_path / "box").mkdir()
     (tmp_path / "box" / "a.py").write_text("")
-    run = mock.Mock(side_effect=[_done(0, b"box/a.py\0box/deleted.py\0"), _done(0)])
-    _remote_macos.ship_source(tmp_path, "u@h", [], run=run, popen=popen)
-    listed, cleared = [call.args[0] for call in run.call_args_list]
+    run = mock.Mock(side_effect=[_done(0, b"box/a.py\0box/deleted.py\0")])
+    name = _remote_macos.ship_source(tmp_path, "u@h", [], run=run, popen=popen)
+    (listed,) = [call.args[0] for call in run.call_args_list]
     assert listed[:4] == ["git", "-C", str(tmp_path), "ls-files"]
     assert listed[-2:] == ["box", "cli/__init__.py"]
-    assert cleared[-1].startswith("rm -rf ") and "src/shipped" in cleared[-1]
+    # Nothing is deleted first: the running Box still mounts the last copy.
+    assert name.startswith("shipped-")
+    remote = popen.made[1].argv[-1]
+    assert f"src/{name}" in remote and "rm -rf" not in remote
     tar = popen.made[0]
     assert tar.argv == ["tar", "-cf", "-", "--null", "-T", "-"]
     tar.stdin.write.assert_called_once_with(b"box/a.py\0")
     with pytest.raises(LagerError, match="did not list"):
         _remote_macos.ship_source(tmp_path, "u@h", [], run=mock.Mock(return_value=_done(1, b"")),
                                   popen=popen)
+
+
+@pytest.mark.parametrize("tty, rc, expected", [
+    (True, 1, False),    # a terminal: the Mac's sudo can ask
+    (False, 0, False),   # /etc/lager is ready, or sudo needs no password
+    (False, 255, False),  # ssh itself failed: the install reports it
+    (False, 1, True),    # it would need a password with nowhere to type it
+])
+def test_the_mac_sudo_check(tty, rc, expected):
+    run = mock.Mock(return_value=_done(rc))
+    assert _REAL_MAC_SUDO_CHECK("me@h", ["-i", "k"], isatty=lambda: tty, run=run) is expected
+    if tty:
+        run.assert_not_called()
+    else:
+        command = run.call_args.args[0][-1]
+        assert "test -w /etc/lager" in command and "sudo -n true" in command
+        assert "BatchMode=yes" in run.call_args.args[0]
+
+
+def test_a_remote_install_with_no_terminal_stops_before_copying_anything(lager_home,
+                                                                        monkeypatch):
+    monkeypatch.setattr(_remote_macos, "mac_sudo_needs_a_terminal", lambda *a, **k: True)
+    with mock.patch.object(_remote_macos, "ship_installer") as shipped, \
+            mock.patch.object(_remote_macos, "run_remote") as ran:
+        with pytest.raises(LagerError) as caught:
+            _remote_macos.install_remote_macos(
+                mock.Mock(params={}), ssh_host="me@h", ip="10.0.0.5", user="me",
+                box="mac", identity_args=[], version="v9.9.9", yes=True)
+    assert "no terminal" in caught.value.problem
+    assert any("sudo mkdir -p /etc/lager" in fix for fix in caught.value.fixes)
+    shipped.assert_not_called()
+    ran.assert_not_called()
+
+
+def test_each_copy_goes_to_its_own_directory(popen, tmp_path):
+    (tmp_path / "box").mkdir()
+    (tmp_path / "box" / "a.py").write_text("")
+    names = [_remote_macos.ship_source(
+        tmp_path, "u@h", [], run=mock.Mock(return_value=_done(0, b"box/a.py\0")),
+        popen=popen, name=f"shipped-{i}") for i in range(2)]
+    assert names == ["shipped-0", "shipped-1"]
+
+
+def test_older_copies_are_pruned_keeping_the_running_one():
+    run = mock.Mock(return_value=_done(0))
+    _remote_macos.prune_shipped("u@h", [], "shipped-2", run=run)
+    command = run.call_args.args[0][-1]
+    assert '!= shipped-2' in command and 'rm -rf "$d"' in command
+    assert "shipped-*" in command and command.rstrip().endswith("exit 0")
+
+
+def test_a_failed_prune_does_not_fail_the_install():
+    _remote_macos.prune_shipped("u@h", [], "shipped-2",
+                                run=mock.Mock(side_effect=OSError("ssh gone")))
+
+
+def test_the_copy_is_pruned_only_after_the_install_succeeded(lager_home):
+    args = dict(ssh_host="me@h", ip="10.0.0.6", user="me", box="mac",
+                identity_args=[], version="v9.9.9", yes=True)
+    with mock.patch.object(_remote_macos, "ship_installer"), \
+            mock.patch.object(_remote_macos, "ship_source", return_value="shipped-9"), \
+            mock.patch.object(_remote_macos, "prune_shipped") as prune, \
+            mock.patch.object(_remote_macos, "run_remote",
+                              side_effect=LagerError("The installer failed on the Mac.")):
+        with pytest.raises(LagerError):
+            _remote_macos.install_remote_macos(mock.Mock(params={}), **args)
+    prune.assert_not_called()
+    with mock.patch.object(_remote_macos, "ship_installer"), \
+            mock.patch.object(_remote_macos, "ship_source", return_value="shipped-9"), \
+            mock.patch.object(_remote_macos, "prune_shipped") as prune, \
+            mock.patch.object(_remote_macos, "run_remote",
+                              return_value={"ok": True, "box_version": "9.9.9"}) as ran:
+        _remote_macos.install_remote_macos(mock.Mock(params={}), **args)
+    prune.assert_called_once_with("me@h", [], "shipped-9")
+    assert "src/shipped-9" in ran.call_args.args[2]
 
 
 # ---------------------------------------------------------- running it there
@@ -309,10 +435,20 @@ def test_no_python_and_no_outcome_are_explained():
 def _install_remote(lager_home, args, outcome):
     ctx = mock.Mock(params={})
     with mock.patch.object(_remote_macos, "ship_installer") as installer, \
-            mock.patch.object(_remote_macos, "ship_source") as source, \
+            mock.patch.object(_remote_macos, "ship_source", return_value="shipped-1") as source, \
+            mock.patch.object(_remote_macos, "prune_shipped"), \
             mock.patch.object(_remote_macos, "run_remote", return_value=outcome) as ran:
         _remote_macos.install_remote_macos(ctx, **args)
     return installer, source, ran
+
+
+def test_a_remote_install_says_the_box_is_open_to_that_network(lager_home, capsys):
+    args = dict(ssh_host="me@10.0.0.6", ip="10.0.0.6", user="me", box="mac",
+                identity_args=[], version="v9.9.9", yes=True)
+    _install_remote(lager_home, args, {"ok": True, "box_version": "9.9.9"})
+    out = capsys.readouterr().out
+    assert "reachable from any machine on 10.0.0.6's network" in out
+    assert "no firewall" in out and "8301" in out and "8765" in out
 
 
 def test_a_remote_mac_is_always_saved_with_its_port_and_platform(lager_home, capsys):
@@ -424,7 +560,7 @@ def test_update_of_a_remote_mac_is_the_install_again(lager_home):
         _remote_macos.update_remote_macos(ctx, ip="h", user="me", version="v2", yes=True)
     assert again.call_args.kwargs == dict(ssh_host="me@h", ip="h", user="me", box=None,
                                           identity_args=["-i", "k"], version="v2",
-                                          yes=True, fork=None)
+                                          yes=True, fork=None, update=True)
     ctx.exit.side_effect = click.exceptions.Exit(2)
     with pytest.raises(click.exceptions.Exit):
         _remote_macos.update_remote_macos(ctx, ip="h", user="me", version=None,

@@ -465,5 +465,51 @@ class OneDispatchInTheTree(unittest.TestCase):
                 self.assertTrue({'flash_target', 'erase_target'} <= called)
 
 
+
+class JlinkFlashRunsUnlessHaltedTests(unittest.TestCase):
+    """`lager debug flash --halt` sends "run": false, and the service then
+    leaves the core halted instead of starting the new firmware first."""
+
+    def _run_after(self, extra):
+        from lager.debug.probes import BACKEND_JLINK
+
+        seen = {}
+
+        def fake_flash_device(files, **kwargs):
+            seen.update(kwargs)
+            yield 'Flashed'
+            return None
+
+        run = _Run()
+        with patch.object(service.safety, 'check_destructive', lambda net, op: None), \
+             patch.object(service, '_resolve_device_type', lambda net: OTHER), \
+             patch.object(service, 'resolve_backend', lambda net: BACKEND_JLINK), \
+             patch.object(service, '_resolve_probe',
+                          lambda net: ('000123', 0, 2331, 2332, 2333, 9090)), \
+             patch.object(service, '_openocd_ports_for_slot', lambda slot: (4444, 6666)), \
+             patch.object(service, 'get_jlink_gdbserver_status',
+                          lambda serial=None: {'running': False}), \
+             patch.object(service, '_get_script_file', lambda net: None), \
+             patch.object(service, 'flash_device', fake_flash_device):
+            _handler(run).handle_flash({
+                'net': {'name': 'SWD', 'role': 'debug'},
+                'hexfile': {'content': base64.b64encode(b':00000001FF').decode()},
+                **extra,
+            })
+        self.assertIn('run_after', seen, run.payload)
+        return seen['run_after']
+
+    def test_a_plain_flash_runs_the_firmware(self):
+        self.assertIs(self._run_after({}), True)
+
+    def test_run_false_leaves_it_halted(self):
+        self.assertIs(self._run_after({'run': False}), False)
+
+    def test_only_an_explicit_false_halts(self):
+        for value in (True, None, 0, ''):
+            with self.subTest(value=value):
+                self.assertIs(self._run_after({'run': value}), True)
+
+
 if __name__ == '__main__':
     unittest.main()

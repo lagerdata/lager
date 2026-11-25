@@ -577,6 +577,39 @@ def _redact_kwargs(kwargs):
             for key, value in kwargs.items()}
 
 
+def device_import_paths(device_name):
+    """The modules /invoke tries for ``device_name``, in order; the first that
+    exists is used. The macOS host agent's /invoke guard reads the same list,
+    so the two cannot disagree about which module a name means."""
+    return [
+        f'lager.{device_name}',                      # Direct: lager.rigol_dp800
+        # Power group
+        f'lager.power.supply.{device_name}',         # Power supplies: lager.power.supply.keysight_e36300
+        f'lager.power.battery.{device_name}',        # Battery simulators: lager.power.battery.keithley
+        f'lager.power.solar.{device_name}',          # Solar simulators: lager.power.solar.ea
+        f'lager.power.eload.{device_name}',          # Electronic loads: lager.power.eload.rigol_dl3021
+        # Measurement group
+        f'lager.measurement.scope.{device_name}',    # Oscilloscopes: lager.measurement.scope.rigol_mso5000
+        f'lager.measurement.thermocouple.{device_name}',  # Thermocouples
+        f'lager.measurement.watt.{device_name}',     # Watt meters
+        # I/O group
+        f'lager.io.adc.{device_name}',               # ADC: lager.io.adc.labjack_t7
+        f'lager.io.dac.{device_name}',               # DAC: lager.io.dac.labjack_t7
+        f'lager.io.gpio.{device_name}',              # GPIO: lager.io.gpio.*
+        # Automation group
+        f'lager.automation.usb_hub.{device_name}',   # USB hubs: lager.automation.usb_hub.acroname
+        f'lager.automation.arm.{device_name}',       # Robot arm: lager.automation.arm.rotrics
+        f'lager.automation.webcam.{device_name}',    # Webcam
+        # Protocols group
+        f'lager.protocols.uart.{device_name}',       # UART
+        f'lager.protocols.ble.{device_name}',        # BLE
+        f'lager.protocols.wifi.{device_name}',       # WiFi
+        # Legacy paths (backwards compatibility)
+        f'lager.nets.mappers.{device_name}',          # Mappers: lager.nets.mappers.rigol_mso5000
+        f'lager.instrument_wrappers.{device_name}',  # Instrument wrappers
+    ]
+
+
 @app.route('/invoke', methods=['POST'])
 def invoke():
     """
@@ -633,35 +666,7 @@ def invoke():
         device = device_cache.get(cache_key)
 
         if device is None:
-            # Import the hardware module
-            # Try multiple paths in order of likelihood (new grouped structure)
-            import_paths = [
-                f'lager.{device_name}',                      # Direct: lager.rigol_dp800
-                # Power group
-                f'lager.power.supply.{device_name}',         # Power supplies: lager.power.supply.keysight_e36300
-                f'lager.power.battery.{device_name}',        # Battery simulators: lager.power.battery.keithley
-                f'lager.power.solar.{device_name}',          # Solar simulators: lager.power.solar.ea
-                f'lager.power.eload.{device_name}',          # Electronic loads: lager.power.eload.rigol_dl3021
-                # Measurement group
-                f'lager.measurement.scope.{device_name}',    # Oscilloscopes: lager.measurement.scope.rigol_mso5000
-                f'lager.measurement.thermocouple.{device_name}',  # Thermocouples
-                f'lager.measurement.watt.{device_name}',     # Watt meters
-                # I/O group
-                f'lager.io.adc.{device_name}',               # ADC: lager.io.adc.labjack_t7
-                f'lager.io.dac.{device_name}',               # DAC: lager.io.dac.labjack_t7
-                f'lager.io.gpio.{device_name}',              # GPIO: lager.io.gpio.*
-                # Automation group
-                f'lager.automation.usb_hub.{device_name}',   # USB hubs: lager.automation.usb_hub.acroname
-                f'lager.automation.arm.{device_name}',       # Robot arm: lager.automation.arm.rotrics
-                f'lager.automation.webcam.{device_name}',    # Webcam
-                # Protocols group
-                f'lager.protocols.uart.{device_name}',       # UART
-                f'lager.protocols.ble.{device_name}',        # BLE
-                f'lager.protocols.wifi.{device_name}',       # WiFi
-                # Legacy paths (backwards compatibility)
-                f'lager.nets.mappers.{device_name}',          # Mappers: lager.nets.mappers.rigol_mso5000
-                f'lager.instrument_wrappers.{device_name}',  # Instrument wrappers
-            ]
+            import_paths = device_import_paths(device_name)
 
             module = None
             for import_path in import_paths:
@@ -1381,7 +1386,7 @@ def labjack_batch_read():
 
     if ljm_mod is None:
         logger.debug("labjack/batch_read: LJM not available: %s", _LJM_ERR)
-        return jsonify(results)
+        return _batch_read_response(results, f"LabJack LJM library not available: {_LJM_ERR}")
 
     # Lock on the identity the CALLER resolved. /invoke locks on `device_id`
     # from _physical_device_id() -- "labjack:" + the net's address -- so a
@@ -1407,6 +1412,7 @@ def labjack_batch_read():
         resp = jsonify(results)
         resp.headers['X-Lager-Device-Busy'] = '1'
         return resp
+    errors = []
     try:
         try:
             handle = get_labjack_handle()
@@ -1428,6 +1434,7 @@ def labjack_batch_read():
                         results[n["name"]] = "HIGH (1)" if val else "LOW (0)"
                 except Exception as e:
                     logger.debug("batch_read gpio: %s", e)
+                    errors.append(f"gpio: {e}")
 
             if adc_nets:
                 try:
@@ -1445,6 +1452,7 @@ def labjack_batch_read():
                         results[n["name"]] = "%.4fV" % float(v)
                 except Exception as e:
                     logger.debug("batch_read adc: %s", e)
+                    errors.append(f"adc: {e}")
 
             if dac_nets:
                 try:
@@ -1462,15 +1470,37 @@ def labjack_batch_read():
                         results[n["name"]] = "%.4fV" % float(v)
                 except Exception as e:
                     logger.debug("batch_read dac: %s", e)
+                    errors.append(f"dac: {e}")
 
         except Exception as e:
             logger.warning("labjack/batch_read failed: %s", e)
+            errors.append(str(e))
     finally:
         device_lock.release()
 
     if any(v is not None for v in results.values()):
         _note_ok(device_id)
-    return jsonify(results)
+    return _batch_read_response(results, errors[0] if errors else None)
+
+
+_DEVICE_ERROR_HEADER_MAX = 300
+
+
+def _batch_read_response(results, error):
+    """The batch-read body, plus why nets came back null when that is known.
+
+    The body keeps its contract (net name to value, null when unreadable). The
+    X-Lager-Device-Error header carries the driver's error, one line and
+    bounded, so `lager nets state` can show "LJM library not available" or
+    "not found on USB" instead of a generic "no value from instrument". It is
+    left off when every net was read.
+    """
+    resp = jsonify(results)
+    if error and any(v is None for v in results.values()):
+        line = " ".join(str(error).split())
+        resp.headers['X-Lager-Device-Error'] = (
+            line.encode('ascii', 'replace').decode('ascii')[:_DEVICE_ERROR_HEADER_MAX])
+    return resp
 
 
 def _cleanup_device_cache():

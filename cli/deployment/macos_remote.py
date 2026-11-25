@@ -64,7 +64,9 @@ def run(args, installer=None):
             result = installer.install(
                 args.version, args.cli_version, bind=args.bind,
                 source=Path(args.source) if args.source else None,
-                skip=args.skip or ())
+                # An update leaves out what the last install on that Mac left
+                # out; an install leaves out exactly what it is told to.
+                skip=None if (args.reuse_skips and not args.skip) else (args.skip or ()))
             return {"ok": True, "box_version": result.box_version,
                     "image": result.image, "skipped": result.skipped,
                     "ready": result.ready,
@@ -92,6 +94,7 @@ def parse(argv):
     install.add_argument("--bind", default="0.0.0.0")
     install.add_argument("--source", default=None)
     install.add_argument("--skip", action="append", choices=("jlink", "picoscope"))
+    install.add_argument("--reuse-skips", action="store_true")
     uninstall = commands.add_parser("uninstall")
     uninstall.add_argument("--purge-config", action="store_true")
     uninstall.add_argument("--keep-images", action="store_true")

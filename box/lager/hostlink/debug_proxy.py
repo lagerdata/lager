@@ -135,6 +135,14 @@ class HostDebugNet:
             raise AttributeError(name) from None
 
     def connect(self, *args, **kwargs):
+        # A script or OpenOCD config named by its path in this container is
+        # sent as its content: the agent accepts content only, because a path
+        # there would name a file on the Mac.
+        for key in SCRIPT_KWARGS:
+            value = kwargs.get(key)
+            if isinstance(value, str) and value.strip() and os.path.isfile(value):
+                with open(value, "rb") as fh:
+                    kwargs[key] = base64.b64encode(fh.read()).decode()
         return self._call("connect", *args, **kwargs)
 
     def disconnect(self):
@@ -188,6 +196,9 @@ class HostDebugNet:
                     self.disconnect()
                 except Exception:  # noqa: BLE001 - teardown must not mask errors
                     pass
+
+
+SCRIPT_KWARGS = ("script", "openocd_config", "jlink_script")
 
 
 def make_debug(name, net_info=None):

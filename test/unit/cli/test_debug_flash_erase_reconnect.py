@@ -141,8 +141,9 @@ class FakeClient:
         return {"status": "disconnected"}
 
     def flash(self, firmware_file, file_type='hex', address=None, verbose=False,
-              net=None, jlink_script=None, openocd_config=None):
+              net=None, jlink_script=None, openocd_config=None, run_after=True):
         self.calls.append("flash")
+        self.run_after = run_after
         result = {"status": "flash_complete", "output": self.flash_output}
         if self.flash_verdict is not None:
             result.update(self.flash_verdict)
@@ -275,6 +276,15 @@ class TestNoReconnectBetweenEraseAndFlash:
         result = run_flash(client, ["--hex", hexfile, "--box", "mybox", "--halt"])
         assert result.exit_code == 0, result.output
         assert client.calls == ["erase", "flash", "reset"]
+
+    def test_halt_asks_the_box_not_to_run_the_new_firmware(self, hexfile):
+        # Otherwise the firmware runs between the flash and the halting reset.
+        client = FakeClient()
+        run_flash(client, ["--hex", hexfile, "--box", "mybox", "--halt"])
+        assert client.run_after is False
+        plain = FakeClient()
+        run_flash(plain, ["--hex", hexfile, "--box", "mybox"])
+        assert plain.run_after is True
 
 
 # --------------------------------------------------------------------------- #

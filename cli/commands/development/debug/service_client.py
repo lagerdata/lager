@@ -222,8 +222,13 @@ class DebugServiceClient:
 
     def flash(self, firmware_file: Path, file_type: str = 'hex',
               address: Optional[int] = None, verbose: bool = False, net: Optional[Dict[str, Any]] = None,
-              jlink_script: Optional[str] = None, openocd_config: Optional[str] = None) -> Dict[str, Any]:
+              jlink_script: Optional[str] = None, openocd_config: Optional[str] = None,
+              run_after: bool = True) -> Dict[str, Any]:
         """Flash firmware to target.
+
+        ``run_after=False`` (``lager debug flash --halt``) asks the box to
+        leave the core halted after a J-Link flash instead of starting the new
+        firmware. The key is sent only then, so the default body is unchanged.
 
         `jlink_script` / `openocd_config` are sent for the same reason
         `connect` sends them: without them the box resolves the script itself,
@@ -236,6 +241,8 @@ class DebugServiceClient:
             content = base64.b64encode(f.read()).decode('ascii')
 
         data = {'verbose': verbose}
+        if not run_after:
+            data['run'] = False
         if not require_jlink_evidence():
             data['require_evidence'] = False
         if net:

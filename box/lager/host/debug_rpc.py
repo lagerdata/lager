@@ -15,8 +15,10 @@ connection, whose port it returns.
 from __future__ import annotations
 
 import base64
+import binascii
 import logging
 import os
+import re
 import select
 import socket
 import tempfile
@@ -39,6 +41,41 @@ _DESCRIBED = ("serial", "backend", "device", "gdb_port", "rtt_telnet_port",
               "openocd_tcl_port")
 _ACCEPT_TIMEOUT_S = 15.0
 _POLL_S = 0.1
+# connect() overrides that the debug net reads as a path OR base64 content.
+# From the container only content is accepted: a path would name a host file.
+_SCRIPT_KWARGS = ("script", "openocd_config", "jlink_script")
+_SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,15}$")
+
+
+class _Refused(ValueError):
+    """A request the agent will not carry out; answered with 400."""
+
+
+def _host_safe_net_info(net_info) -> dict:
+    """``net_info`` without the ``*_path`` keys, which the debug net would
+    open on this machine. The base64 forms of the same scripts are kept."""
+    if not isinstance(net_info, dict):
+        return {}
+    return {k: v for k, v in net_info.items()
+            if not (isinstance(k, str) and k.endswith("_path"))}
+
+
+def _check_script_kwargs(kwargs) -> None:
+    for key in _SCRIPT_KWARGS:
+        value = kwargs.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if not isinstance(value, str):
+            raise _Refused(f"{key} must be the script's content, base64-encoded")
+        try:
+            base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            raise _Refused(f"{key} must be the script's content, base64-encoded, "
+                           "not a path") from None
+        # '/' is a base64 character: the debug net tries a value as a path
+        # before decoding it, so one that names a file here is refused too.
+        if os.path.exists(value):
+            raise _Refused(f"{key} must be the script's content, not a path")
 
 
 def _make(name, net_info):
@@ -103,7 +140,9 @@ def _rtt_open(dbg, kwargs) -> dict:
 
 def _flash(dbg, args, kwargs, firmware) -> object:
     """Flash from bytes: the container's path means nothing here."""
-    suffix = os.path.splitext(firmware.get("name") or "")[1] or ".bin"
+    suffix = os.path.splitext(str(firmware.get("name") or ""))[1]
+    if not _SUFFIX.match(suffix):
+        suffix = ".bin"
     fd, path = tempfile.mkstemp(prefix="lager-flash-", suffix=suffix)
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -128,14 +167,27 @@ def install(app: Flask) -> Flask:
         method = data["method"]
         args = data.get("args") or []
         kwargs = data.get("kwargs") or {}
+        if not isinstance(args, list) or not isinstance(kwargs, dict):
+            return jsonify(protocol.error_body(
+                protocol.ERR_BAD_REQUEST, "args must be a list and kwargs an object.")), 400
+        firmware = data.get("firmware")
         try:
-            dbg = _make(data.get("name"), data.get("net_info") or {})
+            if method == "flash" and not (isinstance(firmware, dict)
+                                          and isinstance(firmware.get("data"), str)):
+                # A path here would be read on this machine, not in the container.
+                raise _Refused("flash needs the firmware's bytes, not a path")
+            if method == "connect":
+                _check_script_kwargs(kwargs)
+        except _Refused as exc:
+            return jsonify(protocol.error_body(protocol.ERR_BAD_REQUEST, str(exc))), 400
+        try:
+            dbg = _make(data.get("name"), _host_safe_net_info(data.get("net_info")))
             if method == "describe":
                 result = _describe(dbg)
             elif method == "rtt_open":
                 result = _rtt_open(dbg, kwargs)
-            elif method == "flash" and isinstance(data.get("firmware"), dict):
-                result = _flash(dbg, args, kwargs, data["firmware"])
+            elif method == "flash":
+                result = _flash(dbg, args, kwargs, firmware)
             elif method in _METHODS:
                 result = getattr(dbg, method)(*args, **kwargs)
             else:

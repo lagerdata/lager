@@ -198,7 +198,7 @@ class WebcamService:
         existing = self.state.get_stream(net_name)
         if existing:
             pid = existing["pid"]
-            if self._is_process_alive(pid):
+            if self._is_process_alive(pid, existing.get("port")):
                 return {
                     "url": f"http://{box_ip}:{existing['port']}/",
                     "port": existing["port"],
@@ -213,7 +213,7 @@ class WebcamService:
         for stream_net_name, stream_info in all_streams.items():
             if stream_info["video_device"] == video_device:
                 # Check if that stream is still alive
-                if self._is_process_alive(stream_info["pid"]):
+                if self._is_process_alive(stream_info["pid"], stream_info.get("port")):
                     raise RuntimeError(
                         f"Video device {video_device} is already in use by stream '{stream_net_name}' "
                         f"on port {stream_info['port']}. Stop that stream first or use a different device."
@@ -262,14 +262,16 @@ class WebcamService:
         pid = stream_info["pid"]
         port = stream_info["port"]
 
-        # Try to kill the process
+        # Signal the pid only while it is still this stream: after a container
+        # restart it can belong to anything, including a lager service.
         try:
-            os.kill(pid, signal.SIGTERM)
-            # Wait a bit for graceful shutdown
-            time.sleep(0.5)
-            # Force kill if still alive
-            if self._is_process_alive(pid):
-                os.kill(pid, signal.SIGKILL)
+            if self._is_process_alive(pid, port):
+                os.kill(pid, signal.SIGTERM)
+                # Wait a bit for graceful shutdown
+                time.sleep(0.5)
+                # Force kill if still alive
+                if self._is_process_alive(pid, port):
+                    os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass  # Already dead
 
@@ -301,7 +303,7 @@ class WebcamService:
             return None
 
         # Verify process is still alive
-        if not self._is_process_alive(stream_info["pid"]):
+        if not self._is_process_alive(stream_info["pid"], stream_info.get("port")):
             # Clean up dead stream
             self.state.remove_stream(net_name)
             return None
@@ -1234,13 +1236,29 @@ server.serve_forever()
 
         return pid
 
-    def _is_process_alive(self, pid: int) -> bool:
-        """Check if a process is still running."""
+    def _is_process_alive(self, pid: int, port: Optional[int] = None) -> bool:
+        """True while ``pid`` runs and, given ``port``, is that port's stream.
+
+        A pid alone is not enough: the state file survives a container
+        restart (it is in /etc/lager) and pids start over, so a saved pid can
+        name any process in the new container. Each stream runs
+        /tmp/webcam_stream_<port>.py, so its command line says which it is.
+        Where /proc cannot be read, existence is all there is to go on.
+        """
         try:
             os.kill(pid, 0)  # Signal 0 checks if process exists
-            return True
         except ProcessLookupError:
             return False
+        except PermissionError:
+            return False  # someone else's process, so not a stream we started
+        if port is None:
+            return True
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            return True
+        return f"webcam_stream_{port}.py" in cmdline
 
     def cleanup_dead_streams(self):
         """Clean up state for streams whose processes have died."""
@@ -1248,7 +1266,7 @@ server.serve_forever()
         dead_streams = []
 
         for net_name, info in state.items():
-            if not self._is_process_alive(info["pid"]):
+            if not self._is_process_alive(info["pid"], info.get("port")):
                 dead_streams.append(net_name)
 
         for net_name in dead_streams:
