@@ -1,0 +1,142 @@
+---
+title: "Version 0.66.0"
+description: "November 24, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+- **A LabJack T7 opens over USB only.** Before, a T7 opened with `ANY`, so an
+  unplugged T7 searched the network and held the device lock for minutes. Now a
+  T7 that is not on USB fails in seconds with "not found on USB". A Lager Box
+  whose T7 is on Ethernet must run `lager box-config env set
+  LAGER_LABJACK_CONNECTION=ANY`, then `lager box-config apply`.
+
+- **`lager i2c` addresses and `lager spi --fill` read a bare number as
+  decimal.** Hex needs a `0x` prefix. Before, `--address 72` reached 0x72 and
+  `--fill 10` sent 0x10. A script that passes `--address 48` for 0x48 must pass
+  `--address 0x48`. The rule applies to `--address`, `scan --start/--end` and
+  `--fill`, and bare hex digits such as `1a` are refused.
+
+- **User scripts no longer get `PIGPIO_ADDR`.** The Lager Box no longer looks
+  for a pigpio container. A script that needs the variable must pass it with
+  `--env`.
+
+- **`lager install` with no target installs on this machine.** On Linux it
+  connects to 127.0.0.1 over SSH. Before, it stopped with "Either --box or --ip
+  is required". `lager uninstall` with no target still stops with that error
+  except on a Mac. To uninstall this machine, pass `--ip 127.0.0.1`.
+
+## <u>Features</u>
+
+- **A Lager Box can run on an Apple silicon Mac.** `lager install` with no
+  target installs a Lager Box on the Mac that runs it. `lager install --ip
+  <mac>` installs one on another Mac. A host agent owns the USB instruments,
+  and the Box container asks the agent for each one. See [Setting Up a Lager Box
+  on a Mac](/source/getting-started/setting-up-a-mac-box).
+
+- **The Mac installer sets up the vendor libraries.** It installs LabJack LJM,
+  libusb, SEGGER J-Link, PicoScope 7 and the ARM GDB, and reports each piece
+  that it cannot set up. `--skip-jlink` and `--skip-picoscope` leave pieces out,
+  and `lager update` leaves out the same pieces.
+
+- **LabJack gpio nets can declare the level that they power up at.** A LabJack
+  powers up with every pin as a pulled-up input, so a load on a gpio net saw
+  HIGH after a power cycle. `lager nets set-power-up NET... low|high|none`
+  records a level on T7 and U3 nets. `lager nets apply-power-up` writes each
+  LabJack's boot configuration, and `--check` fails in CI when a level drifts.
+
+- **`lager defaults add --energy-net`, `--i2c-net` and `--spi-net`.** `lager
+  energy`, `lager i2c` and `lager spi` already used a default net, and now an
+  option can set one. Each option has a matching `lager defaults delete`
+  subcommand.
+
+## <u>Bug Fixes</u>
+
+- **`lager debug` memory reads of 16 KiB and more fail.** J-Link Commander reads
+  counts as hex, and lager sent them in decimal. Lager now sends hex and splits
+  a read at 0x4000 items.
+
+- **New firmware does not run after `lager debug <net> flash` on a non-DA1469x
+  J-Link target.** The core stayed halted until a reset. Now the firmware runs,
+  and `--halt` keeps the core halted.
+
+- **Script calls to supply, battery, electronic load, EA and solar nets fail or
+  return nothing.** Several `Net.get` methods called driver methods that do not
+  exist, or returned `None`. They now return their readings, and a
+  channel-less protection call acts on the net's own output. (#843, #845, #846)
+
+- **Per-call I2C and SPI `overrides` stay on the net after the call.** The
+  driver now returns to its configured settings after the call. An I2C
+  `pull_ups`-only override no longer resets the bus to 100 kHz.
+
+- **BLE `Central.connect()` and `Central.pair()` drop the client.** They now
+  return the `Client`. `Client.start_notify(max_messages=N)` returns when the
+  Nth notification arrives.
+
+- **Olimex JTAG probes do not appear in `lager nets add`.** The Lager Box now
+  lists and opens the four Olimex models, each with its own OpenOCD interface
+  config. Devices whose target config OpenOCD 0.12 lacks now stop with a clear
+  message before OpenOCD starts. (#850)
+
+- **`lager nets state` reports "no value from instrument" for an unreadable
+  LabJack net.** It now names the driver's error, for example "not found on
+  USB".
+
+- **`lager uninstall` exits 0 after a step fails.** It now exits 1 and keeps the
+  saved box, so the uninstall can run again by name.
+
+- **`lager box-config apply`, `restart` and `repair` run an old copy of
+  `start_box.sh`.** They now run the deployed script with `bash`. They also
+  reuse a current `lager` image instead of rebuilding it, which saves about a
+  minute.
+
+- **Default nets do not apply.** `lager watt` now reads the default watt meter
+  net. `lager dac 3.3` and `lager gpo high` read a lone value as the value.
+
+- **Smaller fixes.** `lager battery <net> ocp` accepts 6.1 A on a Keithley
+  2281S. `lager webcam stop` signals only its own stream. `lager boxes add-all`
+  asks before it changes a saved box. `lager logs clean --older-than N` counts
+  hours, not whole days. Install and update no longer warn about the `lsusb` and
+  `dfu-util` mounts.
+
+## <u>Improvements</u>
+
+- `lager spi write` and `lager spi transfer --data` split a run of hex by the
+  net's word size.
+- `lager watt` prints readings with SI prefixes, like `lager energy`.
+- `lager install --ip` checks for a terminal before it deploys to a Lager Box
+  that needs a sudo password.
+- `lager battery disable` asks with a default of no.
+- `lager i2c` and `lager spi transfer` refuse inline data together with
+  `--data-file`.
+- No-op options are hidden from `--help`.
+
+## <u>Known Limitations</u>
+
+- On a Mac Lager Box, the first T7 ADC read after a DAC change can show the old
+  value after the T7 is plugged in again. Restart the host agent to clear it.
+- A Lager Box on another Mac is open to that Mac's network, with no firewall.
+  Install one only on a network that you trust.
+- The Mac Lager Box does not support OpenOCD probes, Rigol oscilloscopes,
+  serial-port supplies, webcams or BLE yet. See the Mac setup page for the full
+  list.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.66.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli==0.66.0
+```
+
+Then update your boxes:
+
+```bash
+lager update --box <box-name>
+```
