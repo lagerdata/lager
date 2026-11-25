@@ -30,7 +30,7 @@ from flask import Flask, request, jsonify
 
 from lager import safety
 from lager.util import self_restart as _self_restart
-from lager.util.self_restart import restarting_message
+from lager.util.self_restart import restarting_message, usb_ids_from_address
 from lager.util.watchdog import run_with_deadline
 
 # Configure logging
@@ -340,6 +340,13 @@ def _restart_address(address, device_id):
     A YKUSH3 GPIO net sends ``ykush:<VISA address>``. hidapi's libusb context
     loses a hub that re-enumerated, the same wedge, so it gets the restart too.
 
+    A LabJack U3 net sends ``labjack:<instrument>:<VISA address>``. A U3 that
+    was replugged is invisible to this process's Exodriver until it restarts;
+    the U3 handle reports that case by name, and only that case matches the
+    open-failure markers. A T7 (``labjack:<VISA address>``, PID 0x0007) is not
+    a U3 and gets no address. Neither does a Box whose USB is on a host agent
+    (``LAGER_HOSTLINK``), where restarting this service cannot help.
+
     Other device_id families are left out on purpose: whether a restart
     helps them is a separate question.
     """
@@ -348,6 +355,12 @@ def _restart_address(address, device_id):
     family, _, ident = (device_id or '').partition(':')
     if family == 'ykush':
         return ident if '::' in ident else None
+    if family == 'labjack':
+        if os.environ.get('LAGER_HOSTLINK') == '1':
+            return None
+        _model, _, visa = ident.partition(':')
+        vid, pid, _serial = usb_ids_from_address(visa)
+        return visa if (vid, pid) == (0x0CD5, 0x0003) else None
     if family != 'usb202' or not ident or ident == 'ANY':
         return None
     if '::' in ident:

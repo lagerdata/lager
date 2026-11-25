@@ -66,6 +66,12 @@ OPEN_FAILURE_MARKERS = (
     # process does. Reached through hardware_service by the YKUSH3 GPIO
     # nets.
     'ykush device not found',
+    # A LabJack U3 the kernel lists on its port while this process's
+    # Exodriver counts fewer U3s than the kernel does: libusb learns of a
+    # replugged device from udev, which the container does not run, so only a
+    # fresh process sees it. Raised by lager.io.labjack_ud_handle, which
+    # checks the counts before adding it (STALE_VIEW_MARKER).
+    "this process's usb view is stale",
 )
 
 # Substrings that mark a USB-hub error as "can't reach the device" (a wedge

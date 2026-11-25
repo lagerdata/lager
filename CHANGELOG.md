@@ -23,6 +23,7 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 ### Fixed
 
 - On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.
+- A LabJack U3 that is unplugged and plugged back in is found again without a manual restart. When the kernel lists the U3 on its port but the Box's hardware service cannot see it, the service now restarts itself and the request answers "restarting"; the next `lager gpi`, `gpo`, `adc` or `dac` call on the net works. A U3 that another process holds, a LabJack T7, and a macOS Box are unchanged.
 
 ## [0.66.0] - 2026-11-24
 
