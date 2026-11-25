@@ -1408,6 +1408,7 @@ def _probe_shell_script():
     `LAGER_PROBE_` prefix below must stay in sync with `_PROBE_PREFIX`.
     """
     script = '''\
+echo "LAGER_PROBE_OS=$(uname -s 2>/dev/null)"
 if [ -d ~/box/.git ]; then echo "LAGER_PROBE_IS_GIT_REPO=1"; else echo "LAGER_PROBE_IS_GIT_REPO=0"; fi
 echo "LAGER_PROBE_REMOTE_URL=$(git -C ~/box remote get-url origin 2>/dev/null)"
 if [ -d ~/box/box ]; then echo "LAGER_PROBE_HAS_BOX_SUBDIR=1"; else echo "LAGER_PROBE_HAS_BOX_SUBDIR=0"; fi
@@ -2743,6 +2744,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             click.echo(probe_result.stderr.strip(), err=True)
         ctx.exit(_undetermined_exit_code(check))
     facts = _parse_probe_output(probe_result.stdout)
+
+    # A Mac that was never saved as one (installed from another machine, or
+    # its record deleted) is still a Mac. It has no ~/box checkout, so the
+    # steps below would fail it for the wrong reason. Taken from the probe
+    # above, so it costs no extra connection; only an exact "Darwin" leaves
+    # the Linux path.
+    if facts.get('OS') == 'Darwin':
+        if progress:
+            progress.finish(success=True)
+        click.echo(f'{ssh_host} is a Mac: updating it as a Box on a Mac.')
+        from ._remote_macos import update_remote_macos
+        update_remote_macos(ctx, ip=resolved_box, user=username, version=version,
+                            yes=True, check=check, fork=fork)
+        return
 
     # 2a: the box directory must be a git checkout.
     if facts.get('IS_GIT_REPO') != '1':

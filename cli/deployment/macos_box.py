@@ -48,6 +48,12 @@ ETC_DIR = "/etc/lager"
 # so a reinstall after an uninstall (which forgets the saved Box) brings
 # back the same name.
 BOX_NAME_FILE = os.path.join(ETC_DIR, "box-name")
+# The optional pieces the last install left out ("jlink", "picoscope"), so
+# that `lager update`, which installs again, leaves them out too.
+SKIP_FILE = os.path.join(ETC_DIR, "install-skips")
+SKIPPABLE = ("jlink", "picoscope")
+# A Box on a Mac runs a published image, and images are published per release.
+RELEASE_VERSION = re.compile(r"^v?\d+\.\d+\.\d+$")
 LOCAL_ADDRESS = "127.0.0.1"
 IMAGE_REPO = "ghcr.io/lagerdata/lager-box"
 # The only platform the Box image is published for today. It runs under the
@@ -55,6 +61,23 @@ IMAGE_REPO = "ghcr.io/lagerdata/lager-box"
 IMAGE_PLATFORM = "linux/amd64"
 SOURCE_REPO = "https://github.com/lagerdata/lager"
 LABJACK_REPO = "https://github.com/labjack/exodriver"
+# LabJack's LJM installer for Apple silicon, which T-series devices (T4, T7,
+# T8) need. LJM is closed source, so it cannot be built like the Exodriver;
+# its signed libraries and data files are unpacked from the official package
+# instead, with no admin rights and nothing written under /usr/local.
+LJM_URL = ("https://files.labjack.com/installers/LJM/macOS/ARM64/release/"
+           "LabJack-LJM_2025-05-07.zip")
+LJM_SHA256 = "16439a170f450969b19bcb070823beb8e0bc566e3c68bfef7de92561d8db0768"
+LJM_PKG = "LabJack-LJM_2025-05-07.pkg"
+LJM_LIBRARY = "ljm_lib.pkg/Payload/libLabJackM-1.23.4.dylib"
+# LJM is linked against /usr/local/lib/libusb-1.0.0.dylib. When that path is
+# missing, dyld looks the name up on DYLD_FALLBACK_LIBRARY_PATH, which the
+# agent's job points at the library directory first.
+LJM_LIBUSB = "libusb_lib.pkg/Payload/libusb-1.0.0.dylib"
+LJM_SHARE = "ljm_share.pkg/Payload/LabJack/LJM"
+# The agent hands this to LJM before any device is opened; LJM otherwise
+# reads it from /usr/local/share/LabJack/LJM.
+LJM_CONSTANTS_ENV = "LAGER_LJM_CONSTANTS_FILE"
 START_SCRIPT = "/app/lager/lager/docker/start-services-hostlink.sh"
 
 # macOS's AirPlay receiver holds 5000, so the script service is published on
@@ -170,6 +193,11 @@ class Layout:
     @property
     def lib_dir(self) -> Path:
         return self.app_dir / "host" / "lib"
+
+    @property
+    def ljm_dir(self) -> Path:
+        """LJM's data files (constants, startup configs, log)."""
+        return self.app_dir / "host" / "share" / "LabJack" / "LJM"
 
     @property
     def build_dir(self) -> Path:
@@ -305,6 +333,18 @@ def source_version(root: Path) -> str:
     return ""
 
 
+def check_release_version(version: str) -> None:
+    """Refuse a version with no published Box image, before anything changes."""
+    if not RELEASE_VERSION.match(version or ""):
+        raise LagerError(
+            f"A Box on a Mac installs a Lager release, and {version!r} is not one.",
+            cause="Only releases have a published Box image; a branch or commit "
+                  "has none to run.",
+            fixes=["Pass a release, for example --version v0.66.0, or leave "
+                   "--version out for this CLI's version.",
+                   "To run unreleased code, install from a checkout of the repository."])
+
+
 def image_for(version: str) -> str:
     return f"{IMAGE_REPO}:v{version.lstrip('v')}"
 
@@ -343,7 +383,42 @@ def ensure_source(layout: Layout, version: str, run: Run = _run,
             cause=_last_line(result.stderr),
             fixes=["Check the network connection and that the version exists: "
                    f"{SOURCE_REPO}/releases"])
+    if not (target / "box" / "lager" / "host" / "__main__.py").exists():
+        shutil.rmtree(target, ignore_errors=True)
+        raise LagerError(
+            f"Lager {version} predates the macOS Box and cannot run on a Mac.",
+            fixes=["Install a later release, or leave --version out."])
     return target
+
+
+def config_dir_fixes(user: Optional[str] = None) -> List[str]:
+    """The commands that create ``/etc/lager`` by hand, one per line.
+
+    One line each, not an ``&&`` chain: a chain is easy to mangle when it is
+    pasted, and a viewer that escapes ``&`` turns it into ``&amp;&amp;``.
+    """
+    user = user or os.environ.get("USER") or str(os.getuid())
+    return [f"sudo mkdir -p {ETC_DIR}", f"sudo chown {user} {ETC_DIR}",
+            f"chmod 700 {ETC_DIR}", "Then run `lager install` again."]
+
+
+def config_dir_needs_sudo() -> bool:
+    """True when ``/etc/lager`` has to be created (or taken over) with sudo."""
+    return not (os.path.isdir(ETC_DIR) and os.access(ETC_DIR, os.W_OK))
+
+
+def sudo_needs_a_terminal(run: Run = _run, isatty=None) -> bool:
+    """True when sudo would have to ask for a password and cannot.
+
+    sudo reads the password from the terminal. Without one (a pipe, CI, an
+    agent's shell) it fails with "a terminal is required", minutes into the
+    install. Asked up front instead: no terminal, and no cached sudo
+    credential or passwordless rule (`sudo -n true` fails).
+    """
+    isatty = isatty or (lambda: sys.stdin.isatty())
+    if isatty():
+        return False
+    return run(["sudo", "-n", "true"], timeout=10).returncode != 0
 
 
 def ensure_config_dir(run: Run = _run, user: Optional[str] = None) -> bool:
@@ -361,8 +436,7 @@ def ensure_config_dir(run: Run = _run, user: Optional[str] = None) -> bool:
             f"The CLI did not create {ETC_DIR}.",
             cause="It is the Box's configuration directory and needs "
                   "administrator rights to create, once.",
-            fixes=[f"sudo mkdir -p {ETC_DIR} && sudo chown {user} {ETC_DIR} "
-                   f"&& chmod 700 {ETC_DIR}", "Then run `lager install` again."])
+            fixes=config_dir_fixes(user))
     return True
 
 
@@ -497,6 +571,58 @@ def build_labjack_library(layout: Layout, run: Run = _run,
     if not (layout.lib_dir / "liblabjackusb.dylib").exists():
         shutil.copy2(built[-1], layout.lib_dir / "liblabjackusb.dylib")
     return None
+
+
+def install_ljm_library(layout: Layout, run: Run = _run,
+                        echo=lambda _line: None) -> Optional[str]:
+    """Unpack LabJack's LJM library from LabJack's installer. A reason, or None.
+
+    Optional: without it everything but LabJack T-series devices works. The
+    package is checked against a pinned SHA-256 and only expanded, never
+    installed: the libraries go in the agent's library directory and the data
+    files under ``layout.ljm_dir``, so ``lager uninstall`` removes them too.
+    """
+    library = layout.lib_dir / "libLabJackM.dylib"
+    constants = layout.ljm_dir / "ljm_constants.json"
+    if library.exists() and constants.exists():
+        return None
+    echo("Installing the LabJack T-series library (LJM)...")
+    work = layout.build_dir / "ljm"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        archive = work / "ljm.zip"
+        # curl, not urllib: it trusts the system keychain, so it works behind
+        # a TLS-inspecting corporate proxy.
+        if run(["curl", "-fsSL", "--retry", "2", "-o", str(archive), LJM_URL],
+               timeout=900).returncode != 0 or not archive.exists():
+            return f"could not download {LJM_URL}"
+        digest = hashlib.sha256()
+        with open(archive, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != LJM_SHA256:
+            return f"the download from {LJM_URL} does not match its expected checksum"
+        if run(["unzip", "-q", "-o", str(archive), LJM_PKG, "-d", str(work)],
+               timeout=300).returncode != 0:
+            return f"could not unpack {LJM_PKG}"
+        expanded = work / "expanded"
+        if run(["pkgutil", "--expand-full", str(work / LJM_PKG), str(expanded)],
+               timeout=600).returncode != 0:
+            return f"could not expand {LJM_PKG}"
+        pieces = [expanded / LJM_LIBRARY, expanded / LJM_LIBUSB,
+                  expanded / LJM_SHARE / "ljm_constants.json"]
+        missing = [p.name for p in pieces if not p.exists()]
+        if missing:
+            return f"LabJack's package is missing {', '.join(missing)}"
+        layout.lib_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(expanded / LJM_LIBRARY, library)
+        shutil.copy2(expanded / LJM_LIBUSB, layout.lib_dir / "libusb-1.0.0.dylib")
+        shutil.rmtree(layout.ljm_dir, ignore_errors=True)
+        shutil.copytree(expanded / LJM_SHARE, layout.ljm_dir)
+        return None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def ensure_arm_gdb(run: Run = _run, echo=print) -> Optional[str]:
@@ -767,7 +893,10 @@ def launch_agent_plist(layout: Layout, source: Path, environ=None) -> bytes:
     env = {"PYTHONPATH": str(source / "box"), "PATH": path, "PYTHONUNBUFFERED": "1"}
     if layout.scope_daemon.exists():
         env["LAGER_HOST_SCOPE_DAEMON"] = str(layout.scope_daemon)
-    log = str(layout.log_dir / "host-agent.log")
+    constants = layout.ljm_dir / "ljm_constants.json"
+    if constants.exists():
+        env[LJM_CONSTANTS_ENV] = str(constants)
+    log =str(layout.log_dir / "host-agent.log")
     return plistlib.dumps({
         "Label": LABEL,
         # macOS drops DYLD_* variables whenever it starts a system binary, so
@@ -848,13 +977,23 @@ def docker_run_argv(docker: str, image: str, source: Path, etc_real: str,
 
 
 def anonymous_env(docker: str, env: dict, run: Run = _run) -> dict:
-    """``env`` pointed at the same daemon, with an empty Docker configuration.
+    """``env`` pointed at the same daemon, pulling with no credentials.
 
-    An empty configuration has no credential store and no contexts, so the
-    daemon the current context names is carried over as ``DOCKER_HOST``.
+    The configuration names an empty login for the image's registry. It
+    cannot simply be empty: a Docker CLI that finds no credentials in its
+    configuration detects the platform's credential helper (the macOS
+    keychain) and uses whatever is stored there, and a stale or expired
+    GHCR login is refused ("denied") even for a public image. It has no
+    contexts either, so the daemon the current context names is carried
+    over as ``DOCKER_HOST``.
     """
+    import json
     import tempfile
-    clean = dict(env, DOCKER_CONFIG=tempfile.mkdtemp(prefix="lager-docker-"))
+    config_dir = tempfile.mkdtemp(prefix="lager-docker-")
+    registry = IMAGE_REPO.split("/", 1)[0]
+    with open(os.path.join(config_dir, "config.json"), "w", encoding="utf-8") as fh:
+        json.dump({"auths": {registry: {}}}, fh)
+    clean = dict(env, DOCKER_CONFIG=config_dir)
     if not clean.get("DOCKER_HOST"):
         host = (run([docker, "context", "inspect", "--format",
                      "{{.Endpoints.docker.Host}}"], env=env, timeout=30).stdout or "").strip()
@@ -972,7 +1111,9 @@ def homebrew_installs(skip: Sequence[str] = ()) -> List[str]:
             wanted.append("PicoScope 7")
         if not os.path.exists(find_cargo()):
             wanted.append("Rust")
-    if homebrew_prefix_with(f"bin/{ARM_GDB}") is None:
+    # The ARM GDB serves only debug probes, and J-Link is the only one a Mac
+    # Box drives today, so --skip-jlink leaves it out too.
+    if "jlink" not in skip and homebrew_prefix_with(f"bin/{ARM_GDB}") is None:
         wanted.append("an ARM GDB")
     return wanted
 
@@ -1013,6 +1154,24 @@ def remembered_box_name() -> Optional[str]:
         return None
 
 
+def remembered_skips() -> List[str]:
+    """The optional pieces the last install on this Mac left out."""
+    try:
+        with open(SKIP_FILE, encoding="utf-8") as fh:
+            words = fh.read().split()
+    except OSError:
+        return []
+    return [word for word in SKIPPABLE if word in words]
+
+
+def remember_skips(skip: Sequence[str]) -> None:
+    try:
+        with open(SKIP_FILE, "w", encoding="utf-8") as fh:
+            fh.write(" ".join(word for word in SKIPPABLE if word in skip) + "\n")
+    except OSError:
+        pass
+
+
 def remember_box_name(name: str) -> None:
     try:
         with open(BOX_NAME_FILE, "w", encoding="utf-8") as fh:
@@ -1047,7 +1206,7 @@ class Result:
 def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
             layout: Optional[Layout] = None, bind: str = LOCAL_ADDRESS,
             source: Optional[Path] = None, confirm=None,
-            skip: Sequence[str] = ()) -> Result:
+            skip: Optional[Sequence[str]] = None) -> Result:
     """Provision the agent and the container on this Mac.
 
     ``bind`` is the address the Box's ports are published on: this Mac only
@@ -1055,11 +1214,22 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     ``source`` is a Box source tree already on this Mac, used instead of the
     checkout or a download. ``confirm`` asks the user a yes/no question
     before something is installed on their behalf (see :func:`ensure_docker`).
-    ``skip`` leaves out optional pieces: "jlink", "picoscope".
+    ``skip`` leaves out optional pieces: "jlink", "picoscope". None (an
+    update) leaves out what the last install on this Mac left out.
+
+    The agent is replaced only once the Box image is on this Mac, so a
+    failed download leaves the running agent and container as they were.
     """
     layout = layout or Layout()
     from_tree = source is not None or running_from_checkout() is not None
     check_platform()
+    if not from_tree:
+        check_release_version(version)
+    if skip is None:
+        skip = remembered_skips()
+        if skip:
+            echo("Leaving out what the last install left out: "
+                 + ", ".join(f"--skip-{word}" for word in skip) + ".")
     echo("Checking Docker...")
     docker, env = ensure_docker(run, echo, confirm)
 
@@ -1083,6 +1253,7 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     optional(USB_INSTRUMENTS, lambda: agent_loads_libusb(layout, run) and (
         ensure_libusb(run, echo) or agent_loads_libusb(layout, run)))
     optional("LabJack U3/U6 support", lambda: build_labjack_library(layout, run, echo))
+    optional("LabJack T4/T7/T8 support", lambda: install_ljm_library(layout, run, echo))
     if "picoscope" in skip:
         echo("Leaving out PicoScope support (--skip-picoscope).")
     else:
@@ -1090,19 +1261,20 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
                  or build_scope_daemon(layout, source, run, echo))
         optional("PicoScope support", lambda: ensure_picoscope_app(run, echo))
     if "jlink" in skip:
-        echo("Leaving out J-Link debugging (--skip-jlink).")
+        echo("Leaving out J-Link debugging and its ARM GDB (--skip-jlink).")
     else:
         optional("J-Link debugging", lambda: ensure_jlink(run, echo))
-    optional("RTT auto-detection", lambda: ensure_arm_gdb(run, echo))
+        optional("RTT auto-detection", lambda: ensure_arm_gdb(run, echo))
+    # The image first: until it is here, the running Box is left alone.
+    download.wait(echo)
     echo("Starting the host agent...")
     start_agent(layout, source, run)
-
-    download.wait(echo)
     echo("Starting the Box container...")
     start_container(docker, env, image, source, run, echo, bind)
     wait_for_link(docker, env, run)
     ref = f"checkout:{source}" if from_tree else version
     write_state(box_version, cli_version, ref)
+    remember_skips(skip)
     return Result(source=source, image=image, box_version=box_version,
                   skipped=skipped, ready=ready)
 
@@ -1144,8 +1316,19 @@ def uninstall(*, purge_config: bool = False, echo=print, run: Run = _run,
     docker = env = None
     try:
         docker, env = find_docker(run)
-    except LagerError:
-        echo("Docker is not running; the Box container was not removed.")
+    except DockerMissing:
+        # No Docker at all: there is no container to remove.
+        echo("Docker is not installed, so there is no Box container to remove.")
+    except LagerError as exc:
+        # Installed but stopped: the container (restart policy "always") comes
+        # back with Docker, holding the Box's ports. Stop here, with nothing
+        # removed, so the uninstall can simply be run again.
+        raise LagerError(
+            "Docker is installed but not running, so the Box container cannot "
+            "be removed. Nothing was uninstalled.",
+            cause=exc.problem,
+            fixes=["Start OrbStack or Docker Desktop, then run `lager uninstall` again."]
+        ) from exc
     if docker:
         run([docker, "rm", "-f", CONTAINER_NAME], env=env, timeout=120)
         if not keep_images:

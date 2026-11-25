@@ -1203,9 +1203,11 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
     # path is declared in box_config.json but doesn't exist yet on the host.
     # We can only mkdir as the current user (lagerdata); root-owned parents
     # like /srv still need a one-time `sudo mkdir + chown 33:33` from the
-    # operator. Failures here are warnings, never fatal.
+    # operator. Failures here are warnings, never fatal. `-e`, not `-d`: a
+    # mount of an existing FILE (/usr/bin/lsusb, /usr/bin/dfu-util) is already
+    # there, and `-d` sent it down the mkdir path to a false warning.
     for _p in "${BOX_CONFIG_HOST_PATHS[@]}"; do
-        if [ ! -d "$_p" ]; then
+        if [ ! -e "$_p" ]; then
             if mkdir -p "$_p" 2>/dev/null; then
                 echo "  Created host path $_p"
             else

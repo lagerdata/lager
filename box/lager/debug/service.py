@@ -1394,8 +1394,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 # Collect all output from the flash_device generator
                 flash_output = []
                 files = (hexfiles, binfiles, elffiles)
+                # "run": false is `lager debug flash --halt`: the CLI halts the
+                # core afterwards, so the new firmware must not run meanwhile.
+                # A client that predates the key sends none and gets a run.
                 flash_steps = iter(flash_device(
-                    files, run_after=True, mcu=device_type, use_gdb=(not verbose),
+                    files, run_after=data.get('run', True) is not False,
+                    mcu=device_type, use_gdb=(not verbose),
                     script_file=script_path, serial=serial,
                     gdb_port=gdb_port, rtt_telnet_port=rtt_telnet_port,
                     swo_port=swo_port, telnet_port=telnet_port,

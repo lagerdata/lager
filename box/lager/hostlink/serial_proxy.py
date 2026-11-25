@@ -36,6 +36,10 @@ _TIMEOUT_S = 15.0
 # The names a Linux Box gives USB serial ports. Only these are sent to the
 # host; anything else is not a port the host could be holding.
 _HOST_PORT = re.compile(r"^/dev/tty(USB|ACM)\d+$")
+
+# Whether a device node exists in this container. A name of its own, so a test
+# can replace it without patching os.path for the whole process.
+_device_exists = os.path.exists
 # Message a Linux Box's reconnect logic recognises as "the adapter left".
 _GONE = "device disconnected (the host closed the port)"
 
@@ -85,7 +89,7 @@ def install_lookups(namespace) -> None:
 def is_host_port(port) -> bool:
     """True for a Linux USB serial name that is not a device in this container."""
     return (isinstance(port, str) and bool(_HOST_PORT.match(port))
-            and not os.path.exists(port))
+            and not _device_exists(port))
 
 
 def _connect_host() -> str:

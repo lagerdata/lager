@@ -24,6 +24,7 @@ import json
 import os
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -277,6 +278,53 @@ class DebugRpcTests(unittest.TestCase):
         self.assertEqual([f for f in os.listdir(tempfile.gettempdir())
                           if f == name], [])
 
+    def test_flash_with_a_path_and_no_bytes_is_refused(self):
+        # A path would be opened on the Mac, not in the container.
+        for firmware in (None, {}, {"name": "x.bin"}, "bytes", {"data": 3}):
+            with self.subTest(firmware=firmware):
+                body = {"method": "flash", "args": [os.path.expanduser("~/.ssh/id_ed25519")]}
+                if firmware is not None:
+                    body["firmware"] = firmware
+                resp = self._call(**body)
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("not a path", resp.get_json()["error"])
+        self.assertIsNone(self.dbg.flashed)
+        self.assertEqual(self.made, [])
+
+    def test_a_flash_file_suffix_is_only_an_extension(self):
+        for name, suffix in (("app.hex", ".hex"), ("fw.elf", ".elf"), ("noext", ".bin"),
+                             ("x.he/../x", ".bin"), ("a." + "b" * 40, ".bin"), (None, ".bin")):
+            with self.subTest(name=name):
+                firmware = {"name": name, "data": base64.b64encode(b"\x01").decode()}
+                self._call(method="flash", args=["/c/x"], firmware=firmware)
+                self.assertTrue(self.dbg.flashed[0].endswith(suffix), self.dbg.flashed[0])
+
+    def test_path_keys_in_the_net_record_are_dropped(self):
+        net_info = {"instrument": "J-Link", "jlink_script_path": "/etc/hosts",
+                    "openocd_config_path": "/tmp/x.cfg", "jlink_script": "QUJD"}
+        self._call(method="status", net_info=net_info)
+        self.assertEqual(self.made, [("dbg", {"instrument": "J-Link", "jlink_script": "QUJD"})])
+
+    def test_connect_takes_script_content_never_a_path(self):
+        with tempfile.NamedTemporaryFile(dir=tempfile.gettempdir()) as fh:
+            for key in ("script", "openocd_config", "jlink_script"):
+                for value in ("/etc/hosts", "not base64!", fh.name, 3):
+                    with self.subTest(key=key, value=value):
+                        resp = self._call(method="connect", kwargs={key: value})
+                        self.assertEqual(resp.status_code, 400)
+                        self.assertIn(key, resp.get_json()["error"])
+        self.assertEqual(self.made, [])
+
+    def test_connect_with_script_content_goes_through(self):
+        script = base64.b64encode(b"void ConfigTargetSettings(void) {}").decode()
+        resp = self._call(method="connect", kwargs={"script": script, "speed": 4000})
+        self.assertNotEqual(resp.status_code, 400, resp.get_json())
+        self.assertEqual(self.made, [("dbg", {"instrument": "J-Link"})])
+
+    def test_args_and_kwargs_must_be_a_list_and_an_object(self):
+        self.assertEqual(self._call(method="status", args="x").status_code, 400)
+        self.assertEqual(self._call(method="status", kwargs=["x"]).status_code, 400)
+
     def test_rtt_open_bridges_one_loopback_client_both_ways(self):
         self.dbg.rtt_session.chunks = [b"up-1", b"up-2"]
         resp = self._call(method="rtt_open", kwargs={"channel": 0})
@@ -402,6 +450,24 @@ class DebugProxyTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(body["firmware"]["data"]), b"\xde\xad\xbe\xef")
         self.assertEqual(body["firmware"]["name"], os.path.basename(fh.name))
         self.assertEqual(body["args"][1], 0x8000000)
+
+    def test_connect_sends_a_script_named_by_path_as_its_content(self):
+        with tempfile.NamedTemporaryFile(suffix=".JLinkScript", delete=False) as fh:
+            fh.write(b"int InitTarget(void) { return 0; }")
+        self.addCleanup(os.unlink, fh.name)
+        for key in ("script", "openocd_config", "jlink_script"):
+            with self.subTest(key=key):
+                self.posts.clear()
+                self.net.connect(speed=4000, **{key: fh.name})
+                sent = self.posts[0][1]["kwargs"]
+                self.assertEqual(base64.b64decode(sent[key]),
+                                 b"int InitTarget(void) { return 0; }")
+                self.assertEqual(sent["speed"], 4000)
+
+    def test_connect_passes_script_content_unchanged(self):
+        script = base64.b64encode(b"x").decode()
+        self.net.connect(script=script)
+        self.assertEqual(self.posts[0][1]["kwargs"]["script"], script)
 
     def test_attributes_are_described_once_then_cached(self):
         self.reply = _Response(200, {"result": {"serial": "000123", "gdb_port": 2331}})
@@ -663,23 +729,193 @@ class StaleControllerTests(unittest.TestCase):
         self.assertEqual(module.connects, 1)
 
 
+def _token_service(expected_token):
+    """A loopback HTTP/1.0 service guarded by darwin_debug.require_token,
+    standing in for the debug service; it answers 200 with the path."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        seen = []
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length)
+            Handler.seen.append((self.path, body))
+            reply = b"ok " + self.path.encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+    darwin_debug.require_token(Handler, expected_token)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, Handler
+
+
+def _post(port, path="/debug/flash", body=b'{"a": 1}', headers=()):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as conn:
+        extra = "".join(f"{k}: {v}\r\n" for k, v in headers)
+        conn.sendall(f"POST {path} HTTP/1.0\r\nContent-Type: application/json\r\n"
+                     f"Content-Length: {len(body)}\r\n{extra}\r\n".encode() + body)
+        reply = b""
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                return reply
+            reply += data
+
+
+class DebugServiceTokenTests(unittest.TestCase):
+    """The debug service on the host answers only requests carrying the link
+    token, and the container's forward of 8765 adds it."""
+
+    TOKEN = "t" * 43
+
+    def _service(self, expected):
+        server, handler = _token_service(expected)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1], handler
+
+    def _forward(self, to_port, token_source):
+        server = tcp_forward.Forwarder(("127.0.0.1", 0), to_port, lambda: "127.0.0.1",
+                                       token_source)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[1]
+
+    def test_a_request_without_the_token_is_refused_before_the_handler(self):
+        port, handler = self._service(lambda: self.TOKEN)
+        reply = _post(port)
+        self.assertTrue(reply.startswith(b"HTTP/1.0 401"), reply)
+        self.assertIn(b"unauthorized", reply)
+        self.assertEqual(handler.seen, [])
+
+    def test_a_wrong_token_is_refused(self):
+        port, handler = self._service(lambda: self.TOKEN)
+        reply = _post(port, headers=[("Authorization", "Bearer " + "x" * 43)])
+        self.assertTrue(reply.startswith(b"HTTP/1.0 401"), reply)
+        self.assertEqual(handler.seen, [])
+
+    def test_the_right_token_reaches_the_handler(self):
+        port, handler = self._service(lambda: self.TOKEN)
+        reply = _post(port, headers=[("Authorization", "Bearer " + self.TOKEN)])
+        self.assertTrue(reply.startswith(b"HTTP/1.0 200"), reply)
+        self.assertEqual(handler.seen, [("/debug/flash", b'{"a": 1}')])
+
+    def test_no_endpoint_record_fails_closed(self):
+        def missing():
+            raise config.EndpointError("no record")
+
+        port, handler = self._service(missing)
+        reply = _post(port, headers=[("Authorization", "Bearer " + self.TOKEN)])
+        self.assertTrue(reply.startswith(b"HTTP/1.0 401"), reply)
+        self.assertEqual(handler.seen, [])
+
+    def test_the_forward_adds_the_token_and_keeps_the_request_intact(self):
+        port, handler = self._service(lambda: self.TOKEN)
+        forward = self._forward(port, lambda: self.TOKEN)
+        body = bytes(range(256)) * 4
+        reply = _post(forward, path="/debug/rtt", body=body)
+        self.assertTrue(reply.startswith(b"HTTP/1.0 200"), reply)
+        self.assertEqual(handler.seen, [("/debug/rtt", body)])
+
+    def test_the_forward_closes_without_a_token(self):
+        port, handler = self._service(lambda: self.TOKEN)
+        forward = self._forward(port, lambda: None)
+        self.assertEqual(_post(forward), b"")
+        self.assertEqual(handler.seen, [])
+
+    def test_the_forward_closes_when_no_request_line_arrives(self):
+        port, handler = self._service(lambda: self.TOKEN)
+        forward = self._forward(port, lambda: self.TOKEN)
+        with socket.create_connection(("127.0.0.1", forward), timeout=5) as conn:
+            conn.sendall(b"x" * (tcp_forward.MAX_REQUEST_LINE + 10))
+            self.assertEqual(conn.recv(100), b"")
+        self.assertEqual(handler.seen, [])
+
+    def test_the_header_goes_after_the_first_line(self):
+        self.assertEqual(
+            tcp_forward.with_token(b"POST /x HTTP/1.0\r\nA: b\r\n\r\nbody", "tok"),
+            b"POST /x HTTP/1.0\r\nAuthorization: Bearer tok\r\nA: b\r\n\r\nbody")
+
+    def test_the_start_script_adds_the_token_on_the_debug_forward_only(self):
+        script = open(os.path.join(BOX_DIR, "lager", "docker",
+                                   "start-services-hostlink.sh")).read()
+        debug = [l for l in script.splitlines() if "--listen 8765" in l]
+        scope = [l for l in script.splitlines() if "--listen 8085" in l]
+        self.assertEqual(len(debug), 1)
+        self.assertIn("--add-token", debug[0])
+        self.assertEqual(len(scope), 1)
+        self.assertNotIn("--add-token", scope[0])
+
+
 class FindGdbTests(unittest.TestCase):
+    # GDB_DIRS points at directories under a temp dir: os.path is never patched
+    # (test/unit/test_no_global_os_path_patches.py).
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.homebrew = os.path.join(tmp.name, "opt", "homebrew", "bin")
+        self.usr_local = os.path.join(tmp.name, "usr", "local", "bin")
+        os.makedirs(self.homebrew)
+        os.makedirs(self.usr_local)
+        dirs = patch.object(darwin_debug, "GDB_DIRS", (self.homebrew, self.usr_local))
+        dirs.start()
+        self.addCleanup(dirs.stop)
+
     def test_path_is_searched_before_the_fixed_directories(self):
+        open(os.path.join(self.homebrew, "arm-none-eabi-gdb"), "w").close()
         with patch.object(darwin_debug.shutil, "which",
-                          lambda name: "/usr/bin/" + name if name == "arm-none-eabi-gdb" else None), \
-                patch.object(darwin_debug.os.path, "exists", lambda path: False):
+                          lambda name: "/usr/bin/" + name if name == "arm-none-eabi-gdb" else None):
             self.assertEqual(darwin_debug.find_gdb(), "/usr/bin/arm-none-eabi-gdb")
 
     def test_homebrew_is_found_without_it_on_path(self):
-        with patch.object(darwin_debug.shutil, "which", lambda name: None), \
-                patch.object(darwin_debug.os.path, "exists",
-                             lambda path: path == "/opt/homebrew/bin/arm-none-eabi-gdb"):
-            self.assertEqual(darwin_debug.find_gdb(), "/opt/homebrew/bin/arm-none-eabi-gdb")
+        gdb = os.path.join(self.homebrew, "arm-none-eabi-gdb")
+        open(gdb, "w").close()
+        with patch.object(darwin_debug.shutil, "which", lambda name: None):
+            self.assertEqual(darwin_debug.find_gdb(), gdb)
 
     def test_none_when_there_is_no_arm_gdb(self):
-        with patch.object(darwin_debug.shutil, "which", lambda name: None), \
-                patch.object(darwin_debug.os.path, "exists", lambda path: False):
+        with patch.object(darwin_debug.shutil, "which", lambda name: None):
             self.assertIsNone(darwin_debug.find_gdb())
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX permissions")
+class InitDirectoryTests(unittest.TestCase):
+    """`lager.host init` leaves the token's directory readable by its owner only."""
+
+    def _init(self, directory):
+        args = types.SimpleNamespace(config_dir=directory, port=None)
+        with patch("sys.stdout", new_callable=io.StringIO), \
+             patch("sys.stderr", new_callable=io.StringIO) as err:
+            return host_main.cmd_init(args), err.getvalue()
+
+    def test_a_new_directory_is_0700(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "lager")
+            self.assertEqual(self._init(target)[0], 0)
+            self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o700)
+
+    def test_an_existing_open_directory_is_tightened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o755)
+            self.assertEqual(self._init(tmp)[0], 0)
+            self.assertEqual(stat.S_IMODE(os.stat(tmp).st_mode), 0o700)
+
+    def test_a_directory_that_cannot_be_tightened_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chmod(tmp, 0o755)
+            with patch.object(host_main.os, "chmod", side_effect=PermissionError("not owner")):
+                code, err = self._init(tmp)
+            self.assertEqual(code, 1)
+            self.assertIn("cannot be made 0700", err)
+            self.assertFalse(os.path.exists(os.path.join(tmp, config.ENDPOINT_FILENAME)))
 
 
 class SupervisorTests(unittest.TestCase):
@@ -694,7 +930,8 @@ class SupervisorTests(unittest.TestCase):
             children = host_main._children(self._args())
         self.assertEqual([c.name for c in children], ["hardware worker", "debug service"])
         self.assertEqual(children[0].command[-3:], ["worker", "--config-dir", "/etc/lager"])
-        self.assertEqual(children[1].command[-1], "debug")
+        # The debug service reads the token from the same endpoint record.
+        self.assertEqual(children[1].command[-3:], ["debug", "--config-dir", "/etc/lager"])
 
     def test_scope_daemon_is_bound_to_loopback_on_the_host_port(self):
         for args, env in ((self._args(scope_daemon="/opt/daemon"), {}),

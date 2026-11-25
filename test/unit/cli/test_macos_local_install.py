@@ -51,6 +51,16 @@ class _Runner:
         return _done()
 
 
+@pytest.fixture(autouse=True)
+def _a_terminal_is_assumed(monkeypatch):
+    """No test may run the real `sudo -n true`. The tests of the check itself
+    call _real_sudo_check."""
+    monkeypatch.setattr(macos_box, "sudo_needs_a_terminal", lambda *a, **k: False)
+
+
+_real_sudo_check = macos_box.sudo_needs_a_terminal
+
+
 @pytest.fixture
 def layout(tmp_path):
     return macos_box.Layout(home=tmp_path)
@@ -257,14 +267,82 @@ def test_the_picoscope_app_is_installed_through_the_cask_only_when_missing(tmp_p
 def test_optional_steps_give_a_reason_instead_of_failing(layout, tmp_path):
     with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
         assert "libusb" in macos_box.build_labjack_library(layout, _Runner())
-    with mock.patch.object(macos_box.shutil, "which", return_value=None), \
-            mock.patch.object(macos_box.os.path, "exists", return_value=False):
+    with mock.patch.object(macos_box, "find_cargo", return_value=str(tmp_path / "no-cargo")):
         assert "Rust" in macos_box.build_scope_daemon(layout, tmp_path, _Runner())
     layout.lib_dir.mkdir(parents=True)
     (layout.lib_dir / "liblabjackusb.dylib").write_text("")
     run = _Runner()
     assert macos_box.build_labjack_library(layout, run) is None
     assert run.calls == [], "already built: nothing is run"
+
+
+def _fake_ljm_package(layout, files=None):
+    """A runner whose curl/unzip/pkgutil lay out LabJack's package on disk."""
+    files = files if files is not None else {
+        macos_box.LJM_LIBRARY: "ljm", macos_box.LJM_LIBUSB: "usb",
+        f"{macos_box.LJM_SHARE}/ljm_constants.json": "{}",
+        f"{macos_box.LJM_SHARE}/ljm_startup_configs.json": "{}"}
+    body = b"the LabJack package"
+
+    def curl(argv, kwargs):
+        if argv[0] != "curl":
+            return False
+        Path(argv[argv.index("-o") + 1]).write_bytes(body)
+        return True
+
+    def expand(argv, kwargs):
+        if argv[:2] != ["pkgutil", "--expand-full"]:
+            return False
+        for name, text in files.items():
+            (Path(argv[3]) / name).parent.mkdir(parents=True, exist_ok=True)
+            (Path(argv[3]) / name).write_text(text)
+        return True
+
+    run = _Runner([(curl, _done()), (expand, _done())])
+    return run, hashlib.sha256(body).hexdigest()
+
+
+def test_ljm_is_unpacked_into_the_agent_directory_not_installed(layout):
+    run, digest = _fake_ljm_package(layout)
+    with mock.patch.object(macos_box, "LJM_SHA256", digest):
+        assert macos_box.install_ljm_library(layout, run) is None
+    assert (layout.lib_dir / "libLabJackM.dylib").read_text() == "ljm"
+    assert (layout.lib_dir / "libusb-1.0.0.dylib").read_text() == "usb"
+    assert (layout.ljm_dir / "ljm_constants.json").exists()
+    assert (layout.ljm_dir / "ljm_startup_configs.json").exists()
+    commands = [argv[0] for argv, _ in run.calls]
+    assert commands == ["curl", "unzip", "pkgutil"], "expanded, never `installer`"
+    assert all("sudo" not in argv for argv, _ in run.calls)
+    assert not (layout.build_dir / "ljm").exists(), "the download is cleaned up"
+    run = _Runner()
+    assert macos_box.install_ljm_library(layout, run) is None
+    assert run.calls == [], "already installed: nothing is run"
+
+
+def test_ljm_with_the_wrong_checksum_is_refused(layout):
+    run, _ = _fake_ljm_package(layout)
+    reason = macos_box.install_ljm_library(layout, run)
+    assert "checksum" in reason
+    assert [argv[0] for argv, _ in run.calls] == ["curl"]
+    assert not (layout.lib_dir / "libLabJackM.dylib").exists()
+
+
+def test_ljm_failures_give_a_reason_instead_of_failing(layout):
+    failed = _Runner([(lambda argv, kw: argv[0] == "curl", _done(22))])
+    assert macos_box.LJM_URL in macos_box.install_ljm_library(layout, failed)
+    run, digest = _fake_ljm_package(layout, files={})
+    with mock.patch.object(macos_box, "LJM_SHA256", digest):
+        assert "missing" in macos_box.install_ljm_library(layout, run)
+
+
+def test_the_launchd_job_hands_the_agent_ljms_constants_only_when_installed(layout, tmp_path):
+    job = plistlib.loads(macos_box.launch_agent_plist(layout, tmp_path / "src"))
+    assert macos_box.LJM_CONSTANTS_ENV not in job["EnvironmentVariables"]
+    layout.ljm_dir.mkdir(parents=True)
+    (layout.ljm_dir / "ljm_constants.json").write_text("{}")
+    job = plistlib.loads(macos_box.launch_agent_plist(layout, tmp_path / "src"))
+    assert job["EnvironmentVariables"][macos_box.LJM_CONSTANTS_ENV] == \
+        str(layout.ljm_dir / "ljm_constants.json")
 
 
 def _docker_answers(states):
@@ -401,7 +479,7 @@ def test_the_agent_is_asked_to_load_libusb_on_its_own_library_path(layout):
 
 
 def test_libusb_is_installed_only_when_the_agent_cannot_load_one(layout, tmp_path):
-    steps = ("build_labjack_library", "ensure_rust", "build_scope_daemon",
+    steps = ("build_labjack_library", "install_ljm_library", "ensure_rust", "build_scope_daemon",
              "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb", "start_agent",
              "start_container", "check_platform", "ensure_config_dir", "write_state")
     for loads, expected_installs in ((None, 0), ("cannot load libusb", 1)):
@@ -470,6 +548,41 @@ def test_config_dir_needs_sudo_only_when_missing(tmp_path):
     assert run.calls[0][0][0] == "sudo" and "chown me" in run.calls[0][0][-1]
 
 
+def test_the_manual_fix_is_one_command_per_line(tmp_path):
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path / "absent")):
+        with pytest.raises(LagerError) as caught:
+            macos_box.ensure_config_dir(_Runner(), user="me")
+    fixes = caught.value.fixes
+    assert fixes[:3] == [f"sudo mkdir -p {tmp_path / 'absent'}",
+                         f"sudo chown me {tmp_path / 'absent'}",
+                         f"chmod 700 {tmp_path / 'absent'}"]
+    assert not any("&&" in fix for fix in fixes)
+
+
+def test_sudo_needs_a_terminal_only_without_one_and_without_a_credential():
+    asked = _Runner()
+    assert _real_sudo_check(asked, isatty=lambda: True) is False
+    assert asked.calls == [], "with a terminal, sudo is not even asked"
+    assert _real_sudo_check(_Runner([(lambda a, k: a[:2] == ["sudo", "-n"], _done(0))]),
+                            isatty=lambda: False) is False
+    assert _real_sudo_check(_Runner([(lambda a, k: a[:2] == ["sudo", "-n"], _done(1))]),
+                            isatty=lambda: False) is True
+
+
+def test_no_terminal_fails_before_any_question(lager_home, tmp_path, monkeypatch):
+    from cli.commands.utility.install import install
+    monkeypatch.setattr(macos_box, "sudo_needs_a_terminal", lambda *a, **k: True)
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "ETC_DIR", str(tmp_path / "etc")), \
+            mock.patch.object(macos_box, "install") as provision:
+        result = CliRunner().invoke(install, [], obj={}, input="y\nbench\n")
+    assert result.exit_code != 0
+    assert "no terminal" in result.output
+    assert "Continue?" not in result.output
+    assert f"sudo mkdir -p {tmp_path / 'etc'}" in result.output
+    provision.assert_not_called()
+
+
 def test_state_files_match_what_a_linux_install_writes(tmp_path):
     with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)):
         macos_box.write_state("0.64.0", "0.64.1", "v0.64.0")
@@ -513,6 +626,49 @@ def test_uninstall_removes_the_box_images_unless_asked_to_keep_them(layout, tmp_
     assert any("images" in piece for piece in macos_box.installed_pieces(layout))
     assert not any("images" in piece
                    for piece in macos_box.installed_pieces(layout, keep_images=True))
+
+
+def test_uninstall_with_docker_stopped_removes_nothing(layout, tmp_path):
+    """The container would come back with Docker and hold the Box's ports,
+    so nothing is removed and the uninstall can be run again."""
+    layout.app_dir.mkdir(parents=True)
+    layout.plist.parent.mkdir(parents=True)
+    layout.plist.write_text("")
+    run = _Runner()
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
+            mock.patch.object(macos_box, "find_docker",
+                              side_effect=LagerError("Docker is installed but not running.")):
+        with pytest.raises(LagerError) as caught:
+            macos_box.uninstall(run=run, layout=layout, echo=lambda *_: None)
+    assert "Nothing was uninstalled" in caught.value.problem
+    assert layout.app_dir.exists() and layout.plist.exists()
+    assert run.calls == []
+
+
+def test_uninstall_without_docker_installed_still_removes_the_agent(layout, tmp_path):
+    layout.app_dir.mkdir(parents=True)
+    layout.plist.parent.mkdir(parents=True)
+    layout.plist.write_text("")
+    lines = []
+    with mock.patch.object(macos_box, "ETC_DIR", str(tmp_path)), \
+            mock.patch.object(macos_box, "find_docker",
+                              side_effect=macos_box.DockerMissing("Docker is not installed.")):
+        macos_box.uninstall(run=_Runner(), layout=layout, echo=lines.append)
+    assert not layout.app_dir.exists() and not layout.plist.exists()
+    assert any("no Box container to remove" in line for line in lines)
+
+
+def test_a_failed_local_uninstall_keeps_the_saved_box(lager_home):
+    from cli.commands.utility.uninstall import uninstall
+    box_storage.add_box("mac", "127.0.0.1", version="1.0.0", python_port=8301)
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "installed_pieces", return_value=["the container"]), \
+            mock.patch.object(macos_box, "uninstall",
+                              side_effect=LagerError("Docker is installed but not running.")):
+        result = CliRunner().invoke(uninstall, ["--box", "mac", "--yes"], obj={})
+    assert result.exit_code != 0
+    assert "Uninstall complete" not in result.output
+    assert "mac" in _saved(lager_home)
 
 
 def test_docker_pull_output_is_captured_not_printed(tmp_path):
@@ -565,7 +721,9 @@ def test_what_homebrew_will_install_is_known_before_the_install(tmp_path):
         assert macos_box.homebrew_installs() == [
             "libusb", "OrbStack (Docker)", "SEGGER J-Link", "PicoScope 7", "Rust", "an ARM GDB"]
         assert macos_box.homebrew_installs(["jlink", "picoscope"]) == [
-            "libusb", "OrbStack (Docker)", "an ARM GDB"]
+            "libusb", "OrbStack (Docker)"], "--skip-jlink leaves the ARM GDB out too"
+        assert macos_box.homebrew_installs(["picoscope"]) == [
+            "libusb", "OrbStack (Docker)", "SEGGER J-Link", "an ARM GDB"]
     with mock.patch.object(macos_box, "homebrew_prefix_with", return_value=None):
         assert macos_box.homebrew_installs() == [], "no Homebrew: nothing to install with"
 
@@ -573,7 +731,8 @@ def test_what_homebrew_will_install_is_known_before_the_install(tmp_path):
 def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, tmp_path):
     steps = {name: mock.patch.object(macos_box, name, return_value=None)
              for name in ("ensure_libusb", "agent_loads_libusb",
-                          "build_labjack_library", "ensure_rust", "build_scope_daemon",
+                          "build_labjack_library", "install_ljm_library",
+                          "ensure_rust", "build_scope_daemon",
                           "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb",
                           "start_agent", "start_container", "check_platform",
                           "ensure_config_dir", "write_state")}
@@ -591,12 +750,13 @@ def test_install_reports_what_it_set_up_and_leaves_out_what_is_skipped(layout, t
         called["ensure_arm_gdb"].return_value = "no Homebrew"
         result = macos_box.install("v9.9.9", "9.9.9", echo=lines.append, layout=layout,
                                    source=tmp_path, skip=["jlink", "picoscope"])
-    assert result.ready == [macos_box.USB_INSTRUMENTS, "LabJack U3/U6 support"]
-    assert result.skipped == ["RTT auto-detection: no Homebrew"]
-    for left_out in ("ensure_jlink", "ensure_picoscope_app", "ensure_rust",
-                     "build_scope_daemon"):
+    assert result.ready == [macos_box.USB_INSTRUMENTS, "LabJack U3/U6 support",
+                            "LabJack T4/T7/T8 support"]
+    assert result.skipped == [], "nothing J-Link needs is attempted under --skip-jlink"
+    for left_out in ("ensure_jlink", "ensure_arm_gdb", "ensure_picoscope_app",
+                     "ensure_rust", "build_scope_daemon"):
         called[left_out].assert_not_called()
-    assert "Leaving out J-Link debugging (--skip-jlink)." in lines
+    assert "Leaving out J-Link debugging and its ARM GDB (--skip-jlink)." in lines
     assert "Leaving out PicoScope support (--skip-picoscope)." in lines
 
 
@@ -672,27 +832,52 @@ class _Stop(Exception):
     """Raised by the first step of the SSH path, to end the command there."""
 
 
-def test_without_a_target_on_linux_the_ssh_path_runs_against_this_machine(lager_home):
+def test_install_without_a_target_on_linux_runs_the_ssh_path_against_this_machine(lager_home):
     """The same deploy as a remote Linux Box, aimed at loopback as this user."""
     import importlib
-    install_module = importlib.import_module("cli.commands.utility.install")
-    uninstall_module = importlib.import_module("cli.commands.utility.uninstall")
-    for module, command in ((install_module, install_module.install),
-                            (uninstall_module, uninstall_module.uninstall)):
-        with mock.patch.object(_local_install.sys, "platform", "linux"), \
-                mock.patch.object(_local_install, "_ssh_server_answers", return_value=True), \
-                mock.patch.object(_local_install.getpass, "getuser", return_value="me"), \
-                mock.patch.object(_local_install, "local_ssh_target",
-                                  wraps=_local_install.local_ssh_target) as asked, \
-                mock.patch.object(macos_box, "install") as provision, \
-                mock.patch.object(macos_box, "uninstall") as remove, \
-                mock.patch.object(module, "probe_box_identity", side_effect=_Stop) as ssh:
-            result = CliRunner().invoke(command, ["--yes"], obj={})
-        asked.assert_called_once_with(None)
-        ssh.assert_called_once_with("me@127.0.0.1")
-        assert "over SSH as me@127.0.0.1" in result.output
-        provision.assert_not_called()
-        remove.assert_not_called()
+    module = importlib.import_module("cli.commands.utility.install")
+    with mock.patch.object(_local_install.sys, "platform", "linux"), \
+            mock.patch.object(_local_install, "_ssh_server_answers", return_value=True), \
+            mock.patch.object(_local_install.getpass, "getuser", return_value="me"), \
+            mock.patch.object(_local_install, "local_ssh_target",
+                              wraps=_local_install.local_ssh_target) as asked, \
+            mock.patch.object(macos_box, "install") as provision, \
+            mock.patch.object(module, "probe_box_identity", side_effect=_Stop) as ssh:
+        result = CliRunner().invoke(module.install, ["--yes"], obj={})
+    asked.assert_called_once_with(None)
+    ssh.assert_called_once_with("me@127.0.0.1")
+    assert "over SSH as me@127.0.0.1" in result.output
+    provision.assert_not_called()
+
+
+def test_uninstall_without_a_target_off_a_mac_is_still_an_error(lager_home):
+    """A forgotten --box on a Linux machine must not uninstall that machine,
+    even with --yes (and --all would also reset its firewall)."""
+    import importlib
+    module = importlib.import_module("cli.commands.utility.uninstall")
+    for platform in ("linux", "win32"):
+        for extra in ([], ["--all"]):
+            with mock.patch.object(_local_install.sys, "platform", platform), \
+                    mock.patch.object(_local_install, "_ssh_server_answers", return_value=True), \
+                    mock.patch.object(macos_box, "uninstall") as remove, \
+                    mock.patch.object(module, "probe_box_identity", side_effect=_Stop) as ssh, \
+                    mock.patch("subprocess.run") as run:
+                result = CliRunner().invoke(module.uninstall, ["--yes", *extra], obj={})
+            assert result.exit_code == 1, (platform, extra, result.output)
+            assert "Either --box or --ip is required" in result.output
+            assert "--ip 127.0.0.1" in result.output
+            ssh.assert_not_called()
+            run.assert_not_called()
+            remove.assert_not_called()
+
+
+def test_uninstall_of_this_linux_machine_is_still_possible_by_naming_it(lager_home):
+    import importlib
+    module = importlib.import_module("cli.commands.utility.uninstall")
+    with mock.patch.object(_local_install.sys, "platform", "linux"), \
+            mock.patch.object(module, "probe_box_identity", side_effect=_Stop) as ssh:
+        CliRunner().invoke(module.uninstall, ["--ip", "127.0.0.1", "--yes"], obj={})
+    ssh.assert_called_once_with("lagerdata@127.0.0.1")
 
 
 def test_without_a_target_on_linux_and_no_ssh_server_the_fix_is_named(lager_home):
@@ -814,10 +999,110 @@ def test_update_of_the_local_box_is_the_install_again():
         _local_install.update_locally(ctx, version=None, yes=True)
     from cli.commands.utility.update import default_box_version
     again.assert_called_once_with(ctx, version=default_box_version(),
-                                  version_defaulted=True, yes=True, fork=None)
+                                  version_defaulted=True, yes=True, fork=None,
+                                  update=True)
     ctx.exit.side_effect = click.exceptions.Exit(2)
     with pytest.raises(click.exceptions.Exit):
         _local_install.update_locally(ctx, version=None, yes=True, check=True)
+
+
+def test_an_update_leaves_out_what_the_install_left_out(lager_home, tmp_path):
+    """`lager install --skip-jlink`, then `lager update`: no J-Link cask, no
+    sudo prompt, on the update either."""
+    from cli.commands.utility.install import install
+    value = macos_box.Result(source=Path("/src"), image="img", box_version="2.0.0")
+    skip_file = tmp_path / "install-skips"
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "SKIP_FILE", str(skip_file)), \
+            mock.patch.object(macos_box, "install", return_value=value) as provision:
+        first = CliRunner().invoke(install, ["--yes", "--skip-jlink"], obj={})
+        assert first.exit_code == 0, first.output
+        macos_box.remember_skips(provision.call_args.kwargs["skip"])
+        provision.reset_mock()
+        _local_install.update_locally(mock.Mock(params={}), version=None, yes=True)
+    assert provision.call_args.kwargs["skip"] == ["jlink"]
+
+
+def test_an_explicit_install_does_not_reuse_old_skips(lager_home, tmp_path):
+    from cli.commands.utility.install import install
+    value = macos_box.Result(source=Path("/src"), image="img", box_version="2.0.0")
+    skip_file = tmp_path / "install-skips"
+    skip_file.write_text("jlink picoscope\n")
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "SKIP_FILE", str(skip_file)), \
+            mock.patch.object(macos_box, "install", return_value=value) as provision:
+        result = CliRunner().invoke(install, ["--yes"], obj={})
+    assert result.exit_code == 0, result.output
+    assert provision.call_args.kwargs["skip"] == []
+
+
+def test_skips_are_remembered_and_read_back(tmp_path):
+    skip_file = tmp_path / "install-skips"
+    with mock.patch.object(macos_box, "SKIP_FILE", str(skip_file)):
+        assert macos_box.remembered_skips() == []
+        macos_box.remember_skips(["picoscope", "jlink", "bogus"])
+        assert macos_box.remembered_skips() == ["jlink", "picoscope"]
+        macos_box.remember_skips([])
+        assert macos_box.remembered_skips() == []
+        skip_file.write_text("rm -rf jlink\n")
+        assert macos_box.remembered_skips() == ["jlink"]
+
+
+@pytest.mark.parametrize("version", ["v0.66.0", "0.66.0", "v1.2.3"])
+def test_a_release_version_is_accepted(version):
+    macos_box.check_release_version(version)
+
+
+@pytest.mark.parametrize("version", ["main", "staging", "de/macos-box", "",
+                                     "a" * 40, "v0.66", "v0.66.0-rc1", "v0.66.0; rm -rf ~"])
+def test_a_version_with_no_image_is_refused_before_anything_changes(version):
+    with pytest.raises(LagerError) as caught:
+        macos_box.check_release_version(version)
+    assert "not one" in caught.value.problem
+
+
+def test_install_refuses_a_branch_before_touching_docker(tmp_path):
+    layout = macos_box.Layout(home=tmp_path)
+    with mock.patch.object(macos_box, "running_from_checkout", return_value=None), \
+            mock.patch.object(macos_box, "check_platform"), \
+            mock.patch.object(macos_box, "ensure_docker") as docker:
+        with pytest.raises(LagerError):
+            macos_box.install("main", "0.66.0", layout=layout, echo=lambda *a: None)
+    docker.assert_not_called()
+
+
+def test_the_agent_is_replaced_only_once_the_image_is_here(tmp_path):
+    """A failed image download leaves the running agent alone."""
+    order = []
+
+    class Pull:
+        def __init__(self, *a, **k):
+            pass
+
+        def wait(self, echo):
+            order.append("image")
+            raise LagerError("The Box image did not download.")
+
+    layout = macos_box.Layout(home=tmp_path)
+    src = tmp_path / "src"
+    with mock.patch.object(macos_box, "running_from_checkout", return_value=None), \
+            mock.patch.object(macos_box, "check_platform"), \
+            mock.patch.object(macos_box, "ensure_docker", return_value=("docker", {})), \
+            mock.patch.object(macos_box, "ensure_config_dir"), \
+            mock.patch.object(macos_box, "ensure_source", return_value=src), \
+            mock.patch.object(macos_box, "source_version", return_value="0.66.0"), \
+            mock.patch.object(macos_box, "BackgroundPull", Pull), \
+            mock.patch.object(macos_box, "ensure_agent_env", return_value=[]), \
+            mock.patch.object(macos_box, "agent_loads_libusb", return_value=None), \
+            mock.patch.object(macos_box, "build_labjack_library", return_value=None), \
+            mock.patch.object(macos_box, "install_ljm_library", return_value=None), \
+            mock.patch.object(macos_box, "remembered_skips", return_value=["jlink", "picoscope"]), \
+            mock.patch.object(macos_box, "start_agent",
+                              side_effect=lambda *a, **k: order.append("agent")) as agent:
+        with pytest.raises(LagerError):
+            macos_box.install("v0.66.0", "0.66.0", layout=layout, echo=lambda *a: None)
+    agent.assert_not_called()
+    assert order == ["image"]
 
 
 # ------------------------------------------------------------ saved Box port

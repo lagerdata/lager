@@ -86,6 +86,34 @@ def _prefer_dist_path(dist_name: str, wanted_rel: str) -> None:
         pass  # best-effort
 
 
+if sys.platform == "darwin":
+    _MISSING_LIBRARY = (
+        "labjack.ljm loaded but the native LJM library (libLabJackM.dylib) "
+        "is not available. Run `lager install` again: it installs LJM for the "
+        "host agent; the install output says why if it could not."
+    )
+else:
+    _MISSING_LIBRARY = (
+        "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
+        "is not available. Install the LJM SDK from "
+        "https://labjack.com/support/software/installers/ljm"
+    )
+
+# Set by a Mac Box's host agent, whose LJM data files live in the agent's own
+# directory rather than /usr/local/share/LabJack/LJM.
+LJM_CONSTANTS_ENV = "LAGER_LJM_CONSTANTS_FILE"
+
+
+def _point_ljm_at_its_files(_ljm) -> None:
+    """Give LJM its constants file before any device is opened.
+
+    Without it, LJM cannot resolve register names such as ``AIN0``.
+    """
+    path = os.environ.get(LJM_CONSTANTS_ENV)
+    if path:
+        _ljm.writeLibraryConfigStringS("LJM_CONSTANTS_FILE", path)
+
+
 def _load_ljm():
     """
     Import the real pip-installed 'labjack.ljm', even if a shadowing 'labjack.py'
@@ -98,11 +126,7 @@ def _load_ljm():
         from labjack import ljm as _ljm
         from labjack.ljm import ljm as _inner
         if getattr(_inner, '_staticLib', None) is None:
-            raise ImportError(
-                "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
-                "is not available. Install the LJM SDK from "
-                "https://labjack.com/support/software/installers/ljm"
-            )
+            raise ImportError(_MISSING_LIBRARY)
         return _ljm
     except Exception as e1:
         first_exc = e1
@@ -134,11 +158,7 @@ def _load_ljm():
         _ljm = importlib.import_module("labjack.ljm")
         _inner = importlib.import_module("labjack.ljm.ljm")
         if getattr(_inner, '_staticLib', None) is None:
-            raise ImportError(
-                "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
-                "is not available. Install the LJM SDK from "
-                "https://labjack.com/support/software/installers/ljm"
-            )
+            raise ImportError(_MISSING_LIBRARY)
         return _ljm
     except Exception as e2:
         _debug(f"Failed to import labjack.ljm; first={first_exc!r}, second={e2!r}")
@@ -148,10 +168,29 @@ def _load_ljm():
 # Load ljm module at import time
 try:
     ljm = _load_ljm()
+    _point_ljm_at_its_files(ljm)
     _LJM_ERR = None
 except Exception as _exc:  # pragma: no cover
     ljm = None
     _LJM_ERR = _exc
+
+
+# Tries before a NOT_FOUND on a named connection is final (see get_handle).
+NOT_FOUND_ATTEMPTS = 2
+
+
+def default_connection() -> str:
+    """The LJM connection type a T7 is opened with.
+
+    "USB": lager finds T7s only on USB (http_handlers/usb_scanner.py), and
+    "ANY" made LJM fall back to network discovery whenever no device answered
+    on USB. On a Mac with VPN and other interfaces up, that discovery did not
+    return for over 15 minutes, holding the hardware service's lock the whole
+    time. LAGER_LABJACK_CONNECTION=ANY (or ETHERNET, WIFI) restores the old
+    behaviour for a T7 reached over the network.
+    """
+    value = (os.environ.get("LAGER_LABJACK_CONNECTION") or "").strip().upper()
+    return value or "USB"
 
 
 class LabJackHandleManager:
@@ -177,7 +216,7 @@ class LabJackHandleManager:
                     cls._instance._initialized = False  # Track if we've ever opened successfully
         return cls._instance
 
-    def get_handle(self, device_type: str = "T7", connection: str = "ANY",
+    def get_handle(self, device_type: str = "T7", connection: Optional[str] = None,
                    identifier: str = "ANY", max_retries: int = 5) -> int:
         """
         Get a LabJack handle, opening the device if necessary.
@@ -191,9 +230,13 @@ class LabJackHandleManager:
                 because LJM does not support the UD series and will not skip
                 past it. Naming the type explicitly is what keeps a mixed
                 T7 + U3 bench working; every caller here relies on that.
-            connection: Connection type ("ANY", "USB", "ETHERNET", "WIFI")
+            connection: Connection type ("ANY", "USB", "ETHERNET", "WIFI").
+                None means default_connection(): "USB" unless
+                LAGER_LABJACK_CONNECTION says otherwise.
             identifier: Device identifier ("ANY" or specific serial/IP)
-            max_retries: Maximum number of retry attempts for opening
+            max_retries: Maximum number of retry attempts for opening. With a
+                specific connection, a device that is not found gets only
+                NOT_FOUND_ATTEMPTS tries (see below).
 
         Returns:
             The LabJack device handle (integer)
@@ -204,6 +247,9 @@ class LabJackHandleManager:
         """
         if ljm is None:
             raise RuntimeError(f"LabJack LJM library not available: {_LJM_ERR}")
+
+        if connection is None:
+            connection = default_connection()
 
         with self._handle_lock:
             # If we already have a valid handle, return it
@@ -269,13 +315,26 @@ class LabJackHandleManager:
                     # - 1227: LJME_DEVICE_NOT_FOUND (device initializing)
                     # - 1230: LJME_DEVICE_ALREADY_OPEN (device locked)
                     # - 1239: LJME_RECONNECT_FAILED (connection lost)
+                    not_found = "1227" in error_str or "NOT_FOUND" in error_str.upper()
                     is_recoverable = (
-                        "1227" in error_str or
+                        not_found or
                         "1230" in error_str or
                         "1239" in error_str or
-                        "RECONNECT" in error_str.upper() or
-                        "NOT_FOUND" in error_str.upper()
+                        "RECONNECT" in error_str.upper()
                     )
+
+                    # A device that is not there, on a named connection, is
+                    # not worth 5 tries: they add up to about 12 s, past the
+                    # hardware service's 8 s lock deadline, and that turned a
+                    # plain "unplugged" into a worker that stayed busy until
+                    # it was restarted. One retry still covers a device that
+                    # is mid-enumeration. "ANY" keeps every try because its
+                    # network discovery can find a device USB does not.
+                    if (not_found and connection != "ANY"
+                            and attempt + 1 >= NOT_FOUND_ATTEMPTS):
+                        raise RuntimeError(
+                            f"LabJack {device_type} not found on {connection}: "
+                            f"check that it is plugged in ({e})") from e
 
                     if is_recoverable and attempt < max_retries - 1:
                         _debug(f"Recoverable error, will retry after delay")
@@ -354,7 +413,7 @@ def _get_manager() -> LabJackHandleManager:
     return _manager
 
 
-def get_labjack_handle(device_type: str = "T7", connection: str = "ANY",
+def get_labjack_handle(device_type: str = "T7", connection: Optional[str] = None,
                        identifier: str = "ANY") -> int:
     """
     Get a LabJack handle from the global manager.
@@ -364,7 +423,8 @@ def get_labjack_handle(device_type: str = "T7", connection: str = "ANY",
             "ANY" breaks every box that also has a U3 attached, because LJM
             fails with LJME_U3_NOT_SUPPORTED_BY_LJM (1243) rather than
             skipping the device it does not support. See get_handle.
-        connection: Connection type ("ANY", "USB", "ETHERNET", "WIFI")
+        connection: Connection type ("ANY", "USB", "ETHERNET", "WIFI");
+            None means default_connection()
         identifier: Device identifier ("ANY" or specific serial/IP)
 
     Returns:

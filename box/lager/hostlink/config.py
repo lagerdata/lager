@@ -13,6 +13,7 @@ the directory, not the file mode, is what keeps the token private.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import secrets
@@ -84,6 +85,16 @@ def free_loopback_port(bind: str = DEFAULT_BIND) -> int:
         return probe.getsockname()[1]
 
 
+def is_loopback(host: str) -> bool:
+    """True for ``localhost`` and any loopback IP address."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _validate(data: object, source: str) -> Endpoint:
     if not isinstance(data, dict):
         raise EndpointError(f"{source}: expected a JSON object")
@@ -97,6 +108,11 @@ def _validate(data: object, source: str) -> Endpoint:
     connect_host = data.get("connect_host", DEFAULT_CONNECT_HOST)
     if not isinstance(bind, str) or not bind:
         raise EndpointError(f"{source}: 'bind' must be a non-empty string")
+    if not is_loopback(bind):
+        # The record sits in a directory the Box container can write. A bind
+        # address taken from it must not put the agent, which runs as the
+        # Mac's user, on the network.
+        raise EndpointError(f"{source}: 'bind' must be a loopback address, not {bind!r}")
     if not isinstance(connect_host, str) or not connect_host:
         raise EndpointError(f"{source}: 'connect_host' must be a non-empty string")
     version = data.get("version", RECORD_VERSION)

@@ -11,6 +11,7 @@ from click.exceptions import Abort, Exit
 from datetime import datetime, timezone
 import os
 import subprocess
+import sys
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import (
     auto_lock_around_command,
@@ -429,19 +430,18 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
             stored_user = get_box_user(box)
             user = stored_user or "lagerdata"
     elif ip is None:
-        # Neither --box nor --ip: uninstall from this machine. A remote
-        # uninstall, everything below, is untouched by this branch.
-        from ._local_install import uninstall_locally, local_ssh_target
-        # On Linux this machine is a Box like any other, reached over SSH
-        # at its own loopback address: the steps below run unchanged.
-        local_target = local_ssh_target(user)
-        if local_target is None:
-            uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run,
-                              keep_docker_images=keep_docker_images)
-            return
-        ip, user = local_target
-        click.echo(f"No --box or --ip: uninstalling from this machine, "
-                   f"over SSH as {user}@{ip}.")
+        # Neither --box nor --ip. On a Mac that means the Box on this Mac.
+        # Anywhere else it stays an error, as it always was: a forgotten
+        # --box on a Linux machine must not uninstall that machine (with
+        # --all, its firewall, udev rules and sudoers entries too).
+        if sys.platform != "darwin":
+            click.secho("Error: Either --box or --ip is required", fg='red', err=True)
+            click.echo("To uninstall the Box on this machine, pass --ip 127.0.0.1.", err=True)
+            ctx.exit(1)
+        from ._local_install import uninstall_locally
+        uninstall_locally(ctx, purge_config=purge_config, yes=yes, dry_run=dry_run,
+                          keep_docker_images=keep_docker_images)
+        return
     else:
         if user is None:
             user = "lagerdata"
@@ -806,6 +806,21 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
             return None
         except Exception:
             return None
+
+    # A Mac that was never saved (installed from another machine, or its
+    # record deleted) is still a Mac: the Linux steps below would stop its
+    # container and empty /etc/lager but leave its launchd agent running.
+    # Asked like every other query here; only an exact "Darwin" leaves the
+    # Linux path, and a failed query stays on it.
+    if query_ssh("uname -s") == "Darwin":
+        if ssh_pool:
+            ssh_pool.close_connection(ip, user)
+        click.echo(f"{ssh_host} is a Mac: uninstalling it as a Box on a Mac.")
+        from ._remote_macos import uninstall_remote_macos
+        uninstall_remote_macos(ctx, ip=ip, user=user, purge_config=purge_config,
+                               yes=yes, dry_run=dry_run,
+                               keep_docker_images=keep_docker_images)
+        return
 
     # What the confirmation, the dry run and the purge all need to know about
     # /etc/lager, in one round trip. None when the query itself failed.
@@ -1229,7 +1244,10 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     if not purge_config:
         click.echo()
         click.secho("Note: /etc/lager was kept (saved nets, box config, key registrations).", fg='yellow')
-        click.secho("Its lock.json was cleared — the lock server it described is gone.", fg='yellow')
+        if priv_results.get(LOCK_STATE_PRIV_STEP[0]) == "OK":
+            click.secho("Its lock.json was cleared — the lock server it described is gone.", fg='yellow')
+        else:
+            click.secho("Its lock.json was NOT cleared (see the FAILED step above).", fg='yellow')
     elif priv_results.get("config_backup") == "OK":
         click.echo()
         click.secho(f"/etc/lager was backed up to {backup_dir}/ on the box:", fg='yellow')
@@ -1270,7 +1288,12 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
     if not box_name:
         box_name = get_box_name_by_ip(ip)
 
-    if box_name:
+    if box_name and failed_steps:
+        # A box that did not uninstall cleanly is still there to re-run the
+        # uninstall against; forgetting its name made that re-run need --ip.
+        click.echo()
+        click.echo(f"Kept '{box_name}' in .lager config: the uninstall did not finish.")
+    elif box_name:
         click.echo()
         if yes or click.confirm(f"Remove '{box_name}' from local .lager configuration?", default=True):
             deleted = delete_box(box_name)
@@ -1299,3 +1322,8 @@ def uninstall(ctx, box, ip, user, purge_config, include_control_plane, keep_conf
                 )
         else:
             click.echo(f"Kept '{box_name}' in .lager config.")
+
+    if failed_steps:
+        # The summary says FAILED; the exit status has to agree, or a script
+        # (or `lager install`'s own reinstall flow) carries on as if it worked.
+        ctx.exit(1)

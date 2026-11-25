@@ -25,6 +25,7 @@
                 "pages": [
                   "source/getting-started/overview",
                   "source/getting-started/setting-up-a-lager-box",
+                  "source/getting-started/setting-up-a-mac-box",
                   "source/getting-started/adding-first-lager-box",
                   "source/getting-started/setting-up-instruments",
                   "source/getting-started/interacting-with-nets",

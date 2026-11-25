@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -39,8 +40,19 @@ def _endpoint_file(config_dir: str) -> str:
 
 
 def cmd_init(args) -> int:
-    # 0700: the endpoint record holds the link token.
+    # 0700: the endpoint record holds the link token, and the directory, not
+    # the file's mode, is what keeps it private. makedirs only applies the
+    # mode to a directory it creates, so tighten one that already exists.
     os.makedirs(args.config_dir, mode=0o700, exist_ok=True)
+    mode = stat.S_IMODE(os.stat(args.config_dir).st_mode)
+    if mode & 0o077:
+        try:
+            os.chmod(args.config_dir, 0o700)
+        except OSError as exc:
+            print(f"{args.config_dir} is mode {mode:o} and cannot be made 0700 "
+                  f"({exc}); other users could read the host agent's token.",
+                  file=sys.stderr)
+            return 1
     endpoint = config.ensure_endpoint(_endpoint_file(args.config_dir), port=args.port)
     print(f"Host agent endpoint: {endpoint.bind}:{endpoint.port} "
           f"(record: {_endpoint_file(args.config_dir)})")
@@ -59,7 +71,7 @@ def cmd_debug(args) -> int:
     from . import darwin_debug, orphans
 
     orphans.watch_parent()
-    darwin_debug.serve(config.HOST_DEBUG_PORT)
+    darwin_debug.serve(config.HOST_DEBUG_PORT, args.config_dir)
     return 0
 
 
@@ -101,7 +113,7 @@ def _children(args):
     me = [sys.executable, "-m", "lager.host"]
     children = [
         _Child("hardware worker", me + ["worker", "--config-dir", args.config_dir]),
-        _Child("debug service", me + ["debug"]),
+        _Child("debug service", me + ["debug", "--config-dir", args.config_dir]),
     ]
     scope_daemon = args.scope_daemon or os.environ.get(SCOPE_DAEMON_ENV)
     if scope_daemon:

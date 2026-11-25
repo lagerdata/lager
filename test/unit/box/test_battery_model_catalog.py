@@ -396,3 +396,33 @@ class TestFormatModelCatalog:
         assert lines[2].startswith("-") and "NIMH12 (built-in)" in lines[2]
         assert lines[-1] == (
             "Slots and names above are valid inputs to the 'model' command.")
+
+
+# ---------------------------------------------------------------------------
+# OCP: what the instrument reports must be writable again
+# ---------------------------------------------------------------------------
+
+def _ocp_backend(keithley_mod):
+    batt = object.__new__(keithley_mod.KeithleyBattery)
+    sent = []
+    batt._set_with_output_management = lambda cmd, ignore_codes=(): sent.append(cmd)
+    return batt, sent
+
+
+def test_the_ocp_the_2281s_reports_can_be_set_back(keithley_mod, monkeypatch):
+    """A 2281S reads back 6.10 A, and `lager battery ocp 6.1` was refused
+    with "exceeds instrument maximum (6.0A)"."""
+    monkeypatch.setattr(keithley_mod.time, "sleep", lambda s: None)
+    batt, sent = _ocp_backend(keithley_mod)
+    batt.set_ocp(6.1)
+    assert sent == [":BATT:SIM:CURR:PROT 6.1"]
+
+
+def test_an_ocp_above_the_instrument_limit_is_refused(keithley_mod, monkeypatch):
+    monkeypatch.setattr(keithley_mod.time, "sleep", lambda s: None)
+    batt, sent = _ocp_backend(keithley_mod)
+    with pytest.raises(Exception, match="exceeds instrument maximum"):
+        batt.set_ocp(keithley_mod.OCP_MAX_A + 0.01)
+    with pytest.raises(Exception, match="at least 1mA"):
+        batt.set_ocp(0)
+    assert sent == []

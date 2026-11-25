@@ -18,6 +18,8 @@ import json
 import os
 import re
 import shlex
+import sys
+import time
 import subprocess
 from pathlib import Path
 
@@ -30,7 +32,11 @@ PLATFORM = "macos"
 # Outside Application Support/Lager, which an uninstall removes while the
 # runner in it is still executing.
 REMOTE_INSTALLER_DIR = '"$HOME/Library/Caches/com.lagerdata.installer"'
-REMOTE_SOURCE_DIR = '"$HOME/Library/Application Support/Lager/src/shipped"'
+# A copied checkout goes to a new directory each time, under this one. The
+# running Box mounts the previous copy, so that copy is removed only after
+# the new install has succeeded.
+REMOTE_SOURCE_PARENT = '"$HOME/Library/Application Support/Lager/src"'
+SHIPPED_PREFIX = "shipped-"
 NO_PYTHON_STATUS = 97
 # /usr/bin/python3 is a stub that opens a dialog unless the command line
 # developer tools are installed, so it is used only when they are.
@@ -116,13 +122,21 @@ def ship_installer(ssh_host, identity_args, popen=subprocess.Popen):
               REMOTE_INSTALLER_DIR, cwd=Path(deployment.__file__).parent, popen=popen)
 
 
+def shipped_dir(name):
+    """The remote path, quoted for the remote shell, of one copied checkout."""
+    return f'"$HOME/Library/Application Support/Lager/src/{name}"'
+
+
 def ship_source(checkout, ssh_host, identity_args, run=None,
-                popen=subprocess.Popen):
-    """Copy the checkout's Box source to the Mac, replacing an earlier copy.
+                popen=subprocess.Popen, name=None):
+    """Copy the checkout's Box source to a new directory on the Mac.
 
     A development version exists nowhere the Mac could download it from.
-    Tracked files only, as they are on disk now.
+    Tracked files only, as they are on disk now. The earlier copy, which the
+    running Box still mounts, is left in place: see :func:`prune_shipped`.
+    Returns the new directory's name under the source directory.
     """
+    name = name or f"{SHIPPED_PREFIX}{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}"
     run = run or subprocess.run
     listed = run(["git", "-C", str(checkout), "ls-files", "-z", "--", "box", "cli/__init__.py"],
                  capture_output=True, timeout=120)
@@ -131,11 +145,23 @@ def ship_source(checkout, ssh_host, identity_args, run=None,
                          cause=f"`git ls-files` failed in {checkout}.")
     names = b"\0".join(name for name in listed.stdout.split(b"\0")
                        if name and os.path.lexists(os.path.join(str(checkout).encode(), name)))
-    _checked(_ssh(ssh_host, identity_args, f"rm -rf {REMOTE_SOURCE_DIR}", run=run,
-                  capture_output=True, text=True, timeout=120),
-             "clear the previous Box source", ssh_host)
     _pipe_tar(["tar", "-cf", "-", "--null", "-T", "-"], ssh_host, identity_args,
-              REMOTE_SOURCE_DIR, cwd=checkout, stdin=names + b"\0", popen=popen)
+              shipped_dir(name), cwd=checkout, stdin=names + b"\0", popen=popen)
+    return name
+
+
+def prune_shipped(ssh_host, identity_args, keep, run=None):
+    """Remove the copies of earlier checkouts, now that ``keep`` is running.
+    Best effort: a copy left behind costs disk space, not a working Box."""
+    run = run or subprocess.run
+    command = (f"cd {REMOTE_SOURCE_PARENT} 2>/dev/null || exit 0; "
+               f"for d in {SHIPPED_PREFIX}* shipped; do "
+               f'[ -e "$d" ] && [ "$d" != {shlex.quote(keep)} ] && rm -rf "$d"; done; exit 0')
+    try:
+        _ssh(ssh_host, identity_args, command, run=run,
+             capture_output=True, text=True, timeout=120)
+    except Exception:  # noqa: BLE001 - cleanup only
+        pass
 
 
 def run_remote(ssh_host, identity_args, arguments, run=None):
@@ -165,12 +191,47 @@ def run_remote(ssh_host, identity_args, arguments, run=None):
     return outcome
 
 
+def mac_sudo_needs_a_terminal(ssh_host, identity_args, isatty=None, run=None) -> bool:
+    """True when the install will need the Mac's password and cannot ask.
+
+    The only sudo step on a Mac creates /etc/lager. So: False whenever stdin
+    is a terminal, when /etc/lager already exists and is writable, and when
+    sudo needs no password. An ssh failure (255) counts as "no": the
+    connection was just checked, and the install reports a real failure.
+    """
+    isatty = isatty or (lambda: sys.stdin.isatty())
+    if isatty():
+        return False
+    from ...deployment import macos_box
+
+    run = run or subprocess.run
+    try:
+        probe = _ssh(ssh_host, [*identity_args, "-o", "ConnectTimeout=10"],
+                     f"{{ test -d {macos_box.ETC_DIR} && test -w {macos_box.ETC_DIR}; }} "
+                     "|| sudo -n true",
+                     run=run, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode not in (0, 255)
+
+
 def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version, yes,
-                         fork=None, skip_jlink=False, skip_picoscope=False):
+                         fork=None, skip_jlink=False, skip_picoscope=False, update=False):
     if fork:
         raise click.UsageError("--fork is not supported for a Box on a Mac yet.")
     from ... import __version__ as cli_version
     from ...deployment import macos_box
+
+    # Asked before anything is copied: the sudo step comes minutes in, and
+    # without a terminal it can only fail there.
+    if mac_sudo_needs_a_terminal(ssh_host, identity_args):
+        raise LagerError(
+            f"Installing on {ip} needs the Mac's password once, to create "
+            f"{macos_box.ETC_DIR}, and there is no terminal to ask in.",
+            cause="That Mac's sudo needs a password, and this command's input "
+                  "is a pipe or a script.",
+            fixes=["Run the same command in a terminal window, or create the "
+                   "directory on that Mac first:"] + macos_box.config_dir_fixes(user)[:-1])
 
     checkout = macos_box.running_from_checkout()
     click.echo()
@@ -182,6 +243,13 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
     click.echo("This sets up a background agent for the instruments plugged "
                "into that Mac and a container for the Box. The Mac's password "
                f"is asked for once, if {macos_box.ETC_DIR} does not exist there yet.")
+    # A Box reached from other machines listens on every interface. A Linux
+    # Box is installed with a firewall in front of those ports; a Mac is not,
+    # so say plainly that anyone on that Mac's network can reach the Box.
+    ports = ", ".join(str(host) for host, _container in macos_box.PUBLISHED_PORTS)
+    click.secho(f"The Box's ports ({ports}) will be reachable from any machine on "
+                f"{ip}'s network, with no firewall in front of them. Install on a "
+                "trusted network only.", fg='yellow')
     from ._local_install import LINUX_ONLY_INSTALL_OPTIONS, ignored_options
     # --user is the SSH user here, so it is not ignored.
     for flag, why in ignored_options(ctx, [option for option in LINUX_ONLY_INSTALL_OPTIONS
@@ -199,10 +267,15 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
         arguments += " --skip jlink"
     if skip_picoscope:
         arguments += " --skip picoscope"
+    if update and not (skip_jlink or skip_picoscope):
+        arguments += " --reuse-skips"
+    shipped = None
     if checkout is not None:
-        ship_source(checkout, ssh_host, identity_args)
-        arguments += f" --source {REMOTE_SOURCE_DIR}"
+        shipped = ship_source(checkout, ssh_host, identity_args)
+        arguments += f" --source {shipped_dir(shipped)}"
     outcome = run_remote(ssh_host, identity_args, arguments)
+    if shipped is not None:
+        prune_shipped(ssh_host, identity_args, shipped)
 
     # Always saved, unlike a Linux Box: the saved record is what tells every
     # later command which port this Box's script service is on.
@@ -221,8 +294,8 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
     for line in outcome.get("skipped") or []:
         click.secho(f"Not set up -- {line}", fg='yellow')
     if outcome.get("skipped"):
-        click.echo("Install what is missing on the Mac and run this command "
-                   "again to add it.")
+        click.echo("Install the missing parts on the Mac and run this command "
+                   "again to add them.")
         click.echo()
     click.secho("Installation complete!", fg='green', bold=True)
     click.secho(f"Saved as '{name}'. You can now use: lager hello --box {name}", fg='cyan')
@@ -280,4 +353,5 @@ def update_remote_macos(ctx, *, ip, user, version, yes, check=False, fork=None):
     ssh_host, identity_args = _connect(ip, user)
     install_remote_macos(ctx, ssh_host=ssh_host, ip=ip, user=user,
                          box=get_box_name_by_ip(ip), identity_args=identity_args,
-                         version=version or default_box_version(), yes=yes, fork=fork)
+                         version=version or default_box_version(), yes=yes, fork=fork,
+                         update=True)

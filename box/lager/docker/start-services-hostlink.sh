@@ -136,7 +136,7 @@ start_service "hostlink relay" "python3 -m lager.hostlink.relay --port 8080" "/t
 # The debug service and the oscilloscope daemon also run on the host. They
 # carry streams, so they are forwarded as TCP on the ports they hold on a
 # Linux Box (the host-side numbers are in lager/hostlink/config.py).
-start_service "debug forward" "python3 -m lager.hostlink.tcp_forward --listen 8765 --to 48765" "/tmp/lager-debug-service.log"
+start_service "debug forward" "python3 -m lager.hostlink.tcp_forward --listen 8765 --to 48765 --add-token" "/tmp/lager-debug-service.log"
 start_service "scope forward" "python3 -m lager.hostlink.tcp_forward --listen 8085 --to 48085" "/tmp/lager-scope-forward.log"
 
 LAGER_DISABLE_UART_SERVICE_LOWER=$(echo "${LAGER_DISABLE_UART_SERVICE:-}" | tr '[:upper:]' '[:lower:]')

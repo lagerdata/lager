@@ -423,7 +423,19 @@ def _brief_labjack_batch(recs, causes=None, codes=None, deadline=None):
                         causes[n] = "device-busy: the LabJack is in use by another operation"
                     if codes is not None:
                         codes[n] = CODE_BUSY
-            return resp.json()
+            states = resp.json()
+            error = resp.headers.get("X-Lager-Device-Error")
+            if isinstance(error, str) and error and causes is not None:
+                # The driver's own reason for the nets it could not read:
+                # without it a missing LJM library or an unplugged T7 showed
+                # only "no value from instrument".
+                absent = "not found on" in error
+                for n in names:
+                    if states.get(n) is None and n not in causes:
+                        causes[n] = error
+                        if absent and codes is not None:
+                            codes[n] = CODE_ABSENT
+            return states
     except _req.Timeout as e:
         logger.debug("labjack batch_read call timed out: %s", e)
         for n in names:

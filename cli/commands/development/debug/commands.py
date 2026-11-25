@@ -1726,10 +1726,12 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
         # Flash the appropriate file type
         if hex:
             result = client.flash(Path(hex), file_type='hex', verbose=verbose, net=debug_net,
-                                  jlink_script=jlink_script, openocd_config=openocd_config)
+                                  jlink_script=jlink_script, openocd_config=openocd_config,
+                                  run_after=not halt)
         elif elf:
             result = client.flash(Path(elf), file_type='elf', verbose=verbose, net=debug_net,
-                                  jlink_script=jlink_script, openocd_config=openocd_config)
+                                  jlink_script=jlink_script, openocd_config=openocd_config,
+                                  run_after=not halt)
         elif bin:
             if len(bin) > 1:
                 click.secho("Multiple binary files not supported yet", fg='red', err=True)
@@ -1737,7 +1739,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase,
             bf = bin[0]
             result = client.flash(Path(bf.path), file_type='bin', address=bf.address, verbose=verbose,
                                       net=debug_net, jlink_script=jlink_script,
-                                      openocd_config=openocd_config)
+                                      openocd_config=openocd_config,
+                                      run_after=not halt)
 
         # Display flash output if available
         output = result.get('output', '')

@@ -24,6 +24,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+from click.testing import CliRunner
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
@@ -210,6 +213,73 @@ class ModprobeRecheckOverwritesStaleFacts(unittest.TestCase):
             and _calls_recheck(node)
         ]
         self.assertEqual(guarded, [], f'the re-check is guarded at line(s) {guarded}')
+
+
+
+class ProbeReportsTheOperatingSystem(unittest.TestCase):
+    """The step-2 probe also answers `uname -s`, so an unsaved Mac is found
+    without an extra connection."""
+
+    def test_the_script_asks_for_it(self):
+        self.assertIn('echo "LAGER_PROBE_OS=$(uname -s 2>/dev/null)"',
+                      _probe_shell_script())
+
+    def test_run_under_sh_it_reports_this_machines_system(self):
+        proc = subprocess.run(['sh'], input=_probe_shell_script(), text=True,
+                              capture_output=True, timeout=60,
+                              env={**os.environ, 'HOME': tempfile.mkdtemp()})
+        facts = _parse_probe_output(proc.stdout)
+        self.assertEqual(facts.get('OS'), os.uname().sysname)
+
+
+class AnUnsavedMacIsUpdatedAsAMac(unittest.TestCase):
+    """`lager update` on a Mac with no saved record: the probe answers
+    Darwin and the Mac update runs, instead of the Linux steps failing it
+    with "Box directory is not a git repository"."""
+
+    def _run(self, os_name):
+        update_mod = importlib.import_module('cli.commands.utility.update')
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, '.ssh'))
+        for name in ('lager_box', 'lager_box.pub'):
+            with open(os.path.join(home, '.ssh', name), 'w') as fh:
+                fh.write('ssh-ed25519 AAAA test\n')
+        remote = []
+
+        def fake_run(cmd, **kwargs):
+            argv = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
+            remote.append(argv[-1])
+            out = ''
+            if 'LAGER_PROBE_IS_GIT_REPO' in str(argv[-1]):
+                out = f'LAGER_PROBE_OS={os_name}\nLAGER_PROBE_IS_GIT_REPO=0\n'
+            return mock.Mock(returncode=0, stdout=out, stderr='')
+
+        pool = mock.Mock()
+        pool.get_control_path.return_value = os.path.join(home, 'ctl')
+        with mock.patch.dict(os.environ, {'HOME': home}), \
+             mock.patch.object(update_mod, 'resolve_and_validate_box',
+                               return_value='192.0.2.10'), \
+             mock.patch.object(update_mod, 'get_box_user', return_value='me'), \
+             mock.patch.object(update_mod, 'box_has_control_plane', return_value=False), \
+             mock.patch.object(update_mod, 'key_installed_on_box', return_value=True), \
+             mock.patch.object(update_mod, 'get_ssh_connection_pool', return_value=pool), \
+             mock.patch.object(update_mod.subprocess, 'run', fake_run), \
+             mock.patch('cli.commands.utility._remote_macos.update_remote_macos') as mac:
+            result = CliRunner().invoke(update_mod.update,
+                                        ['--box', 'mac', '--yes', '--version', 'v9.9.9'])
+        return result, mac
+
+    def test_darwin_runs_the_mac_update(self):
+        result, mac = self._run('Darwin')
+        mac.assert_called_once()
+        self.assertEqual(mac.call_args.kwargs['ip'], '192.0.2.10')
+        self.assertEqual(mac.call_args.kwargs['version'], 'v9.9.9')
+        self.assertNotIn('not a git repository', result.output)
+
+    def test_linux_stays_on_the_linux_path(self):
+        result, mac = self._run('Linux')
+        mac.assert_not_called()
+        self.assertIn('not a git repository', result.output)
 
 
 if __name__ == '__main__':

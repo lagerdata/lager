@@ -91,6 +91,54 @@ def test_get_stream_info_tolerates_pre_origin_state(svc_mod, tmp_path):
     assert info['started_by'] is None
 
 
+def _service(svc_mod, tmp_path):
+    svc = svc_mod.WebcamService.__new__(svc_mod.WebcamService)
+    svc.state = svc_mod.WebcamStreamState(state_file=tmp_path / 'streams.json',
+                                          settings_file=tmp_path / 'settings.json')
+    return svc
+
+
+def _cmdline(text):
+    """Stand in for /proc/<pid>/cmdline."""
+    from unittest.mock import mock_open
+    return patch('builtins.open', mock_open(read_data=text.replace(' ', '\0').encode()))
+
+
+def test_a_recycled_pid_is_not_taken_for_the_stream(svc_mod, tmp_path):
+    """The state file is in /etc/lager and outlives the container; pids start
+    over, so a saved pid can name another process after an update."""
+    svc = _service(svc_mod, tmp_path)
+    with patch.object(svc_mod.os, 'kill'), _cmdline('python3 -m lager.debug.service'):
+        assert svc._is_process_alive(1072, 8086) is False
+    with patch.object(svc_mod.os, 'kill'), _cmdline('python3 /tmp/webcam_stream_8086.py'):
+        assert svc._is_process_alive(1072, 8086) is True
+
+
+def test_without_proc_existence_is_enough(svc_mod, tmp_path):
+    svc = _service(svc_mod, tmp_path)
+    with patch.object(svc_mod.os, 'kill'), \
+            patch('builtins.open', side_effect=FileNotFoundError):
+        assert svc._is_process_alive(1072, 8086) is True
+    with patch.object(svc_mod.os, 'kill', side_effect=ProcessLookupError):
+        assert svc._is_process_alive(1072, 8086) is False
+
+
+def test_stop_does_not_signal_a_pid_that_is_no_longer_the_stream(svc_mod, tmp_path):
+    svc = _service(svc_mod, tmp_path)
+    svc.state.add_stream('LED_CAM', '/dev/video0', 8086, 1072)
+    sent = []
+
+    def kill(pid, sig):
+        sent.append(sig)
+
+    with patch.object(svc_mod.os, 'kill', kill), \
+            patch.object(svc_mod.time, 'sleep'), \
+            _cmdline('python3 -m lager.debug.service'):
+        svc.stop_stream('LED_CAM')
+    assert [sig for sig in sent if sig != 0] == [], "SIGTERM went to an unrelated process"
+    assert svc.state.get_stream('LED_CAM') is None
+
+
 def test_generated_streamer_compiles_and_serves_snapshot(svc_mod, tmp_path):
     port = 58086
     script_path = f'/tmp/webcam_stream_{port}.py'

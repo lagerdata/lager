@@ -217,11 +217,54 @@ def install(wrapper_dir=None) -> None:
         logger.warning("J-Link software not found in %s", ", ".join(SEGGER_DIRS))
 
 
-def serve(port: int) -> None:
+def require_token(handler_cls, expected_token) -> None:
+    """Refuse every request to ``handler_cls`` that lacks the link token.
+
+    The debug service carries flash images and OpenOCD/J-Link scripts, and on
+    a Mac it runs as the user, so it must not answer whoever reaches its port:
+    another container, another local process, or a web page in the user's
+    browser (which cannot add an Authorization header). The container's
+    forward of port 8765 adds the token to each request it carries.
+    ``expected_token`` is called per request, so a rotated token takes effect
+    at once and a missing record fails closed.
+    """
+    import json
+
+    from lager.hostlink import auth, protocol
+
+    original = handler_cls.parse_request
+
+    def parse_request(self):
+        if not original(self):
+            return False
+        try:
+            token = expected_token()
+        except Exception:
+            token = ""
+        if auth.is_authorized(self.headers, token):
+            return True
+        body = json.dumps(protocol.error_body(
+            protocol.ERR_UNAUTHORIZED, "Missing or invalid host agent token.")).encode()
+        self.close_connection = True
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        return False
+
+    handler_cls.parse_request = parse_request
+
+
+def serve(port: int, config_dir: str) -> None:
     from lager.debug import service
     from lager.hostlink import config
 
     install()
+    endpoint_file = os.path.join(config_dir, config.ENDPOINT_FILENAME)
+    require_token(service.DebugServiceHandler,
+                  lambda: config.load_endpoint(endpoint_file).token)
     # The service's own handler calls server.shutdown() from the thread that
     # is serving, which waits on itself and never returns. Under Docker that
     # is hidden by the kill that follows ten seconds later; here, leave.

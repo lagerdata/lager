@@ -323,6 +323,34 @@ def _choose_script_backend(
     ), True
 
 
+_SCRIPT_SUFFIX = {"jlink_script": ".JLinkScript", "openocd_config": ".cfg"}
+
+
+def _looks_like_encoded_script(raw: bytes) -> bool:
+    """True when *raw* is base64 text that decodes to a text file.
+
+    Only base64 characters, a whole number of 4-character groups, and a
+    decoding that is readable text with more than one line: a real J-Link
+    script or OpenOCD config never passes the first test, since it has
+    spaces, braces and semicolons, and random base64 rarely decodes to text.
+    """
+    import base64
+    import binascii
+    text = b"".join(raw.split())
+    if len(text) < 16 or len(text) % 4:
+        return False
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    try:
+        text_out = decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    printable = sum(ch.isprintable() or ch in "\r\n\t" for ch in text_out)
+    return "\n" in text_out and printable >= 0.95 * len(text_out)
+
+
 def _read_debug_script_input(script_path: str) -> tuple[str, bytes]:
     """Return ``(display_name, raw_bytes)`` for *script_path*.
 
@@ -1927,31 +1955,32 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
             ctx.exit(1)
         net_data["power_up"] = power_up.lower()
 
-    # Handle J-Link script for debug nets
-    if role == "debug" and jlink_script:
+    # Handle J-Link script / OpenOCD config for debug nets. The file must be
+    # the script itself: saved_nets.json stores it base64-encoded, and a copy
+    # of that field passed here used to be encoded again and silently dropped
+    # by J-Link. Both flags together are refused at the top of the command.
+    for flag, path, field in (("--jlink-script", jlink_script, "jlink_script"),
+                              ("--openocd-config", openocd_config, "openocd_config")):
+        if not path:
+            continue
+        if role != "debug":
+            click.secho(f"Warning: {flag} is only applicable for debug nets, ignoring.",
+                        fg='yellow', err=True)
+            continue
         import base64
         try:
-            with open(jlink_script, 'rb') as f:
-                jlink_script_content = base64.b64encode(f.read()).decode('ascii')
-            net_data["jlink_script"] = jlink_script_content
-        except Exception as e:
-            click.secho(f"Error reading J-Link script file: {e}", fg='red', err=True)
+            display_name, raw_bytes = _read_debug_script_input(path)
+        except click.ClickException as e:
+            click.secho(f"Error: {e.message}", fg='red', err=True)
             ctx.exit(1)
-    elif jlink_script and role != "debug":
-        click.secho("Warning: --jlink-script is only applicable for debug nets, ignoring.", fg='yellow', err=True)
-
-    # Handle OpenOCD config for debug nets
-    if role == "debug" and openocd_config:
-        import base64
-        try:
-            with open(openocd_config, 'rb') as f:
-                openocd_config_content = base64.b64encode(f.read()).decode('ascii')
-            net_data["openocd_config"] = openocd_config_content
-        except Exception as e:
-            click.secho(f"Error reading OpenOCD config file: {e}", fg='red', err=True)
+        if _looks_like_encoded_script(raw_bytes):
+            click.secho(
+                f"Error: {display_name} looks base64-encoded, as the {field} field of "
+                "saved_nets.json stores it. Pass the script itself; decode it first, "
+                f"e.g. `base64 -d {display_name} > decoded{_SCRIPT_SUFFIX[field]}`.",
+                fg='red', err=True)
             ctx.exit(1)
-    elif openocd_config and role != "debug":
-        click.secho("Warning: --openocd-config is only applicable for debug nets, ignoring.", fg='yellow', err=True)
+        net_data[field] = base64.b64encode(raw_bytes).decode('ascii')
 
     _save_net_http(ctx, resolved_box, net_data)
 
