@@ -158,6 +158,9 @@ class LiveUartPathTests(unittest.TestCase):
             resolve_identity=lambda ident: None,
             identity_for_tty=lambda tty: None,
             list_cables=lambda: [],
+            # What serial_id does on a Linux Box.
+            resolve_link=os.path.realpath,
+            port_exists=os.path.exists,
         )
         self._devices_pkg.serial_id = self.fake
 

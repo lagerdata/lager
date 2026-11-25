@@ -36,7 +36,7 @@ import functools
 import tempfile
 import threading
 
-from . import darwin_serial, darwin_usb
+from . import darwin_serial, darwin_udev, darwin_usb
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,9 @@ def install_serial(root=None) -> None:
 
 # The serial_id lookups whose answer depends on what is plugged in now.
 _FRESH_LOOKUPS = ("identity_for_tty", "resolve_identity", "resolve_tty", "list_cables",
-                  "glob_ports", "port_exists")
+                  "glob_ports", "port_exists", "resolve_link")
+# Every serial_id name install_fresh_lookups replaces.
+REPLACED_IN_SERIAL_ID = _FRESH_LOOKUPS + ("_serial_links",)
 
 
 def _fresh(lookup):
@@ -207,9 +209,11 @@ def install_fresh_lookups() -> None:
     sysfs is always current; the tree here is only as current as its last
     write, and the agent's drivers (a serial supply resolving its
     ``serial://`` address) call these lookups directly, not through the
-    serial routes that refresh first. ``glob_ports`` and ``port_exists``
+    serial routes that refresh first. ``glob_ports``, ``port_exists``,
+    ``resolve_link`` and the by-id and by-path links ``list_cables`` reports
     answer from the Linux name table, which the refresh also brings up to
-    date.
+    date. A link given to ``identity_for_tty`` is followed through the same
+    table, as the kernel follows the symlink on Linux.
     """
     from lager.devices import serial_id
 
@@ -221,7 +225,23 @@ def install_fresh_lookups() -> None:
             def port_exists(path):
                 return darwin_serial.port_exists(path)
 
-            for function in (glob_ports, port_exists):
+            def resolve_link(path):
+                return darwin_serial.resolve_link(path)
+
+            def _serial_links(kind):
+                return darwin_serial.NAMES.links_of(kind)
+
+            linux_identity = serial_id.identity_for_tty
+
+            def identity_for_tty(tty):
+                if isinstance(tty, str) and darwin_serial.LINK_PORT.match(tty):
+                    tty = darwin_serial.NAMES.linux_path(tty)
+                    if tty is None:
+                        return None
+                return linux_identity(tty)
+
+            for function in (glob_ports, port_exists, resolve_link, _serial_links,
+                             identity_for_tty):
                 function._lager_host_names = True
                 setattr(serial_id, function.__name__, function)
         for name in _FRESH_LOOKUPS:
@@ -233,7 +253,9 @@ def install_fresh_lookups() -> None:
 def _refresh_locked() -> None:
     ports = darwin_serial.enumerate_ports()
     names = darwin_serial.NAMES.sync(port["device"] for port in ports)
-    render(darwin_usb.enumerate_usb_devices(), _root, ports, names)
+    devices = darwin_usb.enumerate_usb_devices()
+    render(devices, _root, ports, names)
+    darwin_serial.NAMES.set_links(darwin_udev.links(devices, ports, names, sysfs_name))
 
 
 def refresh(root=None) -> None:

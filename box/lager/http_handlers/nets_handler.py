@@ -9,7 +9,6 @@ Provides endpoints to list, update, delete, and query live state of saved nets.
 import contextlib
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -1029,7 +1028,9 @@ def _rec_absent(rec, usb_ids):
 
     address = str(_address_from_rec(rec) or "")
     if address.startswith("/dev/tty"):
-        return not os.path.exists(address)
+        from lager.devices import serial_id
+
+        return not serial_id.port_exists(address)
     return usb_address_enumerated(address, usb_ids) is False
 
 

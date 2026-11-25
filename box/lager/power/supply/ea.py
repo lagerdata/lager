@@ -64,7 +64,7 @@ def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
 
     for pat in patterns:
         for path in serial_id.glob_ports(pat):
-            if os.path.islink(path) or os.path.exists(path):
+            if os.path.islink(path) or serial_id.port_exists(path):
                 return path
 
     for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):

@@ -34,6 +34,14 @@ IOREG_TIMEOUT_S = 5.0
 DEV_PREFIX = "/dev/"
 # The names this module hands out. Only these are translated on open.
 LINUX_PORT = re.compile(r"^/dev/tty(USB|ACM)[0-9]+$")
+# udev's durable names for them: one entry under by-id or by-path, never
+# "." or "..". The table below knows which port each one is.
+LINK_PORT = re.compile(r"^/dev/serial/by-(id|path)/(?!\.\.?$)[^/]+$")
+
+
+def is_port_name(path) -> bool:
+    """True for a name a Linux Box would give a USB serial port."""
+    return isinstance(path, str) and bool(LINUX_PORT.match(path) or LINK_PORT.match(path))
 
 
 def _number(value) -> Optional[int]:
@@ -92,6 +100,7 @@ class Names:
     def __init__(self):
         self._lock = threading.Lock()
         self._by_device: Dict[str, str] = {}
+        self._links: Dict[str, str] = {}  # /dev/serial/by-*/... -> /dev/ttyUSB0
 
     def sync(self, devices) -> Dict[str, str]:
         """Forget ports that left, name ports that arrived; ``{device: name}``."""
@@ -108,9 +117,32 @@ class Names:
                 self._by_device[device] = f"{kind}{number}"
             return dict(self._by_device)
 
+    def set_links(self, links: Dict[str, str]) -> None:
+        """Replace the ``{by-id or by-path link: Linux path}`` table."""
+        with self._lock:
+            self._links = dict(links)
+
+    def linux_path(self, path: str) -> Optional[str]:
+        """``/dev/ttyUSB0`` for that name or a link to it, if attached; else None."""
+        if not isinstance(path, str):
+            return None
+        with self._lock:
+            if LINK_PORT.match(path):
+                path = self._links.get(path)
+                if path is None:
+                    return None
+            name = path[len(DEV_PREFIX):] if path.startswith(DEV_PREFIX) else path
+            if name in self._by_device.values():
+                return DEV_PREFIX + name
+        return None
+
     def host_device(self, tty: str) -> Optional[str]:
-        """The Mac device behind ``/dev/ttyUSB0`` (or ``ttyUSB0``), or None."""
-        name = tty[len(DEV_PREFIX):] if tty.startswith(DEV_PREFIX) else tty
+        """The Mac device behind ``/dev/ttyUSB0``, ``ttyUSB0`` or a by-id or
+        by-path link to it, or None."""
+        path = self.linux_path(tty if tty.startswith("/") else DEV_PREFIX + tty)
+        if path is None:
+            return None
+        name = path[len(DEV_PREFIX):]
         with self._lock:
             for device, linux_name in self._by_device.items():
                 if linux_name == name:
@@ -122,6 +154,19 @@ class Names:
         with self._lock:
             return sorted(DEV_PREFIX + name for name in self._by_device.values())
 
+    def link_paths(self) -> List[str]:
+        """Every by-id and by-path link, sorted."""
+        with self._lock:
+            return sorted(self._links)
+
+    def links_of(self, kind: str) -> Dict[str, str]:
+        """``{tty name: link}`` for ``by-id`` or ``by-path``, as
+        ``serial_id._serial_links`` returns it on Linux."""
+        prefix = f"/dev/serial/{kind}/"
+        with self._lock:
+            return {target[len(DEV_PREFIX):]: link for link, target in sorted(self._links.items())
+                    if link.startswith(prefix)}
+
 
 NAMES = Names()
 
@@ -129,24 +174,43 @@ NAMES = Names()
 def glob_ports(pattern: str, names: Optional[Names] = None) -> List[str]:
     """What ``glob.glob(pattern)`` would return on a Linux Box, sorted.
 
-    Answers ``/dev/ttyUSB*``-style patterns from the name table. No other
-    ``/dev`` path exists under a Linux name here, so any other pattern
-    (``/dev/serial/by-id/*``) matches nothing.
+    Answers ``/dev/ttyUSB*`` and ``/dev/serial/by-id/*`` style patterns from
+    the name table; nothing else under ``/dev`` exists under a Linux name here.
     """
-    return [path for path in (names or NAMES).linux_paths()
-            if fnmatch.fnmatchcase(path, pattern)]
+    table = names or NAMES
+    return sorted(path for path in table.linux_paths() + table.link_paths()
+                  if fnmatch.fnmatchcase(path, pattern))
 
 
 def port_exists(path: str, names: Optional[Names] = None) -> bool:
-    """Whether ``path`` is attached: a Linux name by the table, else on disk."""
-    if isinstance(path, str) and LINUX_PORT.match(path):
-        return (names or NAMES).host_device(path) is not None
+    """Whether ``path`` is attached: a Linux name or link by the table, else
+    on disk."""
+    if is_port_name(path):
+        return (names or NAMES).linux_path(path) is not None
     return os.path.exists(path)
+
+
+def resolve_link(path: str, names: Optional[Names] = None) -> str:
+    """What ``os.path.realpath`` gives on a Linux Box: a by-id or by-path link
+    becomes the port it names (unchanged when there is none), a Linux name
+    stays itself, and any other path is resolved on disk."""
+    if is_port_name(path):
+        return (names or NAMES).linux_path(path) or path
+    return os.path.realpath(path)
+
+
+def missing_message(path: str) -> str:
+    """Why ``path`` cannot be opened: as on Linux, unless it is a by-path name
+    from another machine, which the user is told cannot carry over."""
+    from . import darwin_udev
+
+    return darwin_udev.not_here_message(path) or f"No such file or directory: {path!r}"
 
 
 def install_pyserial(refresh: Optional[Callable[[], None]] = None,
                      names: Optional[Names] = None) -> None:
-    """Make ``serial.Serial`` open a Linux name on the Mac port behind it.
+    """Make ``serial.Serial`` open a Linux name (or a by-id or by-path link)
+    on the Mac port behind it.
 
     Only the agent calls this. Its drivers (a serial supply's VISA ASRL
     resource, which pyvisa-py opens through pySerial, or a driver calling
@@ -168,7 +232,7 @@ def install_pyserial(refresh: Optional[Callable[[], None]] = None,
 
         def open(self):
             linux_path = self.portstr
-            if not (isinstance(linux_path, str) and LINUX_PORT.match(linux_path)):
+            if not is_port_name(linux_path):
                 return super().open()
             if refresh is not None:
                 try:
@@ -180,7 +244,7 @@ def install_pyserial(refresh: Optional[Callable[[], None]] = None,
                 # What pySerial reports on Linux for a port that is not there.
                 raise serial.SerialException(
                     2, f"could not open port {linux_path}: [Errno 2] "
-                       f"No such file or directory: {linux_path!r}")
+                       f"{missing_message(linux_path)}")
             # pySerial opens ``portstr``; its messages name ``port``.
             self.portstr = device
             try:
