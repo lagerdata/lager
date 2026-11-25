@@ -183,6 +183,9 @@ def test_a_device_error_fails_the_apply(box):
     result = _invoke("apply-power-up", "--yes")
     assert result.exit_code == 1
     assert "refused" in result.output
+    # The entry has no model: name it once, by its device_id.
+    assert "LabJack LabJack" not in result.output
+    assert "LabJack (labjack:" + T7 + ")" in result.output
 
 
 def test_json_report(box):
