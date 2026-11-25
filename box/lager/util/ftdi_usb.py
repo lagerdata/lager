@@ -25,8 +25,15 @@ open got (``[Errno 19] No such device``, ``No USB device with S/N <sn>``, ``The
 device has no langid``), so :func:`open_fresh` does not go by the message. When
 an open fails it compares the FTDI devices the shared context lists with the
 ones sysfs lists. Only if they differ does it create a fresh context, install
-it as pyusb's shared one, flush pyftdi's cache and open once more. Otherwise
-the failure is raised untouched.
+it as pyusb's shared one, flush pyftdi's cache and open once more.
+
+Where libusb does keep its list current -- the macOS host agent, or a libusb
+built without udev -- the shared context is never stale, but pyftdi's own
+cache still holds the part at its old address, or remembers finding no part at
+all if a lookup ran while it was unplugged. So when the shared context is
+current, the open compares pyftdi's cached FTDI devices with the ones that
+context lists; if they differ it flushes pyftdi's cache alone and opens once
+more. Otherwise the failure is raised untouched.
 
 **No libusb context is ever destroyed here.** pyusb finalizes a context and
 the device lists it handed out when they are garbage-collected, in no fixed
@@ -129,25 +136,63 @@ def _refresh_context() -> None:
     UsbTools.flush_cache()
 
 
+def _pyftdi_cache_is_stale() -> bool:
+    """True if pyftdi's device cache lists different FTDI devices than libusb.
+
+    Compares each FTDI (vid, pid) pyftdi has cached with what pyusb's shared
+    context lists for it now. Meaningful only once that context is current
+    (see :func:`_shared_context_is_stale`). Creates no libusb context; any
+    error counts as "not stale".
+    """
+    try:
+        import usb.backend.libusb1 as libusb1
+        from pyftdi.usbtools import UsbTools
+        shared = libusb1.get_backend()
+        if shared is None:
+            return False
+        current = _context_ftdi_addresses(shared)
+        for (vid, pid), devices in list(UsbTools.UsbDevices.items()):
+            if vid != FTDI_VID:
+                continue
+            cached = {(d.idProduct, d.bus, d.address) for d in devices}
+            if cached != {a for a in current if a[0] == pid}:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _flush_pyftdi_cache() -> None:
+    from pyftdi.usbtools import UsbTools
+    UsbTools.flush_cache()
+
+
 def open_fresh(open_fn: Callable[[], T],
                log: Optional[Callable[[str], None]] = None) -> T:
-    """Call ``open_fn``; if the USB device list was stale, refresh and retry once.
+    """Call ``open_fn``; if a USB device list was stale, refresh and retry once.
 
+    Two lists can be stale (see the module docstring): pyusb's shared libusb
+    context, which is replaced, and pyftdi's own cache, which is flushed.
     ``open_fn`` must start from nothing each time: build a new controller and
     look the device up again, since a lookup made before the refresh is the
-    stale one. A failure with an up-to-date device list, a failed refresh,
-    and the second failure are all raised as the open's own error.
+    stale one. A failure with up-to-date device lists, a failed refresh, and
+    the second failure are all raised as the open's own error.
     """
     try:
         return open_fn()
     except Exception as exc:
-        if not _shared_context_is_stale():
+        if _shared_context_is_stale():
+            what, refresh = "USB device list", _refresh_context
+            detail = "refreshing libusb and pyftdi"
+        elif _pyftdi_cache_is_stale():
+            what, refresh = "pyftdi's device cache", _flush_pyftdi_cache
+            detail = "flushing it"
+        else:
             raise
         if log is not None:
-            log(f"open failed ({exc}); USB device list was stale, "
-                "refreshing libusb and pyftdi and opening again")
+            log(f"open failed ({exc}); {what} was stale, {detail} and opening again")
         try:
-            _refresh_context()
+            refresh()
         except Exception as refresh_exc:
             if log is not None:
                 log(f"refresh failed: {refresh_exc}")

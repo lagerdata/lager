@@ -208,10 +208,16 @@ class OpenFreshTests(unittest.TestCase):
     def setUp(self):
         self.stale = mock.Mock(return_value=True)
         self.refresh = mock.Mock()
+        self.cache_stale = mock.Mock(return_value=False)
+        self.flush = mock.Mock()
         for p in (mock.patch.object(ftdi_usb, '_shared_context_is_stale',
                                     self.stale),
                   mock.patch.object(ftdi_usb, '_refresh_context',
-                                    self.refresh)):
+                                    self.refresh),
+                  mock.patch.object(ftdi_usb, '_pyftdi_cache_is_stale',
+                                    self.cache_stale),
+                  mock.patch.object(ftdi_usb, '_flush_pyftdi_cache',
+                                    self.flush)):
             p.start()
             self.addCleanup(p.stop)
 
@@ -267,6 +273,78 @@ class OpenFreshTests(unittest.TestCase):
                             log=log.append)
         self.assertEqual(len(log), 1)
         self.assertIn('stale', log[0])
+
+    def test_a_stale_pyftdi_cache_alone_is_flushed_and_retried(self):
+        """libusb kept up (macOS, a libusb without udev); pyftdi's cache did not."""
+        self.stale.return_value = False
+        self.cache_stale.return_value = True
+        log = []
+        open_fn = mock.Mock(side_effect=[_enodev(), 'ctrl'])
+        self.assertEqual(ftdi_usb.open_fresh(open_fn, log=log.append), 'ctrl')
+        self.flush.assert_called_once_with()
+        self.refresh.assert_not_called()
+        self.assertIn("pyftdi's device cache", log[0])
+
+    def test_a_stale_shared_context_is_refreshed_not_just_flushed(self):
+        self.cache_stale.return_value = True
+        ftdi_usb.open_fresh(mock.Mock(side_effect=[_enodev(), 'c']))
+        self.refresh.assert_called_once_with()
+        self.flush.assert_not_called()
+
+    def test_a_failed_flush_raises_the_open_error(self):
+        self.stale.return_value = False
+        self.cache_stale.return_value = True
+        self.flush.side_effect = RuntimeError("no pyftdi")
+        err = _no_serial()
+        with self.assertRaises(UsbToolsError) as cm:
+            ftdi_usb.open_fresh(mock.Mock(side_effect=err))
+        self.assertIs(cm.exception, err)
+
+
+class PyftdiCacheCheckTests(unittest.TestCase):
+    """pyftdi's ``UsbTools.UsbDevices``: ``{(vid, pid): {device}}``."""
+
+    def cache(self, fake, devices, pid=0x6011, vid=0x0403):
+        fake.usbtools.UsbTools.UsbDevices = {(vid, pid): set(devices)}
+
+    def test_cache_at_the_old_address_is_stale(self):
+        fake = _FakeUsb(self, shared=NEW, kernel=NEW)
+        self.cache(fake, OLD)
+        self.assertTrue(ftdi_usb._pyftdi_cache_is_stale())
+
+    def test_cache_that_remembers_no_part_is_stale(self):
+        """A lookup ran while the part was unplugged and cached "none"."""
+        fake = _FakeUsb(self, shared=NEW, kernel=NEW)
+        self.cache(fake, [])
+        self.assertTrue(ftdi_usb._pyftdi_cache_is_stale())
+
+    def test_matching_cache_is_not_stale(self):
+        fake = _FakeUsb(self, shared=NEW, kernel=NEW)
+        self.cache(fake, [_Dev(0x6011, 1, 42)])
+        self.assertFalse(ftdi_usb._pyftdi_cache_is_stale())
+
+    def test_an_uncached_or_non_ftdi_entry_is_not_stale(self):
+        fake = _FakeUsb(self, shared=NEW, kernel=NEW)
+        fake.usbtools.UsbTools.UsbDevices = {}
+        self.assertFalse(ftdi_usb._pyftdi_cache_is_stale())
+        self.cache(fake, OLD, vid=0x0CD5)
+        self.assertFalse(ftdi_usb._pyftdi_cache_is_stale())
+
+    def test_a_cached_pid_compares_only_with_that_pid(self):
+        fake = _FakeUsb(self, shared=NEW + [_Dev(0x6014, 1, 9)], kernel=NEW)
+        self.cache(fake, [_Dev(0x6011, 1, 42)])
+        self.assertFalse(ftdi_usb._pyftdi_cache_is_stale())
+
+    def test_the_check_creates_no_libusb_context(self):
+        fake = _FakeUsb(self, shared=NEW, kernel=NEW)
+        self.cache(fake, OLD)
+        ftdi_usb._pyftdi_cache_is_stale()
+        self.assertEqual(fake.created, [])
+
+    def test_without_pyftdi_is_not_stale(self):
+        _FakeUsb(self, shared=NEW, kernel=NEW)
+        with mock.patch.dict(sys.modules, {'pyftdi.usbtools': None}):
+            self.assertFalse(ftdi_usb._pyftdi_cache_is_stale())
 
 
 # ---------------------------------------------------------------- drivers

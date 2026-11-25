@@ -41,6 +41,11 @@ Write one bullet per change, in one to three sentences: what changed for a user,
 
 - On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.
 - A LabJack U3 that is unplugged and plugged back in is found again without a manual restart. When the kernel lists the U3 on its port but the Box's hardware service cannot see it, the service now restarts itself and the request answers "restarting"; the next `lager gpi`, `gpo`, `adc` or `dac` call on the net works. A U3 that another process holds, a LabJack T7, and a macOS Box are unchanged.
+- An FTDI part (FT232H, FT2232H, FT4232H) that is plugged back in can be opened
+  again at once where libusb follows hotplug itself, as on a macOS Box. The first
+  `lager gpi`, `gpo`, `i2c` or `spi` call used to fail with "No such device",
+  or keep failing if a call ran while the part was unplugged, because pyftdi
+  still listed the old device. A Linux Box is unchanged.
 
 ## [0.66.0] - 2026-11-24
 
