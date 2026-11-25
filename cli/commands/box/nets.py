@@ -1529,9 +1529,14 @@ def set_power_up_cmd(ctx: click.Context, items: tuple, box: str | None) -> None:
 
 def _render_power_up_report(report: dict) -> None:
     for dev in report.get("devices", []):
-        model = dev.get("model") or "LabJack"
+        model = dev.get("model")
         serial = dev.get("serial")
-        title = f"LabJack {model}" + (f" (serial {serial})" if serial else "")
+        # An error entry carries only its device_id, so name the device by that.
+        title = "LabJack" + (f" {model}" if model else "")
+        if serial:
+            title += f" (serial {serial})"
+        elif dev.get("device_id"):
+            title += f" ({dev['device_id']})"
         click.secho(title, bold=True)
         if dev.get("error"):
             click.secho(f"  Error: {dev['error']}", fg="red")
