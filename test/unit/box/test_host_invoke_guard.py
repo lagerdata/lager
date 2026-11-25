@@ -36,7 +36,7 @@ class AdmittedTests(unittest.TestCase):
     def test_every_hs_adapter(self):
         for name in ("adc_hs", "dac_hs", "gpio_hs", "spi_hs", "i2c_hs", "scope_hs",
                      "watt_hs", "energy_hs", "thermocouple_hs", "arm_hs", "hsm_hs",
-                     "solar_hs", "dmm_hs", "labjack_boot_config_hs"):
+                     "solar_hs", "dmm_hs", "power_up_hs"):
             with self.subTest(name=name):
                 self.assertIsNone(invoke_guard.check(_req(name, "read", {"pin": 0})))
 

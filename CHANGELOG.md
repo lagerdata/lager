@@ -20,6 +20,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   saved `serial://`, `/dev/ttyUSB0` or `/dev/ttyACM0` address. The host agent
   opens the Mac port behind each Linux port name.
 
+### Changed
+
+- **`POST /nets/power-up` reports how each device holds its levels.** Every
+  device entry, and so `lager nets apply-power-up --json`, now carries
+  `backend` (`labjack`), `storage` (`flash`: the instrument applies the level
+  itself as it boots) and `coverage` (what covers the pin before then). This
+  prepares power-up levels for instruments that keep no boot state.
+
 ### Fixed
 
 - On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.

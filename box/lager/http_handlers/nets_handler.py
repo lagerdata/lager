@@ -1401,16 +1401,16 @@ def _validate_safety_limits(payload):
     return limits, None
 
 
-# Instruments whose gpio nets can declare a power-up level: the LabJacks that
-# keep an I/O configuration in flash. Matches the GPIO dispatcher's own tests.
-_POWER_UP_INSTRUMENT_RE = re.compile(r"labjack[_\-\s]*(t7|u3)", re.IGNORECASE)
-
-
 def _power_up_error(record, value):
-    """Why ``value`` cannot be the power-up level of ``record``, or None."""
-    from ..io.gpio.labjack_boot_config import normalize_level
+    """Why ``value`` cannot be the power-up level of ``record``, or None.
+
+    Which instruments can hold a level is decided by ``lager.io.gpio.power_up``
+    (one family per instrument kind), and the family's backend can refuse a
+    net it cannot honour.
+    """
+    from ..io.gpio import power_up
     try:
-        level = normalize_level(value)
+        level = power_up.normalize_level(value)
     except ValueError as e:
         return str(e)
     if level is None:
@@ -1418,42 +1418,52 @@ def _power_up_error(record, value):
     if record.get('role') != 'gpio':
         return ("power_up applies to gpio nets only; '%s' is a %s net"
                 % (record.get('name'), record.get('role')))
-    if not _POWER_UP_INSTRUMENT_RE.search(record.get('instrument') or ''):
-        return ("'%s' is on a %s, which has no stored power-up configuration; "
-                "power_up is supported on LabJack T7 and U3 gpio nets"
-                % (record.get('name'), record.get('instrument') or 'unknown instrument'))
-    return None
+    backend = power_up.backend_for(record.get('instrument'))
+    if backend is None:
+        return ("'%s' is on a %s, which lager cannot set a power-up level on; "
+                "power_up is supported on %s gpio nets"
+                % (record.get('name'), record.get('instrument') or 'unknown instrument',
+                   power_up.supported_label()))
+    return backend.validate(record)
 
 
 def _power_up_report(mode, allow_undeclared):
-    """Check or write every LabJack's boot config from its declared nets.
+    """Check or apply every device's power-up levels from its declared nets.
 
-    Groups LabJack gpio nets by the same physical-device identity ``/invoke``
-    locks on, and runs one hardware_service call per LabJack, so the work
-    serialises against ordinary gpo/gpi/adc/dac calls on that device.
+    Groups the gpio nets of every power-up family by the same physical-device
+    identity ``/invoke`` locks on, and runs one hardware_service call per
+    device, so the work serialises against ordinary gpo/gpi/adc/dac calls on
+    that device.
     """
+    from ..io.gpio import power_up
     from ..nets.device import Device, DeviceError
     from .net_command import _physical_device_id
 
     groups = {}
+    families = {}
     undeclared = []
     for rec in Net.get_local_nets():
         if rec.get('role') != 'gpio':
             continue
-        if not _POWER_UP_INSTRUMENT_RE.search(rec.get('instrument') or ''):
+        family = power_up.family_for(rec.get('instrument'))
+        if family is None:
             continue
         if rec.get('power_up') is None:
             undeclared.append(rec.get('name'))
             continue
         device_id = _physical_device_id('gpio', rec.get('instrument') or '', rec)
         groups.setdefault(device_id, []).append(rec)
+        families[device_id] = family.name
 
     devices = []
     for device_id, recs in sorted(groups.items()):
         nets = [{'name': r.get('name'), 'power_up': r.get('power_up')} for r in recs]
-        entry = {'device_id': device_id, 'instrument': recs[0].get('instrument')}
+        # ``backend`` is set here too, so an entry that fails still names its
+        # family; the hardware_service report repeats it with storage/coverage.
+        entry = {'device_id': device_id, 'instrument': recs[0].get('instrument'),
+                 'backend': families[device_id]}
         try:
-            proxy = Device('labjack_boot_config_hs', {
+            proxy = Device('power_up_hs', {
                 'name': recs[0].get('name'),
                 'instrument': recs[0].get('instrument') or '',
                 'device_id': device_id,

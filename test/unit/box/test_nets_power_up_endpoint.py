@@ -167,7 +167,7 @@ class ApplyTests(_Fixture):
         self.assertIn(['BLOW', 'PUMP'], by_device.values())
         self.assertIn(['VALVE'], by_device.values())
         for name, info, kw in calls:
-            self.assertEqual(name, 'labjack_boot_config_hs')
+            self.assertEqual(name, 'power_up_hs')
             self.assertEqual(kw['mode'], 'plan')
         data = res.get_json()
         self.assertEqual(data['undeclared'], ['SENSE'])
@@ -190,6 +190,8 @@ class ApplyTests(_Fixture):
         res, _ = self._post({"mode": "apply"}, boom)
         data = res.get_json()
         self.assertEqual(data['devices'][0]['error'], 'pins FIO0 are outputs')
+        # A failed entry still names its family, so the CLI can title it.
+        self.assertEqual(data['devices'][0]['backend'], 'labjack')
         self.assertFalse(data['in_sync'])
 
     def test_apply_passes_allow_undeclared(self):

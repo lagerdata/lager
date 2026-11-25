@@ -1489,19 +1489,42 @@ def set_capture_cmd(ctx: click.Context, name: str, port_path: str | None,
                     fg="green")
 
 
-# LabJacks that keep a power-up I/O configuration in flash. Mirrors the box's
-# own check (nets_handler._POWER_UP_INSTRUMENT_RE); the box decides.
-_POWER_UP_INSTRUMENT_RE = re.compile(r"labjack[_\-\s]*(t7|u3)", re.IGNORECASE)
+# Instrument families whose gpio nets can declare a power-up level:
+# (backend name the box reports, device label, instruments it matches).
+# Mirrors the box's table (box/lager/io/gpio/power_up/__init__.py FAMILIES) so
+# a bad request fails before anything is written; the box still decides, and
+# a box older than a family here refuses that family itself.
+_POWER_UP_FAMILIES = (
+    ("labjack", "LabJack", re.compile(r"labjack[_\-\s]*(t7|u3)", re.IGNORECASE)),
+)
+_POWER_UP_SUPPORTED = "LabJack T7 and U3"
 _POWER_UP_LEVELS = ("low", "high", "none")
+
+
+def _power_up_family(instrument) -> Optional[str]:
+    """The power-up backend name for ``instrument``, or None."""
+    text = str(instrument or "")
+    for name, _label, pattern in _POWER_UP_FAMILIES:
+        if pattern.search(text):
+            return name
+    return None
+
+
+def _power_up_label(backend) -> str:
+    """What the report calls a device of ``backend`` ("LabJack")."""
+    for name, label, _pattern in _POWER_UP_FAMILIES:
+        if name == backend:
+            return label
+    return "Device"
 
 
 def _power_up_problem(record: dict) -> Optional[str]:
     """Why ``record`` cannot declare a power-up level, or None."""
     if record.get("role") != "gpio":
         return f"'{record.get('name')}' is a {record.get('role')} net; power-up levels are for gpio nets"
-    if not _POWER_UP_INSTRUMENT_RE.search(str(record.get("instrument") or "")):
+    if _power_up_family(record.get("instrument")) is None:
         return (f"'{record.get('name')}' is on a {record.get('instrument') or 'unknown instrument'}, "
-                "which has no stored power-up configuration; only LabJack T7 and U3 nets have one")
+                f"which lager cannot set a power-up level on; only {_POWER_UP_SUPPORTED} nets can have one")
     return None
 
 
@@ -1560,7 +1583,8 @@ def _render_power_up_report(report: dict) -> None:
         model = dev.get("model")
         serial = dev.get("serial")
         # An error entry carries only its device_id, so name the device by that.
-        title = "LabJack" + (f" {model}" if model else "")
+        # A box predating backend names reported LabJacks only.
+        title = _power_up_label(dev.get("backend") or "labjack") + (f" {model}" if model else "")
         if serial:
             title += f" (serial {serial})"
         elif dev.get("device_id"):
