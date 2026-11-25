@@ -1363,7 +1363,7 @@ class _LoaderEntryRunner:
 class ThumbStateEntryTests(_LoaderEntryRunner, unittest.TestCase):
     """The loader must be entered in Thumb state.
 
-    The field failure, on box JUL-14: every ``lager debug SWD flash`` on a
+    The field failure: every ``lager debug SWD flash`` on a
     DA1469x died with "flash_loader boot (fl_state==1): timed out after
     10.0s (last value at 0x20004108 = 0x0)", three identical attempts, and
     the loader had not executed a single instruction. Halting the core
