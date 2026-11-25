@@ -38,7 +38,7 @@ CLOSE_PATH = "/v1/serial/close"
 # What a container may ask for. Everything else is refused, not looked up.
 _LOOKUPS = frozenset({
     "identity_for_tty", "resolve_identity", "resolve_tty", "list_cables",
-    "find_device_by_serial",
+    "find_device_by_serial", "port_exists", "resolve_link",
 })
 # How long an opened port waits for the container to connect.
 ACCEPT_WAIT_S = 10.0
@@ -68,6 +68,24 @@ def _host_device(tty: str):
 
         return darwin_serial.NAMES.host_device(tty)
     return tty
+
+
+def _session_key(tty: str) -> str:
+    """One key per port, whichever name opens it: a by-id or by-path link and
+    ``/dev/ttyUSB0`` for the same device are one port, held once."""
+    if sys.platform == "darwin":
+        from . import darwin_serial
+
+        return darwin_serial.NAMES.linux_path(tty) or tty
+    return tty
+
+
+def _missing(tty: str) -> str:
+    if sys.platform == "darwin":
+        from . import darwin_serial
+
+        return darwin_serial.missing_message(tty)
+    return f"No such file or directory: {tty!r}"
 
 
 def _lookup(function, args, kwargs):
@@ -178,16 +196,17 @@ def open_port(tty: str, bind: str = config.DEFAULT_BIND) -> int:
     _refresh()
     device_path = _host_device(tty)
     if not device_path:
-        raise FileNotFoundError(_ENOENT, f"No such file or directory: {tty!r}")
+        raise FileNotFoundError(_ENOENT, _missing(tty))
+    key = _session_key(tty)
     deadline = time.monotonic() + BUSY_GRACE_S
     while True:
         with _sessions_lock:
-            held = tty in _sessions
+            held = key in _sessions
         if not held or time.monotonic() >= deadline:
             break
         time.sleep(0.02)
     with _sessions_lock:
-        if tty in _sessions:
+        if key in _sessions:
             raise _busy(tty)
         try:
             device = _open_device(device_path)
@@ -204,8 +223,8 @@ def open_port(tty: str, bind: str = config.DEFAULT_BIND) -> int:
             device.close()
             listener.close()
             raise
-        session = _Session(tty, device, listener)
-        _sessions[tty] = session
+        session = _Session(key, device, listener)
+        _sessions[key] = session
         session.start()
         return listener.getsockname()[1]
 
@@ -213,7 +232,7 @@ def open_port(tty: str, bind: str = config.DEFAULT_BIND) -> int:
 def close_port(tty: str, wait_s: float = 2.0) -> bool:
     """End the session holding ``tty`` and wait for the device to be released."""
     with _sessions_lock:
-        session = _sessions.get(tty)
+        session = _sessions.get(_session_key(tty))
     if session is None:
         return False
     _end([session], wait_s)

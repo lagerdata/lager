@@ -247,8 +247,10 @@ class UARTBridge:
             # No durable identity available (never successfully opened and no
             # USB serial): all we can do is retry the stored path once it
             # exists again — a symlink (/dev/serial/by-*) re-resolves at open.
+            from lager.devices import serial_id
+
             raw = self.device_path_override or self.device_path
-            if raw and os.path.exists(raw):
+            if raw and serial_id.port_exists(raw):
                 path = raw
         if not path:
             return False

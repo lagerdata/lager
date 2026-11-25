@@ -8,7 +8,6 @@ Provides clean access to UART nets from Python scripts running on the box.
 """
 from __future__ import annotations
 
-import os
 from typing import Optional
 import serial
 
@@ -75,8 +74,8 @@ def live_uart_path(record: dict) -> Optional[str]:
                 return path
         pin = _stable_pin(record)
         if pin:
-            real = os.path.realpath(pin)
-            if real != pin and os.path.exists(real):
+            real = serial_id.resolve_link(pin)
+            if real != pin and serial_id.port_exists(real):
                 return real
     except Exception:
         pass
@@ -135,7 +134,9 @@ class UARTNet:
         Raises:
             FileNotFoundError: If the UART device is not connected
         """
-        if self._device_path is not None and not os.path.exists(self._device_path):
+        from lager.devices import serial_id
+
+        if self._device_path is not None and not serial_id.port_exists(self._device_path):
             # The cached node vanished (USB re-enumeration); re-resolve.
             self._device_path = None
 

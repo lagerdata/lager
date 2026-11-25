@@ -20,6 +20,12 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   saved `serial://`, `/dev/ttyUSB0` or `/dev/ttyACM0` address. The host agent
   opens the Mac port behind each Linux port name.
 
+- **`/dev/serial/by-id` nets work on a Mac Box.** A net saved on a Linux Box
+  with a `/dev/serial/by-id/...` port opens unchanged on a Mac. The Mac also has
+  `/dev/serial/by-path/platform-macos-...` names of its own. A by-path name
+  saved on a Linux Box names that machine's USB socket, so it is refused on a
+  Mac with an error that says to use the by-id name instead.
+
 ### Changed
 
 - **`POST /nets/power-up` reports how each device holds its levels.** Every
@@ -29,6 +35,9 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   prepares power-up levels for instruments that keep no boot state.
 
 ### Fixed
+
+- On a Mac Box, `lager nets state` no longer reports a net with a `/dev/ttyUSB*`
+  or `/dev/ttyACM*` address as "not connected" while its adapter is plugged in.
 
 - On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.
 - A LabJack U3 that is unplugged and plugged back in is found again without a manual restart. When the kernel lists the U3 on its port but the Box's hardware service cannot see it, the service now restarts itself and the request answers "restarting"; the next `lager gpi`, `gpo`, `adc` or `dac` call on the net works. A U3 that another process holds, a LabJack T7, and a macOS Box are unchanged.

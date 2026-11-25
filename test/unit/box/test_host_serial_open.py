@@ -225,7 +225,7 @@ class FreshLookupTests(unittest.TestCase):
     """The agent's ``serial_id`` lookups re-read the bus before answering."""
 
     def setUp(self):
-        for name in darwin_scan._FRESH_LOOKUPS:
+        for name in darwin_scan.REPLACED_IN_SERIAL_ID:
             patcher = patch.object(serial_id, name, getattr(serial_id, name))
             patcher.start()
             self.addCleanup(patcher.stop)

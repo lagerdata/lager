@@ -112,6 +112,8 @@ class UARTBridgeReconnectBase(unittest.TestCase):
         self.fake_serial_id = types.SimpleNamespace(
             resolve_identity=lambda ident: None,
             identity_for_tty=lambda tty: None,
+            # What serial_id does on a Linux Box.
+            port_exists=os.path.exists,
         )
         self._devices_pkg.serial_id = self.fake_serial_id
 

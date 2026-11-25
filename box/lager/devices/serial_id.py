@@ -409,6 +409,15 @@ def port_exists(path: str) -> bool:
     return os.path.exists(path)
 
 
+def resolve_link(path: str) -> str:
+    """The device a ``/dev/serial/by-id`` or ``by-path`` link points at.
+
+    On a Linux Box this is exactly ``os.path.realpath(path)``; a host whose
+    ports carry other names answers it from its own table.
+    """
+    return os.path.realpath(path)
+
+
 def resolve_address_to_tty(address: str) -> Optional[str]:
     """Resolve a ``serial://`` address straight to the live tty, or None."""
     parts = parse_address(address)

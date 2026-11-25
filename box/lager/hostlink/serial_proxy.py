@@ -33,9 +33,10 @@ OPEN_URL = RELAY + "/v1/serial/open"
 CLOSE_URL = RELAY + "/v1/serial/close"
 _TIMEOUT_S = 15.0
 
-# The names a Linux Box gives USB serial ports. Only these are sent to the
-# host; anything else is not a port the host could be holding.
-_HOST_PORT = re.compile(r"^/dev/tty(USB|ACM)\d+$")
+# The names a Linux Box gives USB serial ports, and udev's durable links to
+# them (one entry under by-id or by-path, never "." or ".."). Only these are
+# sent to the host; anything else is not a port the host could be holding.
+_HOST_PORT = re.compile(r"^/dev/(tty(USB|ACM)\d+|serial/by-(id|path)/(?!\.\.?$)[^/]+)$")
 
 # Whether a device node exists in this container. A name of its own, so a test
 # can replace it without patching os.path for the whole process.
@@ -43,7 +44,8 @@ _device_exists = os.path.exists
 # Message a Linux Box's reconnect logic recognises as "the adapter left".
 _GONE = "device disconnected (the host closed the port)"
 
-_LOOKUPS = ("identity_for_tty", "resolve_identity", "resolve_tty", "list_cables")
+_LOOKUPS = ("identity_for_tty", "resolve_identity", "resolve_tty", "list_cables",
+            "port_exists", "resolve_link")
 
 
 def _post(url, body):
@@ -75,15 +77,21 @@ def find_device_by_serial(serial_number):
 
 def install_lookups(namespace) -> None:
     """Replace ``serial_id``'s sysfs lookups (``namespace`` is its globals)."""
+    # What each lookup answers when the host cannot: nothing found. A link
+    # that cannot be followed stays itself, as realpath leaves a dangling one.
+    empties = {"list_cables": lambda *a, **k: [],
+               "port_exists": lambda *a, **k: False,
+               "resolve_link": lambda path, *a, **k: path}
+
     def proxy(function, empty):
         def call(*args, **kwargs):
             result = lookup(function, *args, **kwargs)
-            return empty if result is None else result
+            return empty(*args, **kwargs) if result is None else result
         call.__name__ = function
         return call
 
     for function in _LOOKUPS:
-        namespace[function] = proxy(function, [] if function == "list_cables" else None)
+        namespace[function] = proxy(function, empties.get(function, lambda *a, **k: None))
 
 
 def is_host_port(port) -> bool:

@@ -114,8 +114,12 @@ Instruments](/source/getting-started/setting-up-instruments)), with these differ
 - **Serial ports have Linux-style names.** Inside the Box, the Mac's `/dev/cu.*` ports
   are called `ttyUSB0`, `ttyUSB1`, ... (USB serial adapters) and `ttyACM0`, ... (USB CDC
   devices such as a J-Link VCOM), numbered in sorted order. A net saved with one of
-  these names, or with a `serial://` address, works unchanged. There are no
-  `/dev/serial/by-id` names, so a net that uses one needs its port renamed.
+  these names, a `serial://` address or a `/dev/serial/by-id/...` name works
+  unchanged.
+- **`/dev/serial/by-path` names are this Mac's own.** A by-path name records a USB
+  socket on the machine that made it. A by-path name from a Linux Box does not work
+  on a Mac. The Mac's names start with `/dev/serial/by-path/platform-macos-`. For a
+  net that works on every Box, use the port's by-id name.
 - **`lager instruments` opens no port on a Mac.** It reads the USB registry and shows
   the serial port of each adapter that it recognizes.
 - **A LabJack T7 reports no serial number** on macOS, so its address ends in `::::INSTR`.
@@ -197,7 +201,6 @@ These work on a Linux Box but not yet on a Mac Box:
 
 - OpenOCD debug probes (J-Link works);
 - Rigol oscilloscopes and logic analyzers (PicoScope works);
-- nets pinned by `/dev/serial/by-id` or `by-path`;
 - webcams and HDMI capture;
 - Bluetooth (BLE) and BluFi;
 - `lager diagnose`, DFU, and `lager update --check` for a local Box.

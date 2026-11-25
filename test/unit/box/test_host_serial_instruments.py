@@ -88,7 +88,7 @@ class _AgentWithOnePort(unittest.TestCase):
         for target, name in ([(serial, "Serial"), (darwin_serial, "NAMES"),
                               (darwin_scan, "_root"), (darwin_scan, "_refresh_locked"),
                               (serial_id, "_SYS_TTY"), (uart_bridge, "Path")]
-                             + [(serial_id, n) for n in darwin_scan._FRESH_LOOKUPS]):
+                             + [(serial_id, n) for n in darwin_scan.REPLACED_IN_SERIAL_ID]):
             patcher = patch.object(target, name, getattr(target, name))
             patcher.start()
             self.addCleanup(patcher.stop)

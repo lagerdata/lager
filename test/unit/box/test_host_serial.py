@@ -324,10 +324,15 @@ class RoundTripTests(unittest.TestCase):
 class StandInSelectionTests(unittest.TestCase):
     def test_only_absent_linux_usb_serial_names_go_to_the_host(self):
         with patch.object(serial_proxy, "_device_exists", lambda path: False):
-            for port in ("/dev/ttyUSB0", "/dev/ttyACM12"):
+            for port in ("/dev/ttyUSB0", "/dev/ttyACM12",
+                         "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0",
+                         "/dev/serial/by-path/pci-0000:00:14.0-usb-0:1.2:1.0-port0"):
                 self.assertTrue(serial_proxy.is_host_port(port), port)
             for port in ("/dev/ttyS0", "/dev/ttyUSB", "/dev/ttyUSB0x", "COM3", "loop://",
-                         "rfc2217://h:1", "/dev/serial/by-id/x", None, 3):
+                         "rfc2217://h:1", "/dev/serial/by-id/", "/dev/serial/by-id/..",
+                         "/dev/serial/by-id/.", "/dev/serial/by-id/a/b",
+                         "/dev/serial/by-uuid/x", "/dev/serial/by-id/../../etc/passwd",
+                         None, 3):
                 self.assertFalse(serial_proxy.is_host_port(port), port)
 
     def test_port_that_exists_in_the_container_is_opened_natively(self):
