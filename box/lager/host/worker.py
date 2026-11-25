@@ -114,6 +114,12 @@ def create_app(endpoint: config.Endpoint) -> Flask:
             from . import darwin_scan
 
             darwin_scan.install_serial()
+            darwin_scan.install_fresh_lookups()
+            # The drivers here (serial supplies, the arm) open ports by
+            # their Linux names; this process has only the Mac's.
+            from . import darwin_serial
+
+            darwin_serial.install_pyserial(refresh=darwin_scan.refresh)
         except Exception:
             logger.exception("serial port support is unavailable")
         # The debug net runs in this process for the container's stand-in.

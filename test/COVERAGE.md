@@ -52,12 +52,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` | 4205 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 5955 (+17 skipped) |
+| `unit (box)` | `test/unit/box/` | 5987 (+17 skipped) |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 420 |
 | `unit (root)` | `test/unit/test_*.py`, `test/unit/tools/` | 243 (+1 skipped) |
-| | **Total gated** | **11017** |
+| | **Total gated** | **11049** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. Each suite's `conftest.py` sets up `sys.modules` before its first import of `lager`.
@@ -504,9 +504,9 @@ test/
     └── test_utils.py     # Python test helpers
 ```
 
-### Local Unit Tests (`test/unit/` -- 377 files)
+### Local Unit Tests (`test/unit/` -- 379 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 208 files)
+#### Box Unit Tests (`test/unit/box/` -- 210 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported. It also stubs the two third-party modules that are neither guarded nor installed
@@ -592,6 +592,8 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_host_bus.py` | SPI and I2C nets in a script, for a container whose USB is on the host (macOS): the stand-in drivers the dispatchers hand out (each call sent to the hardware service's `spi_hs` / `i2c_hs` adapter, results in the drivers' types, config warnings and word size kept, failures raised as `SPIBackendError` / `I2CBackendError`), the unedited `SPINet` and `I2CNet` working on top of them, the adapters taking the arguments the stand-ins send, and the `LAGER_HOSTLINK` switch in `nets/net.py` staying off unless set to `1`. No hardware service or instrument is involved |
 | `test_host_io.py` | GPIO, ADC and DAC nets in a script, for a container whose USB is on the host (macOS): the stand-ins a script gets in place of the drivers (each call sent to the hardware service's adapter for that role with the net, a GPIO wait given longer than its own timeout, values returned in the drivers' types), the adapters having the methods the stand-ins call, and the `LAGER_HOSTLINK` switch in `nets/net.py` staying off unless set to `1`. No hardware service or instrument is involved |
 | `test_host_serial.py` | Serial ports for a container whose USB is on a macOS host: the Mac's ports read from the I/O Registry with their USB device and interface (a two-port chip, a device listed twice, a port outside USB), the Linux names the agent gives them (`ttyUSB`/`ttyACM`, lowest free number, kept while others come and go), the Box's unedited lookups run against the agent's tree (cable list, identity round trip to the right channel, find by USB serial), the agent's routes (allow-list, bus re-read before a lookup, failures), a real RFC 2217 round trip between the container's stand-in and the agent's session over loopback sockets with pySerial's `loop://` as the device (all byte values, line settings, a second open failing as a locked port does on Linux, close releasing the device, an absent port, a departed device read as device-gone, an unconnected session released), which ports go to the host at all, and the `LAGER_HOSTLINK` switches in `serial_id.py` and `uart_bridge.py` plus the startup hook staying off unless set to `1`. No adapter or `ioreg` is involved |
+| `test_host_serial_open.py` | Serial ports opened by drivers inside the macOS host agent, through a pseudo-terminal standing in for the Mac device: `serial.Serial("/dev/ttyUSB0")` opening the Mac port behind the Linux name (data both ways, the port keeping its Linux name, the bus read again before each open, a port built unopened by `serial_for_url`, reopen after close, an absent name failing with errno 2 as on Linux, a held port's error naming the Linux port, other paths opened unchanged, a failed bus read falling back to the last table, installed once), a Rigol DP700's `ASRL/dev/ttyUSB0::INSTR` resource opened by the real pyvisa-py, `glob_ports` answering `/dev/tty*` patterns from the name table and nothing else, `port_exists` answering a Linux name from the table and other paths from disk, `serial_id.glob_ports` and `serial_id.port_exists` equal to `sorted(glob.glob())` and `os.path.exists` on Linux, both EA drivers' port search going through it, and the agent's `serial_id` lookups (including a `serial://` address) re-reading the bus first. No adapter or `ioreg` is involved |
+| `test_host_serial_instruments.py` | Serial instruments driven by their unedited drivers from the macOS host agent, set up as on a Mac (sysfs-shaped tree from a fixture bus scan, refresh-first `serial_id` lookups, Linux-name `serial.Serial`), against a pseudo-terminal answering as the instrument: a Rigol DP711 by `serial://` address (setpoints, output, readback, the port opened once while the cable stays, an unplugged cable read as a dead connection, an absent cable refused) and by a `/dev/ttyUSB0` or ASRL address saved on a Linux Box, through the real pyvisa-py; an EA PSB USB-TMC address falling back to its serial port and passing the IDN check; a DexArm by a Linux port name and by USB serial among the Mac's ports (firmware version, position). No hardware or `ioreg` is involved |
 | `test_hostlink.py` | The link between a Box container and a native host agent, used where the container cannot reach hardware (macOS): protocol version negotiation, the bearer token (fails closed, constant-time), the shared endpoint record (atomic write, no silent overwrite, no token rotation on re-provision), the agent's guard in front of the hardware service (every route needs the token and a supported protocol), and the in-container relay over real loopback sockets (verbatim pass-through of driver errors, one structured error when the agent is down, recovery after the agent restarts on a new port or token, version mismatch pointing at `lager update`, the status endpoint never exposing the token). No driver or instrument is involved The endpoint record cannot move the agent off loopback, and a relay request target of `@host/x`, `http://host/x` or `//host/x` never reaches another host |
 | `test_i2c_dispatcher_overrides.py` | Per-call I2C `overrides` apply to one call only: every dispatcher action, `I2CNet` method and hardware_service adapter call puts the cached driver back afterwards, including when the I/O raises; a `pull_ups`-only override keeps the live clock instead of resetting it to 100 kHz; and `config()` still changes the driver for good |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |

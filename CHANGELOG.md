@@ -12,6 +12,14 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+### Added
+
+- **Serial-port supplies and the DexArm work on a Mac Box.** Rigol DP700 and EA
+  PSB nets (`lager supply`, and the EA as a solar simulator) and DexArm nets
+  (`lager arm`) open their port on a Mac as they do on a Linux Box, including a
+  saved `serial://`, `/dev/ttyUSB0` or `/dev/ttyACM0` address. The host agent
+  opens the Mac port behind each Linux port name.
+
 ### Fixed
 
 - On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.

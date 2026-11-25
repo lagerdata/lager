@@ -16,11 +16,14 @@ saved net records.
 """
 from __future__ import annotations
 
+import fnmatch
 import logging
+import os
 import plistlib
+import re
 import subprocess
 import threading
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,8 @@ logger = logging.getLogger(__name__)
 IOREG_COMMAND = ("/usr/sbin/ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-a", "-w0")
 IOREG_TIMEOUT_S = 5.0
 DEV_PREFIX = "/dev/"
+# The names this module hands out. Only these are translated on open.
+LINUX_PORT = re.compile(r"^/dev/tty(USB|ACM)[0-9]+$")
 
 
 def _number(value) -> Optional[int]:
@@ -112,5 +117,75 @@ class Names:
                     return device
         return None
 
+    def linux_paths(self) -> List[str]:
+        """Every port's Linux path (``/dev/ttyUSB0``, ...), sorted."""
+        with self._lock:
+            return sorted(DEV_PREFIX + name for name in self._by_device.values())
+
 
 NAMES = Names()
+
+
+def glob_ports(pattern: str, names: Optional[Names] = None) -> List[str]:
+    """What ``glob.glob(pattern)`` would return on a Linux Box, sorted.
+
+    Answers ``/dev/ttyUSB*``-style patterns from the name table. No other
+    ``/dev`` path exists under a Linux name here, so any other pattern
+    (``/dev/serial/by-id/*``) matches nothing.
+    """
+    return [path for path in (names or NAMES).linux_paths()
+            if fnmatch.fnmatchcase(path, pattern)]
+
+
+def port_exists(path: str, names: Optional[Names] = None) -> bool:
+    """Whether ``path`` is attached: a Linux name by the table, else on disk."""
+    if isinstance(path, str) and LINUX_PORT.match(path):
+        return (names or NAMES).host_device(path) is not None
+    return os.path.exists(path)
+
+
+def install_pyserial(refresh: Optional[Callable[[], None]] = None,
+                     names: Optional[Names] = None) -> None:
+    """Make ``serial.Serial`` open a Linux name on the Mac port behind it.
+
+    Only the agent calls this. Its drivers (a serial supply's VISA ASRL
+    resource, which pyvisa-py opens through pySerial, or a driver calling
+    ``serial.Serial("/dev/ttyACM0")``) name ports as on a Linux Box. The
+    name is looked up in the table when the port is opened, after
+    ``refresh`` has re-read the bus, and the Mac device is opened in its
+    place. The port keeps its Linux name for everything else, including
+    pySerial's own error messages. Any other path is opened unchanged.
+    """
+    import serial
+
+    if getattr(serial.Serial, "_lager_host_names", False):
+        return
+    table = names or NAMES
+    native = serial.Serial
+
+    class Serial(native):
+        _lager_host_names = True
+
+        def open(self):
+            linux_path = self.portstr
+            if not (isinstance(linux_path, str) and LINUX_PORT.match(linux_path)):
+                return super().open()
+            if refresh is not None:
+                try:
+                    refresh()
+                except Exception:  # noqa: BLE001 - the last table still answers
+                    logger.exception("could not re-read the serial ports")
+            device = table.host_device(linux_path)
+            if device is None:
+                # What pySerial reports on Linux for a port that is not there.
+                raise serial.SerialException(
+                    2, f"could not open port {linux_path}: [Errno 2] "
+                       f"No such file or directory: {linux_path!r}")
+            # pySerial opens ``portstr``; its messages name ``port``.
+            self.portstr = device
+            try:
+                return super().open()
+            finally:
+                self.portstr = linux_path
+
+    serial.Serial = Serial

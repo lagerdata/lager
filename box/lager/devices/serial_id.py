@@ -36,6 +36,7 @@ serial-less adapters (pinned to their physical port, same trade-off as the
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 from pathlib import Path
@@ -386,6 +387,26 @@ def resolve_tty(vid: str, pid: str, serial: Optional[str] = None,
                 return f"/dev/{tty_dev.name}"
 
     return None
+
+
+def glob_ports(pattern: str) -> List[str]:
+    """Serial device paths matching a ``/dev`` glob, sorted.
+
+    For drivers that search for their port by pattern (``/dev/ttyACM*``,
+    ``/dev/serial/by-id/*PSB*``). On a Linux Box this is exactly
+    ``sorted(glob.glob(pattern))``; a host whose ports carry other names
+    answers it with the Linux names instead.
+    """
+    return sorted(glob.glob(pattern))
+
+
+def port_exists(path: str) -> bool:
+    """Whether the serial device at ``path`` (``/dev/ttyUSB0``) is attached.
+
+    On a Linux Box this is exactly ``os.path.exists(path)``; a host whose
+    ports carry other names answers it from its own table.
+    """
+    return os.path.exists(path)
 
 
 def resolve_address_to_tty(address: str) -> Optional[str]:

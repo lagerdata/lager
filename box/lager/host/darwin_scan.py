@@ -32,6 +32,7 @@ import logging
 import os
 import pathlib
 import shutil
+import functools
 import tempfile
 import threading
 
@@ -44,7 +45,8 @@ SYSFS_TTY = "/sys/class/tty"
 _ATTRIBUTES = (("idVendor", "vid"), ("idProduct", "pid"), ("serial", "serial"),
                ("product", "product"), ("manufacturer", "manufacturer"))
 
-_lock = threading.Lock()
+# Reentrant: a lookup that refreshes first may run inside another that did.
+_lock = threading.RLock()
 _scanner = None
 _root = None
 
@@ -177,6 +179,55 @@ def install_serial(root=None) -> None:
         _root = _root or root or default_root()
         serial_id._SYS_TTY = pathlib.Path(_root, "class", "tty")
         uart_bridge.Path = _redirected_path(_root)
+
+
+# The serial_id lookups whose answer depends on what is plugged in now.
+_FRESH_LOOKUPS = ("identity_for_tty", "resolve_identity", "resolve_tty", "list_cables",
+                  "glob_ports", "port_exists")
+
+
+def _fresh(lookup):
+    @functools.wraps(lookup)
+    def call(*args, **kwargs):
+        with _lock:
+            try:
+                _refresh_locked()
+            except Exception:  # noqa: BLE001 - the last tree still answers
+                logger.exception("could not re-read the USB bus")
+            return lookup(*args, **kwargs)
+
+    call._lager_fresh = True
+    return call
+
+
+def install_fresh_lookups() -> None:
+    """Re-read the bus before each of ``serial_id``'s lookups, in this process.
+
+    Only the agent calls this, after :func:`install_serial`. On a Linux Box
+    sysfs is always current; the tree here is only as current as its last
+    write, and the agent's drivers (a serial supply resolving its
+    ``serial://`` address) call these lookups directly, not through the
+    serial routes that refresh first. ``glob_ports`` and ``port_exists``
+    answer from the Linux name table, which the refresh also brings up to
+    date.
+    """
+    from lager.devices import serial_id
+
+    with _lock:
+        if not getattr(serial_id.glob_ports, "_lager_host_names", False):
+            def glob_ports(pattern):
+                return darwin_serial.glob_ports(pattern)
+
+            def port_exists(path):
+                return darwin_serial.port_exists(path)
+
+            for function in (glob_ports, port_exists):
+                function._lager_host_names = True
+                setattr(serial_id, function.__name__, function)
+        for name in _FRESH_LOOKUPS:
+            lookup = getattr(serial_id, name)
+            if not getattr(lookup, "_lager_fresh", False):
+                setattr(serial_id, name, _fresh(lookup))
 
 
 def _refresh_locked() -> None:

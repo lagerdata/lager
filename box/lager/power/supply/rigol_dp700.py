@@ -26,7 +26,6 @@ SCPI NOTES (verify against the DP700 Programming Guide on first bench bring-up):
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from typing import Any, Optional
@@ -37,6 +36,7 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - box always has 
     pyvisa = None
 
 from lager.devices.catalog import get_device, serial_params, limits_for
+from lager.devices import serial_id
 from lager.devices.serial_id import is_serial_address, resolve_address_to_tty
 from lager.util.on_off import parse_on_off
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrap
@@ -260,7 +260,7 @@ class RigolDP700(SupplyNet):
         NoneType AttributeError — which ``_safe_query`` deliberately re-raises
         as a programming error instead of reporting a missing cable.
         """
-        if self._durable and self._opened_tty and not os.path.exists(self._opened_tty):
+        if self._durable and self._opened_tty and not serial_id.port_exists(self._opened_tty):
             if not self._reopen():
                 raise DeviceNotFoundError(
                     f"DP700 cable for '{self._raw_address}' is not currently "
@@ -275,7 +275,7 @@ class RigolDP700(SupplyNet):
         of reusing a session bound to a gone tty.
         """
         if self._durable and self._opened_tty:
-            return os.path.exists(self._opened_tty)
+            return serial_id.port_exists(self._opened_tty)
         return True
 
     # ------------------------------ IO shims ------------------------------
