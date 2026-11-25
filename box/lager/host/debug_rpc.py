@@ -45,6 +45,10 @@ _POLL_S = 0.1
 # From the container only content is accepted: a path would name a host file.
 _SCRIPT_KWARGS = ("script", "openocd_config", "jlink_script")
 _SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,15}$")
+# The firmware types DebugNet.flash() accepts. The temp file takes its suffix
+# from this table, never from the request, so no character the container sent
+# reaches the file name.
+_FLASH_SUFFIXES = {".hex": ".hex", ".bin": ".bin", ".elf": ".elf"}
 
 
 class _Refused(ValueError):
@@ -138,16 +142,33 @@ def _rtt_open(dbg, kwargs) -> dict:
     return {"port": port}
 
 
-def _flash(dbg, args, kwargs, firmware) -> object:
+def _flash_address(args, kwargs):
+    """The one argument flash() takes besides the file: ``flash_address``,
+    positional (as the container's stand-in sends it) or by name. Anything
+    else is refused, so nothing from the request can stand in for the file."""
+    if len(args) > 2 or set(kwargs) - {"flash_address"}:
+        raise _Refused("flash takes the firmware and flash_address only")
+    if len(args) == 2 and "flash_address" in kwargs:
+        raise _Refused("flash_address given twice")
+    if "flash_address" in kwargs:
+        return kwargs["flash_address"]
+    return args[1] if len(args) == 2 else None
+
+
+def _flash(dbg, firmware, flash_address) -> object:
     """Flash from bytes: the container's path means nothing here."""
-    suffix = os.path.splitext(str(firmware.get("name") or ""))[1]
-    if not _SUFFIX.match(suffix):
+    ext = os.path.splitext(str(firmware.get("name") or ""))[1].lower()
+    suffix = _FLASH_SUFFIXES.get(ext)
+    if suffix is None:
+        if _SUFFIX.match(ext):
+            # The same refusal DebugNet.flash() gives, before any file is written.
+            raise ValueError(f"Unsupported firmware file type: {ext}")
         suffix = ".bin"
     fd, path = tempfile.mkstemp(prefix="lager-flash-", suffix=suffix)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(base64.b64decode(firmware["data"]))
-        return dbg.flash(path, *args[1:], **kwargs)
+        return dbg.flash(path, flash_address)
     finally:
         try:
             os.unlink(path)
@@ -171,11 +192,14 @@ def install(app: Flask) -> Flask:
             return jsonify(protocol.error_body(
                 protocol.ERR_BAD_REQUEST, "args must be a list and kwargs an object.")), 400
         firmware = data.get("firmware")
+        flash_address = None
         try:
             if method == "flash" and not (isinstance(firmware, dict)
                                           and isinstance(firmware.get("data"), str)):
                 # A path here would be read on this machine, not in the container.
                 raise _Refused("flash needs the firmware's bytes, not a path")
+            if method == "flash":
+                flash_address = _flash_address(args, kwargs)
             if method == "connect":
                 _check_script_kwargs(kwargs)
         except _Refused as exc:
@@ -187,7 +211,7 @@ def install(app: Flask) -> Flask:
             elif method == "rtt_open":
                 result = _rtt_open(dbg, kwargs)
             elif method == "flash":
-                result = _flash(dbg, args, kwargs, firmware)
+                result = _flash(dbg, firmware, flash_address)
             elif method in _METHODS:
                 result = getattr(dbg, method)(*args, **kwargs)
             else:
