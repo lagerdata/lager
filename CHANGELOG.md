@@ -12,6 +12,8 @@ Write one bullet per change, in one to three sentences: what changed for a user,
      files its entry here; without it the entry lands inside the released
      section below, with no merge conflict to catch it. -->
 
+## [0.66.0] - 2026-11-24
+
 ### Added
 
 - **A Lager Box can run on an Apple silicon Mac.** `lager install` with no
@@ -22,9 +24,10 @@ Write one bullet per change, in one to three sentences: what changed for a user,
   network, with no firewall. See the "Setting Up a Lager Box on a Mac" page.
 
 - **The Mac installer sets up the vendor libraries.** It installs LabJack LJM
-  (no admin rights needed), libusb, SEGGER J-Link and the ARM GDB, and reports
-  each one it cannot set up as "Not set up". `--skip-jlink` leaves out J-Link
-  and the ARM GDB.
+  (no admin rights needed), libusb, Rust, SEGGER J-Link, PicoScope 7 and the ARM
+  GDB, and reports each one it cannot set up as "Not set up". `--skip-jlink`
+  leaves out J-Link and the ARM GDB; `--skip-picoscope` leaves out PicoScope 7
+  and the scope daemon.
 
 - **`lager update` and `lager uninstall` work on a Mac Box.** With no `--box` or
   `--ip` on a Mac, they act on the Box on that Mac. An update leaves out what the
