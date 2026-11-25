@@ -73,7 +73,10 @@ def _serial_from_usbtmc(addr: str) -> Optional[str]:
 
 def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
     """Find a serial device path matching the given hint (for EA USB devices)."""
-    import glob, os
+    import os
+
+    from lager.devices import serial_id
+
     by_id = "/dev/serial/by-id"
     patterns: list[str] = []
     if serial_hint:
@@ -85,12 +88,12 @@ def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
     else:
         patterns += [os.path.join(by_id, "*EA*"), os.path.join(by_id, "*PSB*")]
     for pat in patterns:
-        for path in sorted(glob.glob(pat)):
+        for path in serial_id.glob_ports(pat):
             if os.path.islink(path) or os.path.exists(path):
                 return path
     # Fallback to generic ACM/USB if by-id not found
     for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
-        found = sorted(glob.glob(pat))
+        found = serial_id.glob_ports(pat)
         if found:
             return found[0]
     return None

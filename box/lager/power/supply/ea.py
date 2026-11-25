@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import re
-import glob
 import time
 from typing import Any, Optional
 
@@ -50,6 +49,8 @@ def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
     """
     Prefer stable /dev/serial/by-id symlinks, else fall back to ttyACM*/ttyUSB*.
     """
+    from lager.devices import serial_id
+
     by_id = "/dev/serial/by-id"
     patterns: list[str] = []
     if serial_hint:
@@ -62,12 +63,12 @@ def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
         patterns += [os.path.join(by_id, "*EA*"), os.path.join(by_id, "*PSB*")]
 
     for pat in patterns:
-        for path in sorted(glob.glob(pat)):
+        for path in serial_id.glob_ports(pat):
             if os.path.islink(path) or os.path.exists(path):
                 return path
 
     for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
-        found = sorted(glob.glob(pat))
+        found = serial_id.glob_ports(pat)
         if found:
             return found[0]
 
