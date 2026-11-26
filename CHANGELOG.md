@@ -4,48 +4,13 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 Releases 0.2.17 through 0.39.1 are in [docs/changelog/0.2-0.39.md](docs/changelog/0.2-0.39.md).
 
-Write one bullet per change, in one to three sentences: what changed for a user, and the command or API it affects. Put diagnosis, measurements, and test detail in the pull request and the release notes.
+A change adds its entry as a file under [changelog.d/](changelog.d/README.md), not here; the release moves those files into a version section. Write one bullet per change, in one to three sentences: what changed for a user, and the command or API it affects. Put diagnosis, measurements, and test detail in the pull request and the release notes.
 
 ## [Unreleased]
 
-<!-- Keep this heading. A branch cut before a release and merged after it
-     files its entry here; without it the entry lands inside the released
-     section below, with no merge conflict to catch it. -->
-
-### Added
-
-- **Serial-port supplies and the DexArm work on a Mac Box.** Rigol DP700 and EA
-  PSB nets (`lager supply`, and the EA as a solar simulator) and DexArm nets
-  (`lager arm`) open their port on a Mac as they do on a Linux Box, including a
-  saved `serial://`, `/dev/ttyUSB0` or `/dev/ttyACM0` address. The host agent
-  opens the Mac port behind each Linux port name.
-
-- **`/dev/serial/by-id` nets work on a Mac Box.** A net saved on a Linux Box
-  with a `/dev/serial/by-id/...` port opens unchanged on a Mac. The Mac also has
-  `/dev/serial/by-path/platform-macos-...` names of its own. A by-path name
-  saved on a Linux Box names that machine's USB socket, so it is refused on a
-  Mac with an error that says to use the by-id name instead.
-
-### Changed
-
-- **`POST /nets/power-up` reports how each device holds its levels.** Every
-  device entry, and so `lager nets apply-power-up --json`, now carries
-  `backend` (`labjack`), `storage` (`flash`: the instrument applies the level
-  itself as it boots) and `coverage` (what covers the pin before then). This
-  prepares power-up levels for instruments that keep no boot state.
-
-### Fixed
-
-- On a Mac Box, `lager nets state` no longer reports a net with a `/dev/ttyUSB*`
-  or `/dev/ttyACM*` address as "not connected" while its adapter is plugged in.
-
-- On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.
-- A LabJack U3 that is unplugged and plugged back in is found again without a manual restart. When the kernel lists the U3 on its port but the Box's hardware service cannot see it, the service now restarts itself and the request answers "restarting"; the next `lager gpi`, `gpo`, `adc` or `dac` call on the net works. A U3 that another process holds, a LabJack T7, and a macOS Box are unchanged.
-- An FTDI part (FT232H, FT2232H, FT4232H) that is plugged back in can be opened
-  again at once where libusb follows hotplug itself, as on a macOS Box. The first
-  `lager gpi`, `gpo`, `i2c` or `spi` call used to fail with "No such device",
-  or keep failing if a call ran while the part was unplugged, because pyftdi
-  still listed the old device. A Linux Box is unchanged.
+<!-- Keep this heading, and keep it empty. Each change adds a file under
+     changelog.d/ instead (see changelog.d/README.md); the release moves
+     those files into a version section here. -->
 
 ## [0.66.0] - 2026-11-24
 

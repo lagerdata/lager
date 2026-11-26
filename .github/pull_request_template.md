@@ -16,7 +16,8 @@ Describe how you tested these changes:
 ## Checklist
 
 - [ ] Code follows the project's style guidelines
-- [ ] Tests added or updated, and `test/COVERAGE.md` refreshed (`python tools/check_coverage_counts.py --fix`)
+- [ ] Tests added or updated, with a `test/COVERAGE.md` row for each new test file (`python tools/check_coverage_counts.py`)
+- [ ] A user-facing change has a file under `changelog.d/` (`python tools/changelog_fragments.py --check`)
 - [ ] Copyright headers are present on new files
 - [ ] CHANGELOG.md updated (if user-facing change)
 - [ ] Documentation updated (if applicable)

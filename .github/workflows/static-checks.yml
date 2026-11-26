@@ -248,18 +248,25 @@ jobs:
             --import-mode=importlib -c /dev/null
         shell: bash
 
-      # test/COVERAGE.md opens with "Counts here are checked against disk", and
-      # until now nothing checked it. It drifted three times in one afternoon --
-      # two merges added 37 gated tests between them without touching the file,
-      # leaving it understating the gate by 290. An unverified number still
-      # reads as authoritative, which makes it worse than no number.
+      # Every test file needs a row in test/COVERAGE.md's inventory, and no row
+      # may name a deleted file. Filesystem only; no suite runs.
       #
-      # This runs each suite and compares against the table. It means a PR that
-      # adds or removes a test must update COVERAGE.md -- which is already the
-      # rule the file states, now enforced. `--fix` rewrites the table.
-      - name: COVERAGE.md counts match reality
+      # The run counts and "(-- N files)" headers are NOT checked here: every
+      # branch that adds a test moves those same lines, so gating them per PR
+      # put every open branch into conflict on each merge. The release refreshes
+      # them with `check_coverage_counts.py --counts --fix`.
+      - name: COVERAGE.md inventory matches disk
         if: always()
         run: python tools/check_coverage_counts.py
+        shell: bash
+
+      # Changelog entries are one file per change under changelog.d/, and the
+      # Unreleased section of CHANGELOG.md stays empty. Every branch used to
+      # add its bullet to that one section, so every merge put every other
+      # open branch into conflict. The release assembles the fragments.
+      - name: Changelog fragments are valid
+        if: always()
+        run: python tools/changelog_fragments.py --check
         shell: bash
 
       # click's Exit and Abort subclass RuntimeError, so a broad

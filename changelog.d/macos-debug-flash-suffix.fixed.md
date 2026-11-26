@@ -1,0 +1,1 @@
+- On a macOS Box, the host agent's debug flash call now accepts only the firmware and `flash_address`, and refuses an unsupported firmware type before it writes a temporary file. The temporary file's name takes its suffix from the supported types (`.hex`, `.bin`, `.elf`), never from the request. `lager debug <net> flash` and `DebugNet.flash()` are unchanged.
