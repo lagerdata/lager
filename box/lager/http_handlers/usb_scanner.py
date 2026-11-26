@@ -466,7 +466,8 @@ _PICO_DAEMON_TIMEOUT = 1.5
 def _pico_channel_count(model: str) -> int:
     """Number of analog channels for a PicoScope, from a model string.
 
-    The fallback for when the scope daemon cannot say (_pico_daemon_capabilities).
+    The fallback for when the scope daemon cannot say (_pico_daemon_capabilities),
+    even after _pico_wait_for_open has given it time to open the unit.
     Pico's model numbers encode the channel count in the second digit:
     2204A and 3204D and 5242D are 2-channel, 2405A and 3403D and 5442D and
     6404 are 4-channel. But real units report a series name as their USB
@@ -489,14 +490,37 @@ def _pico_channel_count(model: str) -> int:
     return channels if channels in (2, 4) else 2
 
 
-def _pico_daemon_capabilities() -> Optional[dict]:
-    """What the scope daemon detected on the PicoScope it has open, or None.
+# _pico_daemon_capabilities's answer for "the daemon is up but has no unit open
+# yet", which is not the same as None: a scope on the bus is then one the
+# daemon is about to open, or cannot.
+_PICO_NOT_READY = object()
+
+# How long a scan waits for the daemon to open a PicoScope that is on the bus.
+# The daemon retries every 2 s and an open measured 3.8 s (firmware upload), so
+# a scan made right after plugging one in would otherwise land in that gap,
+# report the two-channel guess, and leave whoever asked -- the nets TUI scans
+# once, at launch -- showing it for good.
+_PICO_OPEN_WAIT = 8.0
+_PICO_OPEN_POLL = 0.5
+
+# After a wait that ran out, how long before the same units are waited on
+# again. A scope the daemon cannot open (no driver, another program holding
+# it) must not add _PICO_OPEN_WAIT to every scan.
+_PICO_OPEN_WAIT_AGAIN = 60.0
+
+# The units the last fruitless wait was for, and when it ended.
+_pico_waited: Optional[tuple] = None
+
+
+def _pico_daemon_capabilities():
+    """What the scope daemon detected on the PicoScope it has open.
 
     The daemon opens the unit and reads its model from PICO_VARIANT_INFO, the
     only place a PicoScope says which model it is. Asking it is not a device
     open: the daemon accepts several clients and keeps the USB handle, so the
     scan does not disturb a capture in progress. None when the daemon is not
-    running, has no unit open, or does not answer in time.
+    running or does not answer in time, and _PICO_NOT_READY when it answers
+    that it has no unit open.
     """
     try:
         from lager.measurement.scope import daemon_client
@@ -505,12 +529,51 @@ def _pico_daemon_capabilities() -> Optional[dict]:
     try:
         response = daemon_client.command("GetCapabilities",
                                          timeout=_PICO_DAEMON_TIMEOUT)
+    except daemon_client.ScopeNotReady:
+        return _PICO_NOT_READY
     except Exception:
-        # Unreachable, timed out, or an Error reply for no unit open: all of
-        # them leave the scan on the product-string fallback.
+        # Unreachable, timed out, or some other Error reply: all of them
+        # leave the scan on the product-string fallback.
+        #
+        # KNOWN GAP, not yet fixed: a daemon that has just started does not
+        # listen until its first open attempt ends (scope_thread.rs, spawn),
+        # so for the 2-4 s after the box or the Mac host agent starts with a
+        # PicoScope attached it is unreachable, not "not ready". A scan in
+        # that window lands here, is not waited on, and lists a four-channel
+        # scope with two. Waiting here instead would slow every scan on a box
+        # with a scope and no daemon; the fix is for the daemon to listen
+        # before it opens, so this window answers _PICO_NOT_READY too.
         return None
     capabilities = response.get("capabilities") if isinstance(response, dict) else None
     return capabilities if isinstance(capabilities, dict) else None
+
+
+def _pico_wait_for_open(units: frozenset) -> Optional[dict]:
+    """Give the daemon time to open a PicoScope it has not opened yet.
+
+    Called when ``units`` (their sysfs names) are on the bus and the daemon
+    said it has none open. Returns its capabilities once it does, or None
+    after _PICO_OPEN_WAIT, or as soon as the daemon stops answering. A wait
+    that runs out is not repeated for the same units for
+    _PICO_OPEN_WAIT_AGAIN.
+    """
+    global _pico_waited
+    if _pico_waited is not None:
+        waited_for, ended = _pico_waited
+        if units <= waited_for and time.monotonic() - ended < _PICO_OPEN_WAIT_AGAIN:
+            return None
+    deadline = time.monotonic() + _PICO_OPEN_WAIT
+    while time.monotonic() < deadline:
+        time.sleep(_PICO_OPEN_POLL)
+        capabilities = _pico_daemon_capabilities()
+        if capabilities is not _PICO_NOT_READY:
+            _pico_waited = None
+            return capabilities
+    logger.warning(
+        "the scope daemon did not open a PicoScope within %.0f s; "
+        "listing it with the two-channel default", _PICO_OPEN_WAIT)
+    _pico_waited = (units, time.monotonic())
+    return None
 
 
 def _pico_daemon_channels(serial: Optional[str], capabilities: Optional[dict],
@@ -539,10 +602,10 @@ def _pico_daemon_channels(serial: Optional[str], capabilities: Optional[dict],
     return min(channels, _PICO_MAX_CHANNELS)
 
 
-def _pico_device_count(sys_usb: Path) -> int:
-    """How many PicoScopes are attached, by vendor id."""
-    return sum(1 for dev in sys_usb.iterdir()
-               if _read_sysfs(dev / "idVendor") == _PICO_VID)
+def _pico_devices(sys_usb: Path) -> frozenset:
+    """The sysfs names of the attached PicoScopes, by vendor id."""
+    return frozenset(dev.name for dev in sys_usb.iterdir()
+                     if _read_sysfs(dev / "idVendor") == _PICO_VID)
 
 
 # Vendors whose every device is one instrument family, matched when the exact
@@ -942,8 +1005,11 @@ def scan_usb() -> List[dict]:
             # device open: the scan must not disturb a capture in progress.
             # Both lookups happen once per scan, however many units there are.
             if pico_daemon is _UNASKED:
+                pico_units = _pico_devices(sys_usb)
+                pico_count = len(pico_units)
                 pico_daemon = _pico_daemon_capabilities()
-                pico_count = _pico_device_count(sys_usb)
+                if pico_daemon is _PICO_NOT_READY:
+                    pico_daemon = _pico_wait_for_open(pico_units)
             model = _read_sysfs(dev / "product")
             channels = _pico_daemon_channels(serial, pico_daemon,
                                              only_pico=pico_count == 1)
