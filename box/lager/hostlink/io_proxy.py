@@ -11,6 +11,12 @@ call goes to the hardware service's own adapter for that role (``gpio_hs``,
 ``lager dac`` already take -- which on this kind of Box runs in the host
 agent, under the same per-device lock as every other caller.
 
+What each call sends is what that route sends, built by the same function
+(``device_identity.hardware_service_net_info``): the net's name, its
+instrument and the physical device's lock key, never the saved address. The
+hardware service keys its device cache on an address when it is given one,
+so sending it would hand every net on one instrument the first net's adapter.
+
 Used only when the container is started with ``LAGER_HOSTLINK=1``; a Linux
 Box never imports this.
 
@@ -23,6 +29,7 @@ from ..io.adc.adc_net import ADCBase
 from ..io.dac.dac_net import DACBase
 from ..io.gpio.gpio_net import GPIOBase
 from ..nets.device import Device
+from ..nets.device_identity import hardware_service_net_info
 
 # Added to a wait's own timeout so the wait, not the HTTP call, gives up first.
 _WAIT_MARGIN_S = 10.0
@@ -38,8 +45,8 @@ def _pin(net_info):
 class HostGPIO(GPIOBase):
     def __init__(self, name, net_info):
         super().__init__(name, _pin(net_info))
-        self._net_info = dict(net_info)
-        self._device = Device("gpio_hs", self._net_info)
+        self._sent = hardware_service_net_info("gpio", name, net_info)
+        self._device = Device("gpio_hs", self._sent)
 
     def input(self) -> int:
         return int(self._device.input())
@@ -49,7 +56,7 @@ class HostGPIO(GPIOBase):
 
     def wait_for_level(self, level, timeout=None, poll_interval=0.01, **kwargs):
         budget = _NO_TIMEOUT_S if timeout is None else float(timeout) + _WAIT_MARGIN_S
-        device = Device("gpio_hs", self._net_info, timeout=budget)
+        device = Device("gpio_hs", self._sent, timeout=budget)
         return float(device.wait_for_level(level, timeout=timeout,
                                            poll_interval=poll_interval, **kwargs))
 
@@ -57,7 +64,7 @@ class HostGPIO(GPIOBase):
 class HostADC(ADCBase):
     def __init__(self, name, net_info):
         super().__init__(name, _pin(net_info))
-        self._device = Device("adc_hs", dict(net_info))
+        self._device = Device("adc_hs", hardware_service_net_info("adc", name, net_info))
 
     def input(self) -> float:
         return float(self._device.input())
@@ -66,7 +73,7 @@ class HostADC(ADCBase):
 class HostDAC(DACBase):
     def __init__(self, name, net_info):
         super().__init__(name, _pin(net_info))
-        self._device = Device("dac_hs", dict(net_info))
+        self._device = Device("dac_hs", hardware_service_net_info("dac", name, net_info))
 
     def get_voltage(self) -> float:
         return float(self._device.input())
