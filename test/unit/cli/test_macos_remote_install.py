@@ -485,6 +485,17 @@ def test_a_release_cli_lets_the_mac_download_the_source(lager_home):
     assert _saved(lager_home)["m"]["python_port"] == macos_box.PYTHON_SERVICE_PORT
 
 
+def test_a_named_version_is_downloaded_by_the_mac_not_copied(lager_home):
+    args = dict(ssh_host="me@10.0.0.6", ip="10.0.0.6", user="me", box="m",
+                identity_args=[], version="de/macos-hostlink-net-info", yes=True,
+                version_defaulted=False)
+    with mock.patch.object(macos_box, "running_from_checkout", return_value=Path("/co")):
+        _installer, source, ran = _install_remote(lager_home, args, {"ok": True})
+    source.assert_not_called()
+    assert "--version de/macos-hostlink-net-info" in ran.call_args.args[2]
+    assert "--source" not in ran.call_args.args[2]
+
+
 class _Stop(Exception):
     """Raised by the first Linux-only step, to end the command there."""
 
@@ -560,7 +571,8 @@ def test_update_of_a_remote_mac_is_the_install_again(lager_home):
         _remote_macos.update_remote_macos(ctx, ip="h", user="me", version="v2", yes=True)
     assert again.call_args.kwargs == dict(ssh_host="me@h", ip="h", user="me", box=None,
                                           identity_args=["-i", "k"], version="v2",
-                                          yes=True, fork=None, update=True)
+                                          yes=True, fork=None, update=True,
+                                          version_defaulted=False)
     ctx.exit.side_effect = click.exceptions.Exit(2)
     with pytest.raises(click.exceptions.Exit):
         _remote_macos.update_remote_macos(ctx, ip="h", user="me", version=None,

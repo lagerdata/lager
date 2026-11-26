@@ -88,11 +88,17 @@ Useful options:
 |---|---|
 | `--skip-jlink` | Leave out SEGGER J-Link and the ARM GDB |
 | `--skip-picoscope` | Leave out PicoScope and the scope daemon (needs Rust) |
-| `--version vX.Y.Z` | Install that release instead of this CLI's version |
+| `--version VERSION` | Install that release, branch or commit instead of this CLI's version |
 | `--yes` | Accept the defaults without asking |
 
-`--version` takes a release, for example `v0.66.0`. A branch name or a commit has no Box
-image, so the installer stops before it changes anything.
+`--version` takes a release (`v0.66.0`), a branch (`main`, `my-fix`) or a full 40-character
+commit SHA. A branch or commit has no Box image of its own: its Box code runs on the published
+image of the release its `cli/__init__.py` names, so changes it makes to the image itself (the
+Dockerfile or the image's Python packages) are not included. `lager install --version <branch>`
+again picks up new commits on that branch.
+
+A `--version` you name is installed even when you run the CLI from a checkout; leave it out to
+install the checkout itself.
 
 ---
 
