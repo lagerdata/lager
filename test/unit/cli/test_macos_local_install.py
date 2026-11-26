@@ -1048,27 +1048,178 @@ def test_skips_are_remembered_and_read_back(tmp_path):
         assert macos_box.remembered_skips() == ["jlink"]
 
 
-@pytest.mark.parametrize("version", ["v0.66.0", "0.66.0", "v1.2.3"])
-def test_a_release_version_is_accepted(version):
-    macos_box.check_release_version(version)
+@pytest.mark.parametrize("version", ["v0.66.0", "0.66.0", "v1.2.3", "main", "staging",
+                                     "de/macos-box", "a" * 40, "v0.66.0-rc1",
+                                     "release_1.x"])
+def test_a_release_branch_or_commit_is_accepted(version):
+    macos_box.check_version(version)
 
 
-@pytest.mark.parametrize("version", ["main", "staging", "de/macos-box", "",
-                                     "a" * 40, "v0.66", "v0.66.0-rc1", "v0.66.0; rm -rf ~"])
-def test_a_version_with_no_image_is_refused_before_anything_changes(version):
+@pytest.mark.parametrize("version", ["", "v0.66.0; rm -rf ~", "-x", "--upload-pack=evil",
+                                     "a..b", "a//b", "feature/", "x.lock", "has space",
+                                     "/abs"])
+def test_a_version_that_is_no_ref_is_refused_before_anything_changes(version):
     with pytest.raises(LagerError) as caught:
-        macos_box.check_release_version(version)
-    assert "not one" in caught.value.problem
+        macos_box.check_version(version)
+    assert "is not a Lager release, branch or commit" in caught.value.problem
 
 
-def test_install_refuses_a_branch_before_touching_docker(tmp_path):
+def test_install_refuses_a_bad_version_before_touching_docker(tmp_path):
     layout = macos_box.Layout(home=tmp_path)
     with mock.patch.object(macos_box, "running_from_checkout", return_value=None), \
             mock.patch.object(macos_box, "check_platform"), \
             mock.patch.object(macos_box, "ensure_docker") as docker:
         with pytest.raises(LagerError):
-            macos_box.install("main", "0.66.0", layout=layout, echo=lambda *a: None)
+            macos_box.install("main; rm -rf ~", "0.66.0", layout=layout, echo=lambda *a: None)
     docker.assert_not_called()
+
+
+SHA = "37e453076622280e72783edf01f684d793f6bb59"
+
+
+def _git(sha=SHA, fail_on=None, with_host=True):
+    """A stand-in for git: the checkout step lays out a Box tree."""
+    def answer(argv, **kwargs):
+        if fail_on and fail_on in argv:
+            return _done(128, err=f"fatal: couldn't find remote ref {argv[-1]}")
+        if "checkout" in argv:
+            tree = Path(argv[argv.index("-C") + 1])
+            host = tree / "box" / "lager" / ("host" if with_host else "other")
+            host.mkdir(parents=True)
+            (host / "__main__.py").write_text("")
+        if "rev-parse" in argv:
+            return _done(out=sha + "\n")
+        return _done()
+    return answer
+
+
+def _fetch(layout, ref, **kw):
+    answer = _git(**kw)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        return answer(argv, **kwargs)
+    with mock.patch.object(macos_box.shutil, "which", return_value="/usr/bin/git"):
+        return macos_box.fetch_ref(layout, ref, run), calls
+
+
+def test_a_branch_is_fetched_into_a_tree_named_by_its_commit(layout):
+    tree, calls = _fetch(layout, "de/macos-hostlink-net-info")
+    assert tree == layout.source_dir / "commits" / SHA
+    assert (tree / "box" / "lager" / "host" / "__main__.py").exists()
+    assert not (layout.source_dir / ".incoming").exists()
+    fetch = next(c for c in calls if "fetch" in c)
+    assert fetch[-2:] == [macos_box.SOURCE_REPO, "de/macos-hostlink-net-info"]
+    assert "--depth" in fetch
+
+
+def test_a_commit_already_here_is_reused_and_a_moved_branch_gets_a_new_tree(layout):
+    first, _ = _fetch(layout, "main")
+    (first / "marker").write_text("running")
+    again, _ = _fetch(layout, "main")
+    assert again == first and (first / "marker").exists(), "the running tree is left alone"
+    moved, _ = _fetch(layout, "main", sha="b" * 40)
+    assert moved != first and first.exists()
+
+
+def test_a_missing_branch_is_an_error_and_leaves_nothing_behind(layout):
+    with pytest.raises(LagerError) as caught:
+        _fetch(layout, "no-such-branch", fail_on="fetch")
+    assert caught.value.problem == "The CLI did not download Lager no-such-branch."
+    assert "couldn't find remote ref" in caught.value.cause
+    assert not (layout.source_dir / ".incoming").exists()
+    assert not (layout.source_dir / "commits").exists()
+
+
+def test_a_branch_without_the_mac_box_is_refused(layout):
+    with pytest.raises(LagerError) as caught:
+        _fetch(layout, "old-branch", with_host=False)
+    assert "predates the macOS Box" in caught.value.problem
+
+
+def test_only_the_running_commit_tree_is_kept(layout):
+    keep = layout.source_dir / "commits" / SHA
+    old = layout.source_dir / "commits" / ("c" * 40)
+    for tree in (keep, old):
+        tree.mkdir(parents=True)
+    macos_box.prune_commit_trees(layout, keep)
+    assert keep.exists() and not old.exists()
+
+
+def test_a_release_still_uses_its_own_clone_and_a_branch_is_fetched(layout):
+    with mock.patch.object(macos_box, "running_from_checkout", return_value=Path("/co")), \
+            mock.patch.object(macos_box, "fetch_ref", return_value=Path("/fetched")) as fetch:
+        assert macos_box.ensure_source(layout, "main") == Path("/co")
+        assert macos_box.ensure_source(layout, "main", use_checkout=False) == Path("/fetched")
+    fetch.assert_called_once()
+
+
+def _install_steps(tmp_path):
+    """Every step of an install stubbed, so install() itself can be checked."""
+    names = ("ensure_libusb", "agent_loads_libusb", "build_labjack_library",
+             "install_ljm_library", "ensure_rust", "build_scope_daemon",
+             "ensure_picoscope_app", "ensure_jlink", "ensure_arm_gdb", "start_agent",
+             "start_container", "check_platform", "ensure_config_dir", "write_state",
+             "remember_skips", "prune_commit_trees")
+    patches = {name: mock.patch.object(macos_box, name, return_value=None) for name in names}
+    patches.update({
+        "ensure_docker": mock.patch.object(macos_box, "ensure_docker", return_value=("docker", {})),
+        "ensure_agent_env": mock.patch.object(macos_box, "ensure_agent_env", return_value=[]),
+        "wait_for_link": mock.patch.object(macos_box, "wait_for_link", return_value=""),
+        "BackgroundPull": mock.patch.object(macos_box, "BackgroundPull"),
+        "running_from_checkout": mock.patch.object(macos_box, "running_from_checkout",
+                                                   return_value=tmp_path / "checkout"),
+    })
+    return patches
+
+
+def test_a_branch_runs_its_code_on_the_image_of_its_release(layout, tmp_path):
+    tree = layout.source_dir / "commits" / SHA
+    lines = []
+    with contextlib.ExitStack() as stack:
+        called = {n: stack.enter_context(p) for n, p in _install_steps(tmp_path).items()}
+        stack.enter_context(mock.patch.object(macos_box, "fetch_ref", return_value=tree))
+        stack.enter_context(mock.patch.object(macos_box, "source_version", return_value="0.66.0"))
+        result = macos_box.install("de/macos-hostlink-net-info", "0.66.0", echo=lines.append,
+                                   layout=layout, skip=["jlink", "picoscope"],
+                                   use_checkout=False)
+    assert result.source == tree
+    assert result.image == "ghcr.io/lagerdata/lager-box:v0.66.0"
+    called["start_container"].assert_called_once()
+    assert called["start_container"].call_args.args[3] == tree
+    called["write_state"].assert_called_once_with(
+        "0.66.0", "0.66.0", f"de/macos-hostlink-net-info@{SHA}")
+    called["prune_commit_trees"].assert_called_once_with(layout, keep=tree)
+    assert any(line.startswith(f"Installing de/macos-hostlink-net-info (commit {SHA[:12]})")
+               for line in lines)
+
+
+def test_a_release_install_is_unchanged(layout, tmp_path):
+    tree = layout.source_dir / "v0.66.0"
+    with contextlib.ExitStack() as stack:
+        called = {n: stack.enter_context(p) for n, p in _install_steps(tmp_path).items()}
+        stack.enter_context(mock.patch.object(macos_box, "ensure_source", return_value=tree))
+        stack.enter_context(mock.patch.object(macos_box, "source_version", return_value="0.66.0"))
+        result = macos_box.install("v0.66.0", "0.66.0", echo=lambda *a: None, layout=layout,
+                                   skip=["jlink", "picoscope"], use_checkout=False)
+    assert result.image == "ghcr.io/lagerdata/lager-box:v0.66.0"
+    called["write_state"].assert_called_once_with("0.66.0", "0.66.0", "v0.66.0")
+    called["prune_commit_trees"].assert_not_called()
+
+
+@pytest.mark.parametrize("argv, uses_checkout", [(["--yes"], True),
+                                                 (["--yes", "--version", "main"], False)])
+def test_a_named_version_wins_over_the_checkout(lager_home, argv, uses_checkout):
+    from cli.commands.utility.install import install
+    result_value = macos_box.Result(source=Path("/src"), image="img", box_version="9.9.9")
+    with mock.patch.object(_local_install.sys, "platform", "darwin"), \
+            mock.patch.object(macos_box, "running_from_checkout", return_value=Path("/co")), \
+            mock.patch.object(macos_box, "install", return_value=result_value) as provision:
+        result = CliRunner().invoke(install, argv, obj={})
+    assert result.exit_code == 0, result.output
+    assert provision.call_args.kwargs["use_checkout"] is uses_checkout
+    assert ("from the checkout at /co" in result.output) is uses_checkout
 
 
 def test_the_agent_is_replaced_only_once_the_image_is_here(tmp_path):

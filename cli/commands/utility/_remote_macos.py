@@ -216,7 +216,8 @@ def mac_sudo_needs_a_terminal(ssh_host, identity_args, isatty=None, run=None) ->
 
 
 def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version, yes,
-                         fork=None, skip_jlink=False, skip_picoscope=False, update=False):
+                         fork=None, skip_jlink=False, skip_picoscope=False, update=False,
+                         version_defaulted=True):
     if fork:
         raise click.UsageError("--fork is not supported for a Box on a Mac yet.")
     from ... import __version__ as cli_version
@@ -233,7 +234,9 @@ def install_remote_macos(ctx, *, ssh_host, ip, user, box, identity_args, version
             fixes=["Run the same command in a terminal window, or create the "
                    "directory on that Mac first:"] + macos_box.config_dir_fixes(user)[:-1])
 
-    checkout = macos_box.running_from_checkout()
+    # A version named on the command line wins over the checkout this CLI
+    # runs from: the Mac then downloads that version itself.
+    checkout = macos_box.running_from_checkout() if version_defaulted else None
     click.echo()
     click.secho(f"{ip} is a Mac.", fg='cyan', bold=True)
     if checkout is not None:
@@ -354,4 +357,4 @@ def update_remote_macos(ctx, *, ip, user, version, yes, check=False, fork=None):
     install_remote_macos(ctx, ssh_host=ssh_host, ip=ip, user=user,
                          box=get_box_name_by_ip(ip), identity_args=identity_args,
                          version=version or default_box_version(), yes=yes, fork=fork,
-                         update=True)
+                         update=True, version_defaulted=not version)

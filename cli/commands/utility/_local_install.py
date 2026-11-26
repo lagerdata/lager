@@ -106,7 +106,9 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
     from ... import __version__ as cli_version
     from ...deployment import macos_box
 
-    checkout = macos_box.running_from_checkout()
+    # A version named on the command line wins over the checkout this CLI
+    # runs from: that is how a branch is installed with a development CLI.
+    checkout = macos_box.running_from_checkout() if version_defaulted else None
     if checkout is not None:
         click.echo(f"Installing a Lager Box on this Mac from the checkout at {checkout}.")
     else:
@@ -156,7 +158,7 @@ def install_locally(ctx, *, version, version_defaulted, yes, fork=None, platform
         version, cli_version, echo=click.echo,
         confirm=(lambda question: True) if yes
         else (lambda question: click.confirm(question, default=True)),
-        skip=skip)
+        skip=skip, use_checkout=version_defaulted)
 
     add_box(name, macos_box.LOCAL_ADDRESS, user=getpass.getuser(),
             version=result.box_version, python_port=macos_box.PYTHON_SERVICE_PORT)

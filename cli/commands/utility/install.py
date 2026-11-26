@@ -358,7 +358,7 @@ def _record_install_state(runner, ssh_host, *, version, cli_version, fork=None):
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
 @click.option("--ip", default=None, help="Target box IP address or DNS hostname")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
-@click.option("--version", "version", default=None, help="Version to deploy: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA (default: this CLI's release tag)")
+@click.option("--version", "version", default=None, help="Version to deploy: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA (default: this CLI's release tag). On a Mac, a branch or commit runs on the published image of the release it is based on")
 @click.option("--skip-jlink", is_flag=True, help="Skip J-Link installation")
 @click.option("--skip-picoscope", is_flag=True, help="Skip PicoScope 7 SDK installation")
 @click.option("--skip-firewall", is_flag=True, help="Skip UFW firewall configuration")
@@ -617,7 +617,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_picoscope, skip_firewa
         install_remote_macos(ctx, ssh_host=ssh_host, ip=ip, user=user, box=box,
                              identity_args=ssh_identity_args(identity),
                              version=version, yes=yes, fork=fork,
-                             skip_jlink=skip_jlink, skip_picoscope=skip_picoscope)
+                             skip_jlink=skip_jlink, skip_picoscope=skip_picoscope,
+                             version_defaulted=version_defaulted)
         return
 
     # The deploy's step 2 needs the box's sudo password, and sudo reads it

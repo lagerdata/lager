@@ -53,7 +53,13 @@ BOX_NAME_FILE = os.path.join(ETC_DIR, "box-name")
 SKIP_FILE = os.path.join(ETC_DIR, "install-skips")
 SKIPPABLE = ("jlink", "picoscope")
 # A Box on a Mac runs a published image, and images are published per release.
+# A branch or a commit runs its own Box code on the image of the release it
+# declares (``cli/__init__.py``).
 RELEASE_VERSION = re.compile(r"^v?\d+\.\d+\.\d+$")
+# A branch or tag name `git fetch` is given as is: no spaces, no shell
+# characters, and never a leading "-" that it would read as an option.
+REF_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 LOCAL_ADDRESS = "127.0.0.1"
 IMAGE_REPO = "ghcr.io/lagerdata/lager-box"
 # The only platform the Box image is published for today. It runs under the
@@ -333,16 +339,25 @@ def source_version(root: Path) -> str:
     return ""
 
 
-def check_release_version(version: str) -> None:
-    """Refuse a version with no published Box image, before anything changes."""
-    if not RELEASE_VERSION.match(version or ""):
-        raise LagerError(
-            f"A Box on a Mac installs a Lager release, and {version!r} is not one.",
-            cause="Only releases have a published Box image; a branch or commit "
-                  "has none to run.",
-            fixes=["Pass a release, for example --version v0.66.0, or leave "
-                   "--version out for this CLI's version.",
-                   "To run unreleased code, install from a checkout of the repository."])
+def is_release(version: str) -> bool:
+    return bool(RELEASE_VERSION.match(version or ""))
+
+
+def check_version(version: str) -> None:
+    """Refuse a version that is not a release, a branch or a full commit SHA,
+    before anything changes."""
+    version = version or ""
+    if is_release(version) or COMMIT_SHA.match(version):
+        return
+    if (REF_NAME.match(version) and ".." not in version and "//" not in version
+            and not version.endswith(("/", ".", ".lock"))):
+        return
+    raise LagerError(
+        f"{version!r} is not a Lager release, branch or commit.",
+        cause="A version is a release tag (v0.66.0), a branch name (letters, digits, "
+              "'.', '_', '-' and '/') or a full 40-character commit SHA.",
+        fixes=["Pass one of those with --version, or leave --version out for this "
+               "CLI's version."])
 
 
 def image_for(version: str) -> str:
@@ -351,28 +366,40 @@ def image_for(version: str) -> str:
 
 # ------------------------------------------------------------------- steps
 
-def ensure_source(layout: Layout, version: str, run: Run = _run,
-                  source: Optional[Path] = None) -> Path:
-    """The Box source both pieces run: the checkout, or a clone of ``version``.
+def _has_box_source(tree: Path) -> bool:
+    return (tree / "box" / "lager" / "host" / "__main__.py").exists()
 
-    The agent and the container are given the same tree, so the two sides of
-    the link can never be from different releases. ``source`` is a tree
-    already on this Mac (one a remote install copied over) and is used as is.
-    """
-    if source is not None:
-        if not (source / "box" / "lager" / "host" / "__main__.py").exists():
-            raise LagerError(f"There is no Lager Box source at {source}.")
-        return source
-    checkout = running_from_checkout()
-    if checkout is not None:
-        return checkout
-    target = layout.source_dir / version
-    if (target / "box" / "lager" / "host" / "__main__.py").exists():
-        return target
+
+def _require_git() -> None:
     if not shutil.which("git"):
         raise LagerError(
             "git is not installed on this Mac.",
             fixes=["Run `xcode-select --install`, then `lager install` again."])
+
+
+def ensure_source(layout: Layout, version: str, run: Run = _run,
+                  source: Optional[Path] = None, use_checkout: bool = True) -> Path:
+    """The Box source both pieces run: the checkout, or a download of ``version``.
+
+    The agent and the container are given the same tree, so the two sides of
+    the link can never be from different versions. ``source`` is a tree
+    already on this Mac (one a remote install copied over) and is used as is.
+    ``use_checkout`` False ignores the checkout this CLI runs from, so that a
+    ``--version`` named on the command line is what gets installed.
+    """
+    if source is not None:
+        if not _has_box_source(source):
+            raise LagerError(f"There is no Lager Box source at {source}.")
+        return source
+    checkout = running_from_checkout() if use_checkout else None
+    if checkout is not None:
+        return checkout
+    if not is_release(version):
+        return fetch_ref(layout, version, run)
+    target = layout.source_dir / version
+    if _has_box_source(target):
+        return target
+    _require_git()
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(target, ignore_errors=True)
     result = run(["git", "clone", "--depth", "1", "--branch", version,
@@ -389,6 +416,67 @@ def ensure_source(layout: Layout, version: str, run: Run = _run,
             f"Lager {version} predates the macOS Box and cannot run on a Mac.",
             fixes=["Install a later release, or leave --version out."])
     return target
+
+
+def fetch_ref(layout: Layout, ref: str, run: Run = _run) -> Path:
+    """A tree of ``ref`` (a branch, tag or commit), fetched every time.
+
+    A branch moves, so it is never reused by name. Each commit gets its own
+    directory, named by its SHA, and an existing one is reused as is. A branch
+    that has moved on lands in a new directory, so the tree the running Box
+    mounts is never changed under it.
+    """
+    _require_git()
+    incoming = layout.source_dir / ".incoming"
+    shutil.rmtree(incoming, ignore_errors=True)
+    incoming.mkdir(parents=True)
+    steps = (["git", "init", "-q", str(incoming)],
+             ["git", "-C", str(incoming), "fetch", "-q", "--depth", "1", SOURCE_REPO, ref],
+             ["git", "-C", str(incoming), "checkout", "-q", "--detach", "FETCH_HEAD"])
+    for argv in steps:
+        result = run(argv, timeout=600)
+        if result.returncode != 0:
+            shutil.rmtree(incoming, ignore_errors=True)
+            raise LagerError(
+                f"The CLI did not download Lager {ref}.",
+                cause=_last_line(result.stderr),
+                fixes=["Check the network connection and that the branch or commit "
+                       f"exists in {SOURCE_REPO}. A fork's branch cannot be installed "
+                       "on a Mac yet."])
+    head = run(["git", "-C", str(incoming), "rev-parse", "HEAD"], timeout=60)
+    sha = (head.stdout or "").strip()
+    if head.returncode != 0 or not COMMIT_SHA.match(sha):
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise LagerError(f"The CLI could not tell which commit {ref} is.",
+                         cause=_last_line(head.stderr))
+    if not _has_box_source(incoming):
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise LagerError(
+            f"Lager {ref} predates the macOS Box and cannot run on a Mac.",
+            fixes=["Install a branch or commit that has box/lager/host, or a release."])
+    target = commit_trees(layout) / sha
+    if _has_box_source(target):
+        shutil.rmtree(incoming, ignore_errors=True)
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(target, ignore_errors=True)
+    incoming.rename(target)
+    return target
+
+
+def commit_trees(layout: Layout) -> Path:
+    """Where :func:`fetch_ref` keeps one tree per commit."""
+    return layout.source_dir / "commits"
+
+
+def prune_commit_trees(layout: Layout, keep: Path) -> None:
+    """Remove every fetched commit tree but ``keep``, the one now running."""
+    root = commit_trees(layout)
+    if not root.is_dir():
+        return
+    for tree in root.iterdir():
+        if tree != keep:
+            shutil.rmtree(tree, ignore_errors=True)
 
 
 def config_dir_fixes(user: Optional[str] = None) -> List[str]:
@@ -1053,8 +1141,9 @@ def _check_pull(result: subprocess.CompletedProcess, image: str) -> None:
             f"The CLI did not download the Box image {image}.",
             cause=_last_line(result.stderr),
             fixes=["Check the network connection, then run `lager install` again.",
-                   "For a development version, pass --version with a release "
-                   "tag that has an image."])
+                   "A branch, commit or checkout runs on the image of the release "
+                   "its cli/__init__.py names. If that release is not published yet, "
+                   "install a branch based on a published release."])
 
 
 class BackgroundPull:
@@ -1206,7 +1295,7 @@ class Result:
 def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
             layout: Optional[Layout] = None, bind: str = LOCAL_ADDRESS,
             source: Optional[Path] = None, confirm=None,
-            skip: Optional[Sequence[str]] = None) -> Result:
+            skip: Optional[Sequence[str]] = None, use_checkout: bool = True) -> Result:
     """Provision the agent and the container on this Mac.
 
     ``bind`` is the address the Box's ports are published on: this Mac only
@@ -1216,15 +1305,23 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     before something is installed on their behalf (see :func:`ensure_docker`).
     ``skip`` leaves out optional pieces: "jlink", "picoscope". None (an
     update) leaves out what the last install on this Mac left out.
+    ``use_checkout`` False installs ``version`` even when this CLI runs from
+    a checkout (the user named a version).
+
+    ``version`` is a release, a branch or a full commit SHA. A branch or
+    commit runs its own Box code on the published image of the release its
+    ``cli/__init__.py`` declares.
 
     The agent is replaced only once the Box image is on this Mac, so a
     failed download leaves the running agent and container as they were.
     """
     layout = layout or Layout()
-    from_tree = source is not None or running_from_checkout() is not None
+    checkout = running_from_checkout() if use_checkout else None
+    from_tree = source is not None or checkout is not None
+    release = not from_tree and is_release(version)
     check_platform()
     if not from_tree:
-        check_release_version(version)
+        check_version(version)
     if skip is None:
         skip = remembered_skips()
         if skip:
@@ -1236,9 +1333,22 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     echo("Preparing the Box configuration directory...")
     ensure_config_dir(run)
 
-    source = ensure_source(layout, version, run, source)
-    box_version = source_version(source) or version.lstrip("v")
-    image = image_for(box_version if from_tree else version)
+    source = ensure_source(layout, version, run, source, use_checkout=use_checkout)
+    commit = ""
+    if release:
+        box_version = source_version(source) or version.lstrip("v")
+        image = image_for(version)
+    else:
+        box_version = source_version(source)
+        if not box_version:
+            raise LagerError(f"The Box source at {source} does not say which release it is.",
+                             cause="cli/__init__.py has no __version__.")
+        image = image_for(box_version)
+    if not from_tree and not release:
+        commit = source.name  # fetch_ref names each tree by its commit
+        echo(f"Installing {version} (commit {commit[:12]}) on the Lager {box_version} "
+             "Box image. Its Box code comes from the branch; changes it makes to the "
+             "image itself (the Dockerfile or the image's Python packages) do not.")
     download = BackgroundPull(docker, env, image, run, echo)
 
     echo("Installing the host agent's Python packages...")
@@ -1272,7 +1382,13 @@ def install(version: str, cli_version: str, *, echo=print, run: Run = _run,
     echo("Starting the Box container...")
     start_container(docker, env, image, source, run, echo, bind)
     wait_for_link(docker, env, run)
-    ref = f"checkout:{source}" if from_tree else version
+    if from_tree:
+        ref = f"checkout:{source}"
+    elif release:
+        ref = version
+    else:
+        ref = f"{version}@{commit}"
+        prune_commit_trees(layout, keep=source)
     write_state(box_version, cli_version, ref)
     remember_skips(skip)
     return Result(source=source, image=image, box_version=box_version,
