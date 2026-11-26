@@ -37,6 +37,7 @@ from lager.nets.net import Net
 from lager.nets.device import ConnectionFailed, DeviceError, Device
 from lager.nets.device_identity import (
     address_from_rec as _address_from_rec,
+    hardware_service_net_info as _hardware_service_net_info,
     physical_device_id as _physical_device_id,
 )
 from lager.dispatchers import helpers
@@ -183,12 +184,7 @@ def _hw_proxy(netname, role, module_for_instrument, error_class, timeout=None):
 def _proxy(netname, role, timeout=None):
     """Build a hardware_service Device proxy for a non-VISA (device_id) role."""
     rec = _find_rec(netname, role, DeviceError)
-    instrument = rec.get("instrument") or ""
-    net_info = {
-        "name": netname,
-        "instrument": instrument,
-        "device_id": _physical_device_id(role, instrument, rec),
-    }
+    net_info = _hardware_service_net_info(role, netname, rec)
     return Device(_HS_FACTORY[role], net_info, timeout=timeout)
 
 

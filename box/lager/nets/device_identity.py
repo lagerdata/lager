@@ -111,3 +111,25 @@ def physical_device_id(role, instrument, rec):
         return "labjack:" + inst + ":" + (addr or "ANY")
     # Default: LabJack T7 — one shared LJM handle across all roles/pins.
     return "labjack:" + (addr or "ANY")
+
+
+def hardware_service_net_info(role, name, rec):
+    """The ``net_info`` to send hardware_service for a device_id-locked net.
+
+    The net's own name (which the adapter is built for), its instrument, and
+    the physical device's lock key -- and deliberately NOT the saved record's
+    ``address``. hardware_service caches a device by ``(device, address)``
+    when one is sent, and every net on one instrument shares that address, so
+    sending it would hand every such net the adapter built for whichever net
+    asked first. Without it each net gets its own adapter, and ``device_id``
+    still makes them all wait on one lock.
+
+    The ``lager gpo`` / ``adc`` / ``spi`` route and a script's stand-ins on a
+    Box without USB both build it here, so they name the device identically.
+    """
+    instrument = rec.get("instrument") or ""
+    return {
+        "name": name,
+        "instrument": instrument,
+        "device_id": physical_device_id(role, instrument, rec),
+    }

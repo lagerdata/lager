@@ -27,10 +27,21 @@ from __future__ import annotations
 import threading
 
 from ..nets.device import Device, DeviceError
+from ..nets.device_identity import hardware_service_net_info
 
 _lock = threading.Lock()
 _drivers = {}
 _installed = False
+
+
+def _sent(role, rec):
+    """What every call for the saved net ``rec`` sends the hardware service.
+
+    The same shape ``lager spi`` / ``lager i2c`` send, never the saved
+    address: the service caches a device per address when given one, which
+    would put every bus net on one adapter behind the first net's driver.
+    """
+    return hardware_service_net_info(role, rec.get("name"), rec)
 
 
 def _call(error_class, fn, *args):
@@ -44,7 +55,7 @@ class HostSPIDriver:
     """What the SPI dispatcher and ``SPINet`` use of a driver."""
 
     def __init__(self, net_info, error_class):
-        self._device = Device("spi_hs", dict(net_info))
+        self._device = Device("spi_hs", _sent("spi", net_info))
         self._error = error_class
         self._word_size = int((net_info.get("params") or {}).get("word_size", 8))
         self.clamp_warnings = []
@@ -83,7 +94,7 @@ class HostI2CDriver:
     """
 
     def __init__(self, net_info, error_class):
-        self._device = Device("i2c_hs", dict(net_info))
+        self._device = Device("i2c_hs", _sent("i2c", net_info))
         self._error = error_class
         self._overrides = {}
         self.clamp_warnings = []
