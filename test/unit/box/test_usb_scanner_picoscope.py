@@ -75,13 +75,14 @@ class PicoScopeDiscovery(unittest.TestCase):
         """Build a fake sysfs holding `devices` and return scanner entries.
 
         `daemon` is what the scope daemon's GetCapabilities answers with; the
-        default None is a box with no daemon running.
+        default None is a box with no daemon running. A callable is asked
+        each time instead.
         """
         self.daemon_queries = 0
 
         def _capabilities():
             self.daemon_queries += 1
-            return daemon
+            return daemon() if callable(daemon) else daemon
 
         self.scanner._pico_daemon_capabilities = _capabilities
         fake = None
@@ -264,6 +265,77 @@ class PicoScopeDiscovery(unittest.TestCase):
                 os.environ.pop('LAGER_SCOPE_DATA_URL', None)
             else:
                 os.environ['LAGER_SCOPE_DATA_URL'] = old
+
+    def _scan_while_opening(self, answers):
+        """Scan one series-named scope while the daemon gives `answers` in
+        turn, repeating the last. Sleeps are counted, not slept."""
+        scanner = self.scanner
+        self.asked = 0
+
+        def _capabilities():
+            answer = answers[min(self.asked, len(answers) - 1)]
+            self.asked += 1
+            return answer
+
+        clock = [0.0]
+
+        class _Time:
+            monotonic = staticmethod(lambda: clock[0])
+
+            @staticmethod
+            def sleep(seconds):
+                clock[0] += seconds
+
+        self.clock = clock
+        original_time = scanner.time
+        scanner.time = _Time
+        self.addCleanup(setattr, scanner, 'time', original_time)
+
+        def scan():
+            entries = self._scan([('1016', None, SERIES_PRODUCT)],
+                                 daemon=_capabilities)
+            return entries[0]['channels']['scope-channel']
+
+        return scan
+
+    def test_a_scan_made_while_the_daemon_is_opening_waits_for_the_count(self):
+        """Plugging a scope in and opening the nets TUI at once: the scan
+        lands before the daemon has the unit open, and used to list a
+        four-channel scope with two for as long as the TUI stayed up."""
+        not_ready = self.scanner._PICO_NOT_READY
+        scan = self._scan_while_opening(
+            [not_ready, not_ready, not_ready,
+             {'serial': 'JO123/0045', 'model': '2405A', 'analog_channels': 4}])
+
+        self.assertEqual(scan(), ['1', '2', '3', '4'])
+        self.assertLess(self.clock[0], self.scanner._PICO_OPEN_WAIT)
+
+    def test_a_scope_the_daemon_never_opens_is_waited_on_once(self):
+        scan = self._scan_while_opening([self.scanner._PICO_NOT_READY])
+
+        self.assertEqual(scan(), ['1', '2'])
+        waited = self.clock[0]
+        self.assertGreaterEqual(waited, self.scanner._PICO_OPEN_WAIT)
+
+        self.assertEqual(scan(), ['1', '2'])
+        self.assertEqual(self.clock[0], waited, 'the second scan waited again')
+
+        self.clock[0] += self.scanner._PICO_OPEN_WAIT_AGAIN
+        scan()
+        self.assertGreater(self.clock[0],
+                           waited + self.scanner._PICO_OPEN_WAIT_AGAIN)
+
+    def test_a_daemon_that_goes_away_ends_the_wait(self):
+        scan = self._scan_while_opening([self.scanner._PICO_NOT_READY, None])
+
+        self.assertEqual(scan(), ['1', '2'])
+        self.assertLess(self.clock[0], self.scanner._PICO_OPEN_WAIT)
+
+    def test_no_daemon_is_not_waited_on(self):
+        scan = self._scan_while_opening([None])
+
+        self.assertEqual(scan(), ['1', '2'])
+        self.assertEqual(self.clock[0], 0.0)
 
     def test_the_vendor_wide_entry_is_not_in_the_vidpid_table(self):
         """It has no product id, so it must not shadow a real one."""
