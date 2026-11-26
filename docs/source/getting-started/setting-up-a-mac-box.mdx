@@ -92,13 +92,15 @@ Useful options:
 | `--yes` | Accept the defaults without asking |
 
 `--version` takes a release (`v0.66.0`), a branch (`main`, `my-fix`) or a full 40-character
-commit SHA. A branch or commit has no Box image of its own: its Box code runs on the published
-image of the release its `cli/__init__.py` names, so changes it makes to the image itself (the
-Dockerfile or the image's Python packages) are not included. `lager install --version <branch>`
-again picks up new commits on that branch.
+commit SHA.
 
-A `--version` you name is installed even when you run the CLI from a checkout; leave it out to
-install the checkout itself.
+A branch or commit has no Box image of its own. Its Box code runs on the published image of
+the release that its `cli/__init__.py` names. Changes that it makes to the image itself are not
+included, for example changes to the Dockerfile. To get new commits on a branch, run
+`lager install --version <branch>` again.
+
+The installer uses the `--version` that you name, also when you run the CLI from a checkout. To
+install the checkout itself, do not use `--version`.
 
 ---
 
