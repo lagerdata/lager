@@ -222,6 +222,103 @@ class TestSuiteFailureIsClassified:
         )
 
 
+# --- Modes: rows on every PR, counts at release -----------------------------
+#
+# The run counts and the "(-- N files)" headers moved to the release because
+# every branch that added a test edited the same lines, so every merge put
+# every other open branch into conflict. These pin that the PR gate (no flags)
+# no longer looks at those numbers, and that `--counts` still does.
+
+_MD = """\
+## Counts
+
+| Job (status context) | Path | Tests |
+|---|---|---:|
+| `unit (cli)` | `test/unit/cli/` | {passed} |
+| | **Total gated** | **{passed}** |
+
+#### CLI Unit Tests (`test/unit/cli/` -- {files} files)
+
+| File | Covers |
+|---|---|
+{rows}
+"""
+
+
+@pytest.fixture
+def fake_repo(tmp_path, monkeypatch):
+    """A one-suite, one-table repo the checker reads instead of the real one."""
+    cli = tmp_path / 'test' / 'unit' / 'cli'
+    cli.mkdir(parents=True)
+    md = tmp_path / 'test' / 'COVERAGE.md'
+    monkeypatch.setattr(checker, 'REPO_ROOT', tmp_path)
+    monkeypatch.setattr(checker, 'COVERAGE_MD', md)
+    monkeypatch.setattr(checker, 'INVENTORY_TABLES', ('test/unit/cli/',))
+    monkeypatch.setattr(checker, 'SUITES', {'unit (cli)': ['test/unit/cli/']})
+
+    def write(files, rows, passed=3, header_files=None):
+        for f in files:
+            (cli / f).write_text('')
+        md.write_text(_MD.format(
+            passed=passed,
+            files=len(files) if header_files is None else header_files,
+            rows='\n'.join(f'| `{r}` | something |' for r in rows)))
+        return md
+    return write
+
+
+def _no_suite_runs(monkeypatch):
+    def boom(paths):
+        raise AssertionError(f'the PR gate ran a suite: {paths}')
+    monkeypatch.setattr(checker, 'run_suite', boom)
+
+
+class TestModes:
+
+    def test_default_passes_with_stale_counts_and_header(self, fake_repo, monkeypatch):
+        fake_repo(['test_a.py', 'test_b.py'], ['test_a.py', 'test_b.py'],
+                  passed=999, header_files=7)
+        _no_suite_runs(monkeypatch)
+        assert checker.main([]) == 0
+
+    def test_default_fails_on_a_file_with_no_row(self, fake_repo, monkeypatch):
+        fake_repo(['test_a.py', 'test_b.py'], ['test_a.py'])
+        _no_suite_runs(monkeypatch)
+        assert checker.main([]) == 1
+
+    def test_default_fails_on_a_row_for_a_deleted_file(self, fake_repo, monkeypatch):
+        fake_repo(['test_a.py'], ['test_a.py', 'test_gone.py'])
+        _no_suite_runs(monkeypatch)
+        assert checker.main([]) == 1
+
+    def test_default_fix_drops_the_stale_row_and_leaves_the_numbers(
+            self, fake_repo, monkeypatch):
+        md = fake_repo(['test_a.py'], ['test_a.py', 'test_gone.py'],
+                       passed=999, header_files=7)
+        _no_suite_runs(monkeypatch)
+        assert checker.main(['--fix']) == 0
+        text = md.read_text()
+        assert 'test_gone.py' not in text
+        assert '-- 7 files' in text and '**999**' in text
+
+    def test_files_only_still_checks_the_header(self, fake_repo, monkeypatch):
+        fake_repo(['test_a.py'], ['test_a.py'], header_files=7)
+        _no_suite_runs(monkeypatch)
+        assert checker.main(['--files-only']) == 1
+
+    def test_counts_catches_a_stale_run_count(self, fake_repo, monkeypatch):
+        fake_repo(['test_a.py'], ['test_a.py'], passed=3)
+        monkeypatch.setattr(checker, 'run_suite', lambda paths: counts(4))
+        assert checker.main(['--counts']) == 1
+
+    def test_counts_fix_rewrites_the_numbers(self, fake_repo, monkeypatch):
+        md = fake_repo(['test_a.py'], ['test_a.py'], passed=3, header_files=7)
+        monkeypatch.setattr(checker, 'run_suite', lambda paths: counts(4))
+        assert checker.main(['--counts', '--fix']) == 0
+        text = md.read_text()
+        assert '| 4 |' in text and '**4**' in text and '-- 1 file)' in text
+
+
 # --- .mintignore coverage (#530) -------------------------------------------
 #
 # Mintlify builds every .md and .mdx under docs/, so a page absent from

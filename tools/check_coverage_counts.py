@@ -2,7 +2,24 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-Assert that test/COVERAGE.md's gated-test counts match what pytest reports.
+Check test/COVERAGE.md against disk.
+
+Two modes, because the two halves change at very different rates:
+
+  * Default (the pull-request gate): every test file has a row in its
+    section's inventory table, and no row names a deleted file. Filesystem
+    only, a second or two, no suite runs.
+  * `--counts` (the release): also the per-suite run counts, the
+    **Total gated** row, and the `(-- N files)` section headers. Runs every
+    suite, about twenty minutes.
+
+The counts are release-time numbers on purpose. Every branch that adds a test
+moves the same few lines -- the suite's row, the total, the section header --
+so with the counts gated on every PR, each merge put every other open branch
+into conflict, and resolving it meant re-running all six suites. Rows for
+different files rarely touch the same line, so they stay gated on every PR.
+
+`--files-only` checks the headers and the rows without running a suite.
 
 COVERAGE.md opens with "Counts here are checked against disk", but nothing
 enforced it and it drifted repeatedly: two merges in a single afternoon added
@@ -64,7 +81,7 @@ files on disk do not depend on where the tool runs.
 What is still NOT enforced: that a row's description matches what its file
 actually tests.
 
-Usage:  python tools/check_coverage_counts.py [--fix] [--files-only]
+Usage:  python tools/check_coverage_counts.py [--fix] [--counts | --files-only]
 """
 
 from __future__ import annotations
@@ -368,24 +385,33 @@ def render_cell(counts: dict[str, int]) -> str:
     return ' '.join(parts)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--fix', action='store_true',
                     help='rewrite the counts instead of failing')
-    ap.add_argument('--files-only', action='store_true',
-                    help='check only the per-section file counts; no pytest run, '
-                         'so a docs-only change can verify itself without a test env')
-    args = ap.parse_args()
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument('--counts', action='store_true',
+                      help='also check the release-time numbers: the per-suite run '
+                           'counts, the total and the section-header file counts. '
+                           'Runs every suite. The release runs this; a PR does not')
+    mode.add_argument('--files-only', action='store_true',
+                      help='check the section-header file counts and the rows; '
+                           'no pytest run')
+    args = ap.parse_args(argv)
 
     text = COVERAGE_MD.read_text()
 
-    print('Counting the files behind each section header...')
-    bad_files, text = check_file_counts(text, args.fix)
+    bad_files: list[str] = []
+    if args.counts or args.files_only:
+        print('Counting the files behind each section header...')
+        bad_files, text = check_file_counts(text, args.fix)
 
     print('Checking each inventory table lists exactly the files on disk...')
     bad_rows, missing_rows, text = check_table_inventory(text, args.fix)
 
-    if args.files_only:
+    if not args.counts:
+        fix_cmd = 'python tools/check_coverage_counts.py' + (
+            ' --files-only' if args.files_only else '') + ' --fix'
         if args.fix:
             COVERAGE_MD.write_text(text)
             if bad_files or bad_rows:
@@ -399,12 +425,14 @@ def main() -> int:
                 return 0
         if bad_files or bad_rows:
             print('\nFAIL: test/COVERAGE.md disagrees with disk (see BAD lines above).\n'
-                  '      Fix:  python tools/check_coverage_counts.py --files-only --fix\n'
-                  '      rewrites header counts and drops rows for deleted files.\n'
-                  '      A NEW file needs a hand-written row in its section\'s table.',
+                  f'      Fix:  {fix_cmd}\n'
+                  '      drops rows for deleted files. A NEW test file needs a\n'
+                  '      hand-written row in its section\'s table. Do not edit the\n'
+                  '      run counts or the "(-- N files)" headers: the release\n'
+                  '      refreshes those.',
                   file=sys.stderr)
             return 1
-        print('\nCOVERAGE.md file counts and inventory tables match.')
+        print('\nCOVERAGE.md inventory tables match disk.')
         return 0
 
     claimed, cells, claimed_total = {}, {}, None
@@ -470,8 +498,8 @@ def main() -> int:
     print('\nFAIL: test/COVERAGE.md disagrees with what is on disk.\n'
           '      That file states its counts are checked against disk, so a\n'
           '      stale number there is a defect, not a formatting nit.\n\n'
-          '      Fix:  python tools/check_coverage_counts.py --fix\n'
-          '      then review the diff and commit it with your test change.\n'
+          '      Fix:  python tools/check_coverage_counts.py --counts --fix\n'
+          '      then review the diff and commit it with the release.\n'
           '      A new file needs a row in its section table as well as a count.',
           file=sys.stderr)
     return 1

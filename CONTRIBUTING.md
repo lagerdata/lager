@@ -58,14 +58,17 @@ $PYTEST test/mcp/unit/
 $PYTEST test/unit/test_*.py test/unit/tools/
 ```
 
-**A change that adds or removes a test also changes `test/COVERAGE.md`.** The Static
-Checks job runs every suite, and it fails when the counts or the per-file tables do not
-match the tree. Refresh the counts, then write a table row for each new test file:
+**A change that adds or removes a test file also changes `test/COVERAGE.md`.** The Static
+Checks job fails when a test file has no row in its section's table, or a row names a
+deleted file. Write a row for each new test file. To drop the rows of deleted files, run
+`--fix`:
 
 ```bash
 python tools/check_coverage_counts.py --fix
 python tools/check_coverage_counts.py
 ```
+
+Do not edit the run counts or the `(-- N files)` header counts. The release refreshes them.
 
 ### Docs and prose checks
 
@@ -106,9 +109,11 @@ lager python test/api/power/test_supply_Rigol_DP821.py --box <box-name>
    `fix/supply-trip-message` or `feat/rtt-streaming`.
 2. **Keep the change focused.** Unrelated fixes belong in their own PR.
 3. **Add or update tests,** and refresh `test/COVERAGE.md` as described above.
-4. **Update `CHANGELOG.md`** for any user-facing change. File the entry under
-   `## [Unreleased]`. Write one bullet per change, in one to three sentences: what
-   changed for a user, and the command or API it affects.
+4. **Add a changelog entry** for any user-facing change, as a new file under
+   `changelog.d/`. Do not edit `CHANGELOG.md`. See
+   [changelog.d/README.md](changelog.d/README.md) for the file name and format. Write
+   one bullet per change, in one to three sentences: what changed for a user, and the
+   command or API it affects.
 5. **Update the docs** in `docs/source/` if you changed a command, an API, or
    supported hardware.
 6. **Fill in the PR template**, including how you tested.

@@ -3,17 +3,16 @@
 This document tracks what test coverage exists across all Lager features. It covers the four
 test suites: local unit tests, Python API tests, bash integration tests, and MCP tests.
 
-**Counts here are checked against disk**, by `tools/check_coverage_counts.py` in the required
-`static-checks` job. It checks three things:
+**The per-file inventory tables are checked against disk on every pull request**, by
+`tools/check_coverage_counts.py` in the required `static-checks` job. Every test file must have
+a row in its section's table, and a row naming a deleted file fails the check. If you add a test
+file, add its row in the same change, with a real description. `--fix` drops rows for deleted
+files; it never writes a row.
 
-- the gated run-counts below;
-- the per-section file counts in every `(-- N files)` header;
-- the per-file inventory tables themselves.
-
-Every test file must have a row in its section's table, and a row naming a deleted file fails
-the check. If you add or remove a test file, update the counts and the table in the same change.
-`--fix` rewrites counts and drops rows for deleted files; a new file's row you write yourself,
-with a real description.
+**The run counts and the `(-- N files)` header counts are release-time numbers.** Each release
+refreshes them with `python tools/check_coverage_counts.py --counts --fix`. Between releases
+they are the numbers of the last release. Do not edit them in a pull request. Each branch that
+adds a test changes the same lines, so two such branches conflict.
 
 ## What runs in CI
 
@@ -47,7 +46,9 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 `packaging`, `mcp-extra`, `rust (oscilloscope-daemon)`, and the two `xplat (...)` jobs. The
 `coverage` and `pip-audit` contexts are not, and neither is `CodeQL`.
 
-`unit-tests.yml` runs six matrix jobs, each in its own pytest process, on Python 3.11:
+`unit-tests.yml` runs six matrix jobs, each in its own pytest process, on Python 3.11. The
+counts are those of the last release; each job's log on a pull request has the current
+number.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
@@ -905,7 +906,8 @@ These tests cover the scripts in `tools/`. The `unit (root)` job runs them.
 | `test_bench_suite_gate.py` | `tools/bench_suite_gate.sh` on real summary shapes: without a skip budget it still passes a run with skips but its notice names them ("all 71 checks pass" with six skipped is how a section went unnoticed); with one, a run over budget fails, a summary with no skip column counts as zero skips, a non-numeric budget and a budget on the deployment format are refused, and a missing summary still fails first. Also that every harness gate call in a workflow passes a skip budget set in its own step |
 | `test_bench_watchdog_env.py` | Pins `bench-watchdog.yml`'s `env:` block against the names `tools/bench_schedule_check.py` reads: the workflow must set no threshold at all (a second copy is how the gap threshold came to override 36 with 26 and alarm on a late night), and every threshold the tool reads must carry a default |
 | `test_box_api_surface.py` | `tools/box_api_surface.py`, which the `Release: lager-rs API check` workflow runs on each release tag: each way the box registers a route, an action (`==`, `!=`, `in`, a module table, `TABLE[action]`, `TABLE.get(action)`, a helper handed `action`), a Socket.IO event, a debug service path or feature, and a `/status` capability is extracted; files under a `tests` directory are not; this checkout's known surface (`/net/command` roles, debug features, capabilities) is still found, so a box refactor cannot blind the check; the diff names each kind of addition and removal, says what it cannot see, and is empty when nothing changed |
-| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite |
+| `test_changelog_fragments.py` | `tools/changelog_fragments.py`: `--check` refuses a fragment with a bad name or type, an empty one, one that is not a bullet, one with a heading or a conflict marker, and an entry written into the Unreleased section of `CHANGELOG.md`, and the shipped tree passes; `--assemble` writes the sections in Keep a Changelog order below the still-empty Unreleased section, deletes the fragments, and refuses no fragments, an existing version, a bad version, or a failing check without changing the file; `--preview` writes nothing |
+| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), the anchored summary parse `FORCE_COLOR` defeated, and a missing `pytest-timeout` reported as the missing plugin rather than as a failing suite. Also the modes: with no flag it checks only the inventory rows and runs no suite, so stale run counts and headers pass; `--files-only` still checks the headers; `--counts` catches and `--fix` rewrites the run counts |
 | `test_deployment_run_test.py` | `test/integration/infrastructure/deployment.sh`'s own `run_test` and `ble_scan_summary`, pulled out of the script and driven with stub commands: a command that fails once and then succeeds is reported `[FAIL]` with the failed run's output, runs exactly once, and is never counted as a pass (#792); a pass prints nothing and an expected failure still passes; and a BLE scan, failed or passed, shows its device count, error line and exit status but never an advertiser's name or address |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
 

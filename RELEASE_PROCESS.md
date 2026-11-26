@@ -21,10 +21,8 @@ Before you start a release, confirm each item:
       `lager hello`. Then run the `test/api/` scripts for the instruments on that box. Put the
       PASS or FAIL result of each script in the release pull request. The bench is
       retired, so this smoke is the only hardware test that a release gets.
-- [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for every user-facing change.
-- [ ] `## [Unreleased]` holds each `###` heading at most once. Two branches that each add a
-      `### Fixed` block both merge cleanly. Merge the blocks in Keep a Changelog order: Added,
-      Changed, Deprecated, Removed, Fixed, Security. Keep every bullet.
+- [ ] `changelog.d/` has a fragment for every user-facing change. To see the section that
+      the release will write, run `python tools/changelog_fragments.py --preview`.
 - [ ] No open security issue blocks the release.
 - [ ] `box/lager/docker/licenses/THIRD_PARTY.md` has a row for each vendor download in
       `box.Dockerfile`, and each pin matches. `unit (box)` fails when one does not.
@@ -34,12 +32,6 @@ Before you start a release, confirm each item:
       is a client of that API. The tag push opens a lager-rs issue that lists the changes (see
       [Post-release](#post-release)). To see the list before you tag, run
       `tools/box_api_surface.py`; its `--help` shows how.
-
-This command counts the `###` headings under `## [Unreleased]`:
-
-```bash
-awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md | grep '^### ' | sort | uniq -c
-```
 
 ## Release Steps
 
@@ -60,21 +52,31 @@ Then set the version in `cli/__init__.py`:
 __version__ = 'X.Y.Z'
 ```
 
-### 2. Update CHANGELOG.md
+### 2. Update CHANGELOG.md and the Test Counts
 
-Keep the `## [Unreleased]` heading and the comment below it. Add the version heading directly
-under that comment, above the entries that ship in this release:
+Each change adds its changelog entry as a file under `changelog.d/`. Move those files into the
+new version section:
 
-```markdown
-## [Unreleased]
-
-<!-- Keep this heading. ... -->
-
-## [X.Y.Z] - YYYY-MM-DD
+```bash
+python tools/changelog_fragments.py --assemble X.Y.Z
 ```
 
-A branch that merges after the release files its entry under `[Unreleased]`. Without that
-heading, the entry lands inside the released section, and no merge conflict catches it.
+The tool writes `## [X.Y.Z] - <today>` below the empty `## [Unreleased]` section. It puts each
+fragment under its `###` heading in Keep a Changelog order, deletes the fragment files, and
+prints their paths. Read the new section, and edit it if necessary. Keep the
+`## [Unreleased]` heading and its comment, and keep that section empty.
+
+Then refresh the run counts and the `(-- N files)` header counts in `test/COVERAGE.md`. Pull
+requests do not change these, so they are the numbers of the last release. The tool runs every
+unit suite:
+
+```bash
+python tools/check_coverage_counts.py --counts --fix
+python tools/check_coverage_counts.py --counts
+```
+
+The counts are what CI records, and CI runs on Linux. On macOS, the tool does not change a row
+whose skip count is different only because of the platform. It says so in its output.
 
 **Rollover.** At the first release of a new ten-minor block, such as `0.50.0`, move the previous
 block into `docs/changelog/`. For `0.50.0`, that block is `0.40.0` through `0.49.x`. Move the text
@@ -117,10 +119,12 @@ python tools/check_docs.py
 
 ### 5. Open a Pull Request Against `main`
 
-Commit the four files, push the branch to `origin` by name, and open a pull request:
+Commit the changes, including the deleted fragments, push the branch to `origin` by name, and
+open a pull request:
 
 ```bash
-git add cli/__init__.py CHANGELOG.md docs/source/release-notes/vX.Y.Z.mdx docs/docs.json
+git add cli/__init__.py CHANGELOG.md changelog.d test/COVERAGE.md \
+  docs/source/release-notes/vX.Y.Z.mdx docs/docs.json
 git commit -m "vX.Y.Z"
 git push -u origin release/vX.Y.Z
 gh pr create --repo lagerdata/lager --base main --head release/vX.Y.Z --title "vX.Y.Z"
@@ -243,8 +247,11 @@ the workflow puts the list in its job summary instead.
 To exclude work that is already on `main`, create the release branch from the last commit to
 ship instead of from `origin/main`. `release-validation.yml` compares the built version with the
 tag, so the tagged commit must carry the new version. Put the version bump, the CHANGELOG
-heading, and the release notes on that branch, and tag the branch's commit. After you publish,
-open a second pull request that brings the same three changes to `main`.
+heading, and the release notes on that branch, and tag the branch's commit. Run
+`--assemble` on that branch, so that it uses only the fragments that the release commit has.
+After you publish, open a second pull request that brings the same changes to `main`. That pull
+request also deletes the fragments that the release used, and keeps the fragments of the
+excluded work.
 
 ## Versioning Policy
 
