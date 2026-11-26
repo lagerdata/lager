@@ -447,7 +447,7 @@ def fetch_ref(layout: Layout, ref: str, run: Run = _run) -> Path:
     sha = (head.stdout or "").strip()
     if head.returncode != 0 or not COMMIT_SHA.match(sha):
         shutil.rmtree(incoming, ignore_errors=True)
-        raise LagerError(f"The CLI could not tell which commit {ref} is.",
+        raise LagerError(f"The CLI did not get the commit that {ref} points to.",
                          cause=_last_line(head.stderr))
     if not _has_box_source(incoming):
         shutil.rmtree(incoming, ignore_errors=True)
