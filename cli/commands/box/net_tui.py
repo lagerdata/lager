@@ -426,7 +426,11 @@ def _validate_nets_before_save(nets: list["Net"]) -> list[tuple["Net", str]]:
 
 
 def _save_nets_batch(dut: str, nets: list["Net"], custom_names: dict[str, str] | None = None) -> bool:
-    """Save multiple nets, one PUT /nets/<name> per record."""
+    """Save multiple nets, one PUT /nets/<name> per record.
+
+    A net's FTDI channel is saved as ``params.interface``, as ``nets add
+    --interface`` saves it.
+    """
     if not nets:
         return True
 
@@ -451,8 +455,11 @@ def _save_nets_batch(dut: str, nets: list["Net"], custom_names: dict[str, str] |
             "instrument": n.instrument,
             "pin": n.chan,
         }
-        if n.params:
-            record["params"] = n.params
+        params = dict(n.params) if n.params else {}
+        if n.interface is not None:
+            params["interface"] = n.interface
+        if params:
+            record["params"] = params
         nets_data.append(record)
 
     # One PUT per record; keep going on individual failures so one bad net
@@ -466,6 +473,13 @@ def _save_nets_batch(dut: str, nets: list["Net"], custom_names: dict[str, str] |
             pass  # Continue trying to save other nets
 
     return saved_count > 0
+
+def _record_interface(rec: dict) -> str | None:
+    """``params.interface`` of a saved net record, as a string, or None."""
+    params = rec.get("params")
+    value = params.get("interface") if isinstance(params, dict) else None
+    return None if value is None else str(value)
+
 
 def is_single_channel_taken(all_nets: list["Net"], inst: str, addr: str, role: str | None = None) -> bool:
     """
@@ -508,10 +522,21 @@ class Net:
     # True once the user has been through the pin dialog for this net, so
     # the add flow doesn't prompt again for pins already chosen.
     pins_confirmed: bool = False
+    # FTDI channel letter (``params.interface``) of a saved FT2232H/FT4232H
+    # gpio/i2c/spi net, saved or not. Kept apart from ``params`` so the
+    # LabJack pin dialog resetting ``params`` can never drop it. The Add list
+    # has one unsaved row per channel and pin (see _ftdi_row_channels).
+    interface: str | None = None
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self._uid = _uid(self.instrument, self.chan, self.type, self.net)
+        self.rekey()
+
+    def rekey(self) -> None:
+        """Recompute the row key after a rename. The FTDI channel is part of
+        it, so pin 1 on channels C and D are two rows."""
+        chan = f"{self.interface}:{self.chan}" if self.interface else self.chan
+        self._uid = _uid(self.instrument, chan, self.type, self.net)
 
     # ───── table rows
     def as_row_main(self) -> list[str]:
@@ -520,7 +545,7 @@ class Net:
             f"{status} {self.net}",
             self.type.upper(),
             self.instrument.replace("_", " "),
-            self.chan,
+            _display_chan(self),
             self.addr,
             "[Rename]",
             "[Delete]",
@@ -533,7 +558,7 @@ class Net:
             display_name,
             self.type.upper(),
             self.instrument.replace("_", " "),
-            self.chan,
+            _display_chan(self),
             self.addr,
             "[Rename]",
         ]
@@ -549,6 +574,86 @@ _PIN_CONFIGURABLE_INSTRUMENTS = ("LabJack_T7", "LabJack_U3")
 def _is_pin_configurable(net: "Net") -> bool:
     """True for nets whose DIO pins the pin-picker dialog can reassign."""
     return net.instrument in _PIN_CONFIGURABLE_INSTRUMENTS and net.type in ("i2c", "spi")
+
+
+# ──────────── FTDI channel (params.interface) ────────────
+# The channel tables and validation live in nets.py, beside ``nets add
+# --interface``, so the CLI and the TUI accept and refuse the same values
+# (test_nets_add_ftdi_interface.py keeps nets.py in lockstep with the box's
+# ftdi_url.py). nets.py imports this module at load time, so the import here
+# is deferred to call time.
+
+def _ftdi_rules():
+    # By module path: ``from . import nets`` would return the package's
+    # ``nets`` click group, which shadows the module name.
+    import importlib
+    return importlib.import_module(f"{__package__}.nets")
+
+
+def _ftdi_part(net: "Net") -> str | None:
+    """Canonical FTDI part name when *net* is an FTDI gpio/i2c/spi net."""
+    rules = _ftdi_rules()
+    part = rules.canonical_instrument(net.instrument)
+    if part in rules._FTDI_CHANNELS and net.type in rules._FTDI_INTERFACE_ROLES:
+        return part
+    return None
+
+
+def _ftdi_channel_choices(net: "Net") -> str | None:
+    """Channel letters this net may use, or None when there is no choice.
+
+    gpio may use every channel of the part; i2c and spi need an MPSSE engine
+    (A and B). The single-channel FT232H, non-FTDI parts and other roles get
+    None: no channel prompt and no ``params.interface``.
+    """
+    part = _ftdi_part(net)
+    if part is None:
+        return None
+    rules = _ftdi_rules()
+    if len(rules._FTDI_CHANNELS[part]) < 2:
+        return None
+    if net.type == "gpio":
+        return rules._FTDI_CHANNELS[part]
+    return rules._FTDI_MPSSE_CHANNELS[part]
+
+
+def _ftdi_iface(net: "Net") -> str | None:
+    """The FTDI channel component of a net's identity.
+
+    A net with no interface is on channel A, as on the box. Every other net
+    returns None.
+    """
+    if _ftdi_part(net) is None:
+        return None
+    return _ftdi_rules()._normalize_ftdi_interface(net.interface)
+
+
+def _net_identity(net: "Net") -> tuple:
+    """Key for "the same physical channel": (type, instrument, pin, address,
+    FTDI channel). Two pin-1 nets on channels C and D differ."""
+    return (net.type, net.instrument, net.chan, net.addr, _ftdi_iface(net))
+
+
+def _ftdi_row_channels(instrument: str, role: str) -> list[str | None]:
+    """The FTDI channels to offer a scanned pin on, one Add row each.
+
+    The scanner reports pins without a channel. On an FT2232H or FT4232H the
+    Add list shows the pin once per channel its role may use (``A:0`` to
+    ``D:7`` for gpio, ``A``/``B`` for i2c and spi), so every free channel and
+    pin is visible before anything is picked. Other parts get ``[None]``.
+    """
+    probe = Net(instrument, "", role, "", "", saved=False)
+    choices = _ftdi_channel_choices(probe)
+    return list(choices) if choices else [None]
+
+
+def _display_chan(net: "Net") -> str:
+    """The channel column: ``C:1`` for a multi-channel FTDI net (a saved one
+    with no interface shows ``A``), the pin otherwise."""
+    if _ftdi_channel_choices(net):
+        letter = _ftdi_rules()._normalize_ftdi_interface(net.interface)
+        return f"{letter}:{net.chan}"
+    return str(net.chan)
 
 
 @dataclass
@@ -580,7 +685,7 @@ class SavedNetsTree(Tree[TreeNodeData]):
         edit_btn = "[reverse][⋯][/reverse]" if highlight_button == "edit" else "[⋯]"
         delete_btn = "[reverse][✕][/reverse]" if highlight_button == "delete" else "[✕]"
         script_tag = " [dim](script)[/dim]" if net.has_script else ""
-        return f"[bold]{net.net}[/bold] | {net.type.upper()} | Ch: {net.chan}{script_tag}   {rename_btn} {edit_btn} {delete_btn}"
+        return f"[bold]{net.net}[/bold] | {net.type.upper()} | Ch: {_display_chan(net)}{script_tag}   {rename_btn} {edit_btn} {delete_btn}"
 
     def _get_highlighted_button(self, net_key: str) -> str | None:
         """Get which button should be highlighted for a given net (hover takes precedence)."""
@@ -618,7 +723,7 @@ class SavedNetsTree(Tree[TreeNodeData]):
 
     def _get_button_at_position(self, net: Net, x: int) -> str | None:
         """Determine which button (if any) is at the given x position."""
-        content = f"{net.net} | {net.type.upper()} | Ch: {net.chan}"
+        content = f"{net.net} | {net.type.upper()} | Ch: {_display_chan(net)}"
         if net.has_script:
             content += " (script)"
         content += "   "
@@ -887,7 +992,7 @@ class AddNetsTree(Tree[TreeNodeData]):
         status = "[SELECTED]" if selected else "[ADD]"
         edit_btn = "[reverse][✎][/reverse]" if highlight_button == "edit" else "[✎]"
         return (f"{status} [bold]{custom_name}[/bold] | {net.type.upper()} | "
-                f"Ch: {net.chan}   {edit_btn}")
+                f"Ch: {_display_chan(net)}   {edit_btn}")
 
     def _get_highlighted_button(self, net_key: str) -> str | None:
         """Get which button should be highlighted for a given net (hover takes precedence)."""
@@ -926,7 +1031,7 @@ class AddNetsTree(Tree[TreeNodeData]):
         custom_name = self.custom_names.get(net_key, net.net)
         selected = net_key in self.chosen
         status = "[SELECTED]" if selected else "[ADD]"
-        content = f"{status} {custom_name} | {net.type.upper()} | Ch: {net.chan}   "
+        content = f"{status} {custom_name} | {net.type.upper()} | Ch: {_display_chan(net)}   "
         # Button: [✎] is 3 chars
 
         content_end = len(content)
@@ -1197,7 +1302,7 @@ class NetActionDialog(Screen):
                 f"Name: {self.net.net}\n"
                 f"Type: {self.net.type.upper()}\n"
                 f"Instrument: {self.net.instrument.replace('_', ' ')}\n"
-                f"Channel: {self.net.chan}\n"
+                f"Channel: {_display_chan(self.net)}\n"
                 f"Address: {self.net.addr}",
                 classes="dialog-content"
             )
@@ -1374,20 +1479,24 @@ class ConfirmDelete(Screen):
             if self.net in app.nets:
                 app.nets.remove(self.net)
             auto_name = f"{self.net.type}{self.net.chan}"
+            # The Add row for this channel, back in the list. A multi-channel
+            # FTDI net keeps its channel: deleting C:1 gives back the C:1 row.
+            placeholder = Net(
+                instrument=self.net.instrument,
+                chan=self.net.chan,
+                type=self.net.type,
+                net=auto_name,
+                addr=self.net.addr,
+                saved=False,
+                interface=_ftdi_iface(self.net) if _ftdi_channel_choices(self.net) else None,
+            )
             duplicate = next(
-                (n for n in app.nets if (n.type, n.instrument, n.chan, n.addr) ==
-                 (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
+                (n for n in app.nets
+                 if _net_identity(n) == _net_identity(placeholder)),
                 None,
             )
             if duplicate is None:
-                app.nets.append(Net(
-                    instrument=self.net.instrument,
-                    chan=self.net.chan,
-                    type=self.net.type,
-                    net=auto_name,
-                    addr=self.net.addr,
-                    saved=False,
-                ))
+                app.nets.append(placeholder)
             if out.get("saved") is not None:
                 app._apply_saved_records(out["saved"])
             app._refresh_table()
@@ -1469,12 +1578,11 @@ class RenameDialog(Screen):
 
             # Update the net name locally
             self.net.net = new_name
-            self.net._uid = _uid(self.net.instrument, self.net.chan, self.net.type, new_name)
+            self.net.rekey()
 
             placeholder = next(
                 (n for n in app.nets if not n.saved and
-                 (n.type, n.instrument, n.chan, n.addr) ==
-                 (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
+                 _net_identity(n) == _net_identity(self.net)),
                 None,
             )
             if placeholder is not None:
@@ -1826,9 +1934,9 @@ class AddScreen(Screen):
         if n.saved:
             return False
 
-        # Hide unsaved nets if a saved net already exists for the same physical channel
-        # Key: (type, instrument, channel, address)
-        if any(s.saved and s.type == n.type and s.instrument == n.instrument and s.chan == n.chan and s.addr == n.addr for s in self.nets):
+        # Hide unsaved nets if a saved net already exists for the same physical
+        # channel (see _net_identity, which includes the FTDI channel).
+        if any(s.saved and _net_identity(s) == _net_identity(n) for s in self.nets):
             return False
 
         # Single-channel dual-role chips (_SINGLE_CHANNEL_INST) are NOT
@@ -1877,10 +1985,10 @@ class AddScreen(Screen):
         # Deduplicate nets by (instrument, channel, address) - NOT by name
         # This ensures saved "hahahah" on channel 2 deduplicates with unsaved "usb2" on channel 2
         # Prioritize unsaved nets over saved ones when deduplicating
-        uniq: dict[tuple[str, str, str, str], Net] = {}
+        uniq: dict[tuple, Net] = {}
         for n in self.nets:
-            # Key by (type, instrument, channel, address) - excludes name
-            dedup_key = (n.type, n.instrument, n.chan, n.addr)
+            # Key by physical channel (_net_identity) - excludes name
+            dedup_key = _net_identity(n)
             # Only add if key doesn't exist, OR if this net is unsaved and existing is saved
             if dedup_key not in uniq or (not n.saved and uniq[dedup_key].saved):
                 uniq[dedup_key] = n
@@ -3284,6 +3392,7 @@ class NetApp(App):
                 purpose=rec.get("purpose", ""),
                 notes=rec.get("notes", ""),
                 tags=rec.get("tags", []),
+                interface=_record_interface(rec),
             ) for rec in saved_from_disk
         ]
         self._ensure_autogen_unsaved()
@@ -3327,7 +3436,7 @@ class NetApp(App):
 
     def _ensure_autogen_unsaved(self) -> None:
         # Track which channels have unsaved placeholders
-        unsaved_keys = {(n.type, n.instrument, n.chan, n.addr) for n in self.nets if not n.saved}
+        unsaved_keys = {_net_identity(n) for n in self.nets if not n.saved}
         role_counter: dict[str, int] = defaultdict(int)
         idx_re = re.compile(r"^([A-Za-z]+)(\d+)$")
 
@@ -3347,15 +3456,20 @@ class NetApp(App):
                     channels = uart_channel_paths(dev, channels)
                 # Sort channels to ensure consistent ordering
                 sorted_channels = sorted(channels, key=lambda ch: str(ch))
-                for ch in sorted_channels:
-                    key = (role, instr, ch, addr)
-                    # Only skip if an UNSAVED placeholder already exists
-                    if key in unsaved_keys:
-                        continue
-                    role_counter[role] += 1
-                    auto_name = f"{_first_word(role)}{role_counter[role]}"
-                    self.nets.append(Net(instr, ch, role, auto_name, addr, saved=False))
-                    unsaved_keys.add(key)
+                # One row per FTDI channel on an FT2232H/FT4232H.
+                for iface in _ftdi_row_channels(instr, role):
+                    for ch in sorted_channels:
+                        candidate = Net(instr, ch, role, "", addr, saved=False,
+                                        interface=iface)
+                        key = _net_identity(candidate)
+                        # Only skip if an UNSAVED placeholder already exists
+                        if key in unsaved_keys:
+                            continue
+                        role_counter[role] += 1
+                        candidate.net = f"{_first_word(role)}{role_counter[role]}"
+                        candidate.rekey()
+                        self.nets.append(candidate)
+                        unsaved_keys.add(key)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Handle tree node selection for saved nets - show action dialog."""
@@ -3537,6 +3651,7 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
             purpose=rec.get("purpose", ""),
             notes=rec.get("notes", ""),
             tags=rec.get("tags", []),
+            interface=_record_interface(rec),
         ))
 
     # Now generate auto-names for new devices, continuing from highest saved number
@@ -3549,22 +3664,27 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
                 channels = uart_channel_paths(dev, channels)
             # Sort channels to ensure consistent ordering (e.g., /dev/ttyUSB0 before /dev/ttyUSB1)
             sorted_channels = sorted(channels, key=lambda ch: str(ch))
-            for ch in sorted_channels:
-                # Check if this exact net already exists - skip counter increment if so
-                already_exists = any(
-                    n.type == role
-                    and n.instrument == instr
-                    and str(n.chan) == str(ch)
-                    and n.addr == addr
-                    and n.saved
-                    for n in nets
-                )
+            # One row per FTDI channel on an FT2232H/FT4232H, channel by channel.
+            for iface in _ftdi_row_channels(instr, role):
+                for ch in sorted_channels:
+                    row = Net(instr, ch, role, "", addr, saved=False, interface=iface)
+                    # Check if this exact net already exists - skip counter increment if so
+                    already_exists = any(
+                        n.type == role
+                        and n.instrument == instr
+                        and str(n.chan) == str(ch)
+                        and n.addr == addr
+                        and n.saved
+                        and _ftdi_iface(n) == _ftdi_iface(row)
+                        for n in nets
+                    )
 
-                if not already_exists:
-                    role_counter[role] += 1
+                    if not already_exists:
+                        role_counter[role] += 1
 
-                auto_name = f"{_first_word(role)}{role_counter[role]}"
-                nets.append(Net(instr, ch, role, auto_name, addr, saved=False))
+                    row.net = f"{_first_word(role)}{role_counter[role]}"
+                    row.rekey()
+                    nets.append(row)
 
     # Launch the Textual TUI
     NetApp(ctx, dut, inst_list, nets).run()
