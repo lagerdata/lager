@@ -1,1 +1,3 @@
-On a Mac Box, `lager install` now installs PicoScope 7 when Homebrew still records the cask but the app is gone.
+- **A Mac Box install sets up PicoScope after its app was deleted.** Homebrew
+  can keep its record of the PicoScope cask after the app is gone. `lager
+  install` now reinstalls the cask in that case.
