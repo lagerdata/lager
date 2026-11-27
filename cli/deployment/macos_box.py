@@ -876,11 +876,15 @@ def ensure_picoscope_app(run: Run = _run, echo=print) -> Optional[str]:
                 "available to install it (https://www.picotech.com/downloads)")
     echo(f"Installing PicoScope 7 for its drivers (Homebrew cask {PICOSCOPE_CASK}, "
          "under PicoTech's terms of use)...")
+    # Homebrew can keep its record of the cask after the app is deleted.
+    # Then `brew install` does nothing, so the cask is reinstalled.
+    verb = ("reinstall" if os.path.isdir(os.path.join(brew, "Caskroom", PICOSCOPE_CASK))
+            else "install")
     # Inherit the terminal: PicoTech's installer asks sudo for the password.
-    result = run([os.path.join(brew, "bin", "brew"), "install", "--cask", PICOSCOPE_CASK],
+    result = run([os.path.join(brew, "bin", "brew"), verb, "--cask", PICOSCOPE_CASK],
                  capture_output=False, timeout=1800)
     if result.returncode != 0 or not os.path.isdir(PICOSCOPE_APP):
-        return (f"`brew install --cask {PICOSCOPE_CASK}` did not install it; run that, "
+        return (f"`brew {verb} --cask {PICOSCOPE_CASK}` did not install it; run that, "
                 "then `lager install` again")
     return None
 

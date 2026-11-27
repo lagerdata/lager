@@ -257,11 +257,41 @@ def test_the_picoscope_app_is_installed_through_the_cask_only_when_missing(tmp_p
         assert macos_box.ensure_picoscope_app(run, echo=lambda *_: None) is None
     assert run.calls == []
     with mock.patch.object(macos_box, "PICOSCOPE_APP", str(tmp_path / "absent")), \
-            mock.patch.object(macos_box, "homebrew_prefix_with", return_value="/opt/homebrew"):
+            mock.patch.object(macos_box, "homebrew_prefix_with",
+                              return_value=str(tmp_path / "homebrew")):
         reason = macos_box.ensure_picoscope_app(run, echo=lambda *_: None)
-    assert run.calls[0][0] == ["/opt/homebrew/bin/brew", "install", "--cask", "picoscope"]
+    assert run.calls[0][0] == [str(tmp_path / "homebrew" / "bin" / "brew"),
+                               "install", "--cask", "picoscope"]
     assert run.calls[0][1]["capture_output"] is False
     assert "brew install --cask picoscope" in reason
+
+
+def test_a_cask_that_homebrew_still_records_is_reinstalled(tmp_path):
+    """Homebrew keeps the cask's record after the app is deleted, and then
+    `brew install` does nothing. The cask is reinstalled instead."""
+    brew = tmp_path / "homebrew"
+    (brew / "Caskroom" / "picoscope" / "7.2.30").mkdir(parents=True)
+    app = tmp_path / "PicoScope 7 T&M.app"
+    run = _Runner()
+
+    def reinstall(argv, **kwargs):
+        app.mkdir()
+        return run(argv, **kwargs)
+
+    with mock.patch.object(macos_box, "PICOSCOPE_APP", str(app)), \
+            mock.patch.object(macos_box, "homebrew_prefix_with", return_value=str(brew)):
+        assert macos_box.ensure_picoscope_app(reinstall, echo=lambda *_: None) is None
+    assert run.calls == [([str(brew / "bin" / "brew"), "reinstall", "--cask", "picoscope"],
+                          {"capture_output": False, "timeout": 1800})]
+
+
+def test_a_failed_reinstall_names_the_reinstall_command(tmp_path):
+    brew = tmp_path / "homebrew"
+    (brew / "Caskroom" / "picoscope").mkdir(parents=True)
+    with mock.patch.object(macos_box, "PICOSCOPE_APP", str(tmp_path / "absent")), \
+            mock.patch.object(macos_box, "homebrew_prefix_with", return_value=str(brew)):
+        reason = macos_box.ensure_picoscope_app(_Runner(), echo=lambda *_: None)
+    assert "brew reinstall --cask picoscope" in reason
 
 
 def test_optional_steps_give_a_reason_instead_of_failing(layout, tmp_path):
