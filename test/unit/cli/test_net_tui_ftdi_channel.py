@@ -2,19 +2,19 @@
 
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the FTDI channel picker in the Net-Manager TUI.
+"""Unit tests for FTDI channels in the Net-Manager TUI.
 
 On a multi-channel FTDI (FT2232H, FT4232H) the channel a gpio, i2c or spi net
-uses is saved as ``params.interface``. The scanner offers one row per pin with
-no channel, so the TUI asks for the channel when the net is added, and keys
-every duplicate check on it: a net on channel C pin 1 must not hide pin 1 on
-channel D. The channel rules are ``nets add --interface``'s own (nets.py), so
-both accept and refuse the same values.
+uses is saved as ``params.interface``. The scanner reports pins without a
+channel, so the Add list shows each pin once per channel its role may use
+(``A:0`` to ``D:7`` for gpio on an FT4232H, ``A``/``B`` for i2c and spi), and
+every duplicate check keys on the channel: a net on channel C pin 1 hides only
+the ``C:1`` row. The channel rules are ``nets add --interface``'s own
+(nets.py), so both accept the same values.
 """
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import os
@@ -29,20 +29,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 tui = importlib.import_module('cli.commands.box.net_tui')
 nets_mod = importlib.import_module('cli.commands.box.nets')
 from cli.commands.box.nets import nets as nets_group  # noqa: E402
-from cli.errors import LagerError  # noqa: E402
 from test.unit.cli.nets_http_fake import FakeBoxHTTP  # noqa: E402
-
-from textual.widgets import Button, Select, Static  # noqa: E402
 
 FT232H_ADDR = "USB0::0x0403::0x6014::FT1ABCD::INSTR"
 FT2232H_ADDR = "USB0::0x0403::0x6010::FT2ABCD::INSTR"
 FT4232H_ADDR = "USB0::0x0403::0x6011::FT4ABCD::INSTR"
 
 
-def _static_text(widget) -> str:
-    rendered = widget.render()
-    plain = getattr(rendered, 'plain', None)
-    return plain if isinstance(plain, str) else str(rendered)
+def _scan(name="FTDI_FT4232H", addr=FT4232H_ADDR, gpio=8):
+    """One scanned FTDI part, as the box's instrument list reports it."""
+    return {"name": name, "address": addr,
+            "channels": {"debug": ["DEVICE_TYPE@A", "DEVICE_TYPE@B"],
+                         "i2c": ["I2C0"], "spi": ["SPI0"],
+                         "gpio": [str(n) for n in range(gpio)]}}
 
 
 def _net(**overrides):
@@ -52,14 +51,12 @@ def _net(**overrides):
     return tui.Net(**defaults)
 
 
+def _row(chan='1', interface='A', **overrides):
+    return _net(chan=chan, interface=interface, **overrides)
+
+
 def _saved(name, chan, interface=None, **overrides):
     return _net(net=name, chan=chan, saved=True, interface=interface, **overrides)
-
-
-def _cli_error(role, instrument, letter) -> str:
-    with pytest.raises(LagerError) as exc:
-        nets_mod._ftdi_interface_params(role, instrument, letter)
-    return exc.value.problem
 
 
 class _Recorder:
@@ -72,10 +69,10 @@ class _Recorder:
         self.records.append(json.loads(json.dumps(record)))
 
 
-def _save(nets, interfaces=None, custom_names=None):
+def _save(nets, custom_names=None):
     rec = _Recorder()
     with patch.object(tui, "_save_net_http", rec):
-        assert tui._save_nets_batch("box", nets, custom_names, interfaces)
+        assert tui._save_nets_batch("box", nets, custom_names)
     return rec.records
 
 
@@ -84,60 +81,85 @@ def _addable(nets):
     return remaining
 
 
+def _autogen(inst_list, saved_records=()):
+    app = tui.NetApp(ctx=None, dut="box", inst_list=inst_list, nets=[])
+    app._ensure_autogen_unsaved()
+    if saved_records:
+        app._apply_saved_records(list(saved_records))
+    return app
+
+
+def _launch_rows(inst_list, saved_records=()):
+    """The rows launch_tui builds before the app starts."""
+    built = {}
+
+    class _App:
+        def __init__(self, ctx, dut, inst, nets):
+            built["nets"] = nets
+
+        def run(self):
+            pass
+
+    with patch.object(tui, "_fetch_instruments_http", lambda dut: inst_list), \
+         patch.object(tui, "_fetch_saved_nets_http", lambda dut: list(saved_records)), \
+         patch.object(tui, "NetApp", _App):
+        tui.launch_tui(None, "box")
+    return built["nets"]
+
+
+def _shown(nets, role):
+    return [tui._display_chan(n) for n in nets if not n.saved and n.type == role]
+
+
 # --------------------------------------------------------------------------- #
-# Channel choices                                                             #
+# Every channel is a row                                                      #
 # --------------------------------------------------------------------------- #
 
-class TestChannelChoices:
-    def test_ft4232h_gpio_offers_all_four(self):
-        assert tui._ftdi_channel_choices(_net()) == "ABCD"
-
-    @pytest.mark.parametrize("role,chan", [("i2c", "I2C0"), ("spi", "SPI0")])
-    def test_ft4232h_i2c_spi_offer_only_mpsse_channels(self, role, chan):
-        assert tui._ftdi_channel_choices(_net(type=role, chan=chan)) == "AB"
-
-    def test_ft2232h_gpio_offers_a_and_b(self):
-        net = _net(instrument='FTDI_FT2232H', addr=FT2232H_ADDR, chan='4')
-        assert tui._ftdi_channel_choices(net) == "AB"
-
-    @pytest.mark.parametrize("role,chan", [("i2c", "I2C0"), ("spi", "SPI0")])
-    @pytest.mark.parametrize("letter", ["C", "D"])
-    def test_ft4232h_i2c_spi_refuse_c_and_d_with_cli_message(self, role, chan, letter):
-        net = _net(type=role, chan=chan)
-        params, error = tui._resolve_ftdi_channel(net, letter, [])
-        assert params is None
-        assert error == _cli_error(role, 'FTDI_FT4232H', letter)
-
-    def test_valid_pick_returns_interface_params(self):
-        params, error = tui._resolve_ftdi_channel(_net(), "c", [])
-        assert (params, error) == ({"interface": "C"}, None)
-
-    def test_channel_taken_on_this_pin_is_refused(self):
-        saved = _saved("MUX_SEL1", "1", "C")
-        params, error = tui._resolve_ftdi_channel(_net(), "C", [saved])
-        assert params is None
-        assert "MUX_SEL1" in error
-
-    def test_debug_and_uart_get_no_prompt(self):
-        assert tui._ftdi_channel_choices(_net(type='debug', chan='DEVICE_TYPE@A')) is None
-        assert tui._ftdi_channel_choices(_net(type='uart', chan='/dev/ttyUSB0')) is None
+GPIO_FT4232H = [f"{c}:{p}" for c in "ABCD" for p in range(8)]
 
 
-class TestSingleChannelFt232h:
-    def test_no_prompt_and_no_interface(self):
-        net = _net(instrument='FTDI_FT232H', addr=FT232H_ADDR, chan='5')
-        assert tui._ftdi_channel_choices(net) is None
-        records = _save([net])
-        assert "params" not in records[0]
-        assert tui._display_chan(net) == "5"
+class TestRowsPerChannel:
+    @pytest.mark.parametrize("build", [lambda i: _autogen(i).nets, _launch_rows])
+    def test_ft4232h_shows_every_channel_and_pin(self, build):
+        nets = build([_scan()])
+        assert _shown(nets, "gpio") == GPIO_FT4232H
+        assert _shown(nets, "i2c") == ["A:I2C0", "B:I2C0"]
+        assert _shown(nets, "spi") == ["A:SPI0", "B:SPI0"]
 
-    def test_add_flow_skips_the_dialog(self):
-        net = _net(instrument='FTDI_FT232H', addr=FT232H_ADDR, chan='5')
-        screen = tui.AddScreen([net])
-        ran = []
-        screen._prompt_ftdi_channels(None, [net], lambda: ran.append(True))
-        assert ran == [True]
-        assert screen.ftdi_interfaces == {}
+    @pytest.mark.parametrize("build", [lambda i: _autogen(i).nets, _launch_rows])
+    def test_ft2232h_shows_channels_a_and_b(self, build):
+        nets = build([_scan("FTDI_FT2232H", FT2232H_ADDR, gpio=2)])
+        assert _shown(nets, "gpio") == ["A:0", "A:1", "B:0", "B:1"]
+        assert _shown(nets, "i2c") == ["A:I2C0", "B:I2C0"]
+
+    @pytest.mark.parametrize("build", [lambda i: _autogen(i).nets, _launch_rows])
+    def test_ft232h_and_debug_rows_are_unchanged(self, build):
+        nets = build([_scan("FTDI_FT232H", FT232H_ADDR, gpio=2)])
+        assert _shown(nets, "gpio") == ["0", "1"]
+        assert all(n.interface is None for n in nets)
+        ft4232h = build([_scan()])
+        assert _shown(ft4232h, "debug") == ["DEVICE_TYPE@A", "DEVICE_TYPE@B"]
+
+    def test_every_row_key_is_unique(self):
+        nets = _launch_rows([_scan()])
+        assert len({n.key() for n in nets}) == len(nets)
+
+    def test_rows_get_distinct_names(self):
+        nets = _autogen([_scan()]).nets
+        names = [n.net for n in nets if n.type == "gpio"]
+        assert len(set(names)) == 32
+
+    def test_every_offered_channel_is_one_nets_add_accepts(self):
+        for n in _autogen([_scan()]).nets:
+            if n.interface is not None:
+                params = nets_mod._ftdi_interface_params(n.type, n.instrument, n.interface)
+                assert params == {"interface": n.interface}
+
+    def test_rebuild_does_not_duplicate_rows(self):
+        app = _autogen([_scan()])
+        count = len(app.nets)
+        app._ensure_autogen_unsaved()
+        assert len(app.nets) == count
 
 
 # --------------------------------------------------------------------------- #
@@ -147,90 +169,68 @@ class TestSingleChannelFt232h:
 class TestIdentity:
     def test_saved_net_without_interface_counts_as_a(self):
         legacy = _saved("RST", "1")
-        explicit = _saved("RST2", "1", "A")
-        assert tui._net_identity(legacy) == tui._net_identity(explicit)
-        assert tui._free_ftdi_channels([legacy], _net()) == "BCD"
-        params, error = tui._resolve_ftdi_channel(_net(), "A", [legacy])
-        assert params is None and "RST" in error
+        assert tui._net_identity(legacy) == tui._net_identity(_row("1", "A"))
         assert tui._display_chan(legacy) == "A:1"
+        nets = [legacy, _row("1", "A"), _row("1", "B")]
+        assert [tui._display_chan(n) for n in _addable(nets)] == ["B:1"]
 
     def test_numeric_interface_normalizes_like_the_cli(self):
         assert tui._ftdi_iface(_saved("X", "1", "2")) == "C"
 
-    def test_channels_c_and_d_are_distinct(self):
-        assert (tui._net_identity(_saved("MUX_SEL1", "1", "C"))
-                != tui._net_identity(_saved("RESET_N", "1", "D")))
+    def test_a_saved_c1_hides_only_the_c1_row(self):
+        rows = [_row("1", c) for c in "ABCD"]
+        nets = [_saved("MUX_SEL1", "1", "C")] + rows
+        assert [tui._display_chan(n) for n in _addable(nets)] == ["A:1", "B:1", "D:1"]
 
-    def test_saved_c_pin_does_not_hide_the_pin_row(self):
-        row = _net()
-        nets = [_saved("MUX_SEL1", "1", "C"), row]
-        assert row in _addable(nets)
-
-    def test_pin_row_hidden_once_every_channel_is_used(self):
-        row = _net()
-        nets = [_saved(f"n{c}", "1", c) for c in "ABCD"] + [row]
-        assert row not in _addable(nets)
-
-    def test_i2c_row_hidden_once_both_mpsse_channels_are_used(self):
-        row = _net(type='i2c', chan='I2C0', net='i2c1')
-        nets = [_saved("I2C_A", "I2C0", "A", type='i2c'),
-                _saved("I2C_B", "I2C0", "B", type='i2c'), row]
-        assert row not in _addable(nets)
+    def test_launch_hides_saved_channels(self):
+        saved = [{"name": "MUX_SEL1", "role": "gpio", "instrument": "FTDI_FT4232H",
+                  "address": FT4232H_ADDR, "pin": "1", "params": {"interface": "C"}}]
+        nets = _launch_rows([_scan()], saved)
+        shown = [tui._display_chan(n) for n in _addable(nets) if n.type == "gpio"]
+        assert "C:1" not in shown
+        assert len(shown) == 31
 
     def test_non_ftdi_duplicate_check_unchanged(self):
         row = tui.Net('Rigol_DP811', '1', 'power-supply', 'supply1', 'USB0::X')
         saved = tui.Net('Rigol_DP811', '1', 'power-supply', 'vdd', 'USB0::X', saved=True)
         assert row not in _addable([saved, row])
 
-    def test_display_shows_channel(self):
-        assert tui._display_chan(_saved("MUX_SEL1", "1", "C")) == "C:1"
-        assert tui._display_chan(_net()) == "1"      # unsaved row: not chosen yet
-        tree = tui.SavedNetsTree()
-        assert "Ch: C:1" in tree._get_net_label(_saved("MUX_SEL1", "1", "C"))
+    def test_labels_show_the_channel(self):
+        assert "Ch: C:1" in tui.SavedNetsTree()._get_net_label(_saved("MUX_SEL1", "1", "C"))
+        assert "Ch: D:7" in tui.AddNetsTree()._get_net_label(_row("7", "D"), False)
 
 
 # --------------------------------------------------------------------------- #
-# Adding C:1 then D:1 through the app's own refresh path                       #
+# Saving                                                                      #
 # --------------------------------------------------------------------------- #
 
-class TestAddTwoChannelsOnOnePin:
-    def test_c_then_d(self):
-        app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[])
-        row = _net()
-        app.nets = [row]
+class TestSave:
+    def test_the_rows_channel_is_saved_as_the_interface(self):
+        row = _row("1", "C")
+        records = _save([row], {row.key(): "MUX_SEL1"})
+        assert records[0]["params"] == {"interface": "C"}
+        assert records[0]["pin"] == "1"
 
-        first = _save([row], {row.key(): "C"}, {row.key(): "MUX_SEL1"})
-        assert first[0]["params"] == {"interface": "C"}
-        app._apply_saved_records(first)
+    def test_ft232h_saves_no_interface(self):
+        net = _net(instrument='FTDI_FT232H', addr=FT232H_ADDR, chan='5')
+        assert "params" not in _save([net])[0]
 
-        assert row.interface is None          # the row stays channel-less
-        assert row in _addable(app.nets)      # and is still offered for D
-        assert tui._free_ftdi_channels(app.nets, row) == "ABD"
+    def test_existing_params_survive_alongside_interface(self):
+        assert _save([_row("1", "B", params={"other": 1})])[0]["params"] == {
+            "other": 1, "interface": "B"}
 
-        second = _save([row], {row.key(): "D"}, {row.key(): "RESET_N"})
+    def test_c1_then_d1_on_the_same_pin(self):
+        app = _autogen([_scan()])
+        c1 = next(n for n in app.nets if tui._display_chan(n) == "C:1")
+        d1 = next(n for n in app.nets if tui._display_chan(n) == "D:1")
+        first = _save([c1], {c1.key(): "MUX_SEL1"})
+        second = _save([d1], {d1.key(): "RESET_N"})
         app._apply_saved_records(first + second)
+        saved = {n.net: n.interface for n in app.nets if n.saved}
+        assert saved == {"MUX_SEL1": "C", "RESET_N": "D"}
+        shown = [tui._display_chan(n) for n in _addable(app.nets) if n.type == "gpio"]
+        assert "C:1" not in shown and "D:1" not in shown and "A:1" in shown
 
-        saved = {n.net: n for n in app.nets if n.saved}
-        assert saved["MUX_SEL1"].interface == "C"
-        assert saved["RESET_N"].interface == "D"
-        assert row in _addable(app.nets)
-        assert tui._free_ftdi_channels(app.nets, row) == "AB"
-
-    def test_autogen_rebuild_keeps_one_row_per_pin(self):
-        inst = [{"name": "FTDI_FT4232H", "address": FT4232H_ADDR,
-                 "channels": {"gpio": ["1"]}}]
-        app = tui.NetApp(ctx=None, dut="box", inst_list=inst, nets=[])
-        app._ensure_autogen_unsaved()
-        app._apply_saved_records([{
-            "name": "MUX_SEL1", "role": "gpio", "instrument": "FTDI_FT4232H",
-            "address": FT4232H_ADDR, "pin": "1", "params": {"interface": "C"}}])
-        rows = [n for n in app.nets if not n.saved]
-        assert len(rows) == 1 and rows[0].interface is None
-
-
-# --------------------------------------------------------------------------- #
-# Edits keep params.interface                                                 #
-# --------------------------------------------------------------------------- #
 
 class TestEditsKeepInterface:
     def _records(self):
@@ -242,117 +242,18 @@ class TestEditsKeepInterface:
                                          "selects a mux input", "", [])
         assert target["params"] == {"interface": "C"}
 
-    def test_existing_params_survive_alongside_interface(self):
-        net = _net(params={"other": 1})
-        records = _save([net], {net.key(): "B"})
-        assert records[0]["params"] == {"other": 1, "interface": "B"}
-
     def test_resave_of_loaded_net_keeps_interface(self):
         app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[])
         app._apply_saved_records(self._records())
         loaded = next(n for n in app.nets if n.saved)
         assert _save([loaded])[0]["params"] == {"interface": "C"}
 
-
-# --------------------------------------------------------------------------- #
-# The dialog                                                                  #
-# --------------------------------------------------------------------------- #
-
-class TestDialogFlow:
-    def _run(self, nets, selected, actions):
-        """Run the add flow's channel prompts; ``actions`` drives each dialog."""
-        result = {}
-
-        async def main():
-            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=list(nets))
-            async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                screen = tui.AddScreen(app.nets)
-                app.push_screen(screen)
-                await pilot.pause()
-                screen._prompt_ftdi_channels(
-                    app, selected, lambda: result.setdefault("done", True))
-                for act in actions:
-                    await pilot.pause()
-                    dialog = app.screen
-                    assert isinstance(dialog, tui.FtdiChannelDialog)
-                    await act(dialog, pilot, result)
-                await pilot.pause()
-                result["interfaces"] = dict(screen.ftdi_interfaces)
-        asyncio.run(main())
-        return result
-
-    def test_i2c_dialog_offers_a_and_b_and_saves_pick(self):
-        row = _net(type='i2c', chan='I2C0', net='i2c1')
-
-        async def pick_b(dialog, pilot, result):
-            select = dialog.query_one("#ftdi_channel", Select)
-            result["options"] = dialog.free
-            select.value = "B"
-            await pilot.pause()
-            dialog._on_ftdi_button(
-                Button.Pressed(dialog.query_one("#ftdi-confirm", Button)))
-
-        result = self._run([row], [row], [pick_b])
-        assert result["options"] == "AB"
-        assert result["done"] is True
-        assert result["interfaces"] == {row.key(): "B"}
-
-    def test_taken_channels_are_not_offered_and_last_pick_is_preselected(self):
-        rows = [_net(chan=str(p), net=f"gpio{p}") for p in (1, 2)]
-        saved = _saved("RESET_N", "1", "D")
-
-        async def pick_c(dialog, pilot, result):
-            result.setdefault("free", []).append(dialog.free)
-            dialog.query_one("#ftdi_channel", Select).value = "C"
-            await pilot.pause()
-            dialog._on_ftdi_button(
-                Button.Pressed(dialog.query_one("#ftdi-confirm", Button)))
-
-        async def accept(dialog, pilot, result):
-            result.setdefault("free", []).append(dialog.free)
-            result["preselected"] = dialog.query_one("#ftdi_channel", Select).value
-            dialog._on_ftdi_button(
-                Button.Pressed(dialog.query_one("#ftdi-confirm", Button)))
-
-        result = self._run(rows + [saved], rows, [pick_c, accept])
-        assert result["free"] == ["ABC", "ABCD"]
-        assert result["preselected"] == "C"
-        assert result["interfaces"] == {rows[0].key(): "C", rows[1].key(): "C"}
-
-    def test_cancel_aborts(self):
-        row = _net()
-
-        async def cancel(dialog, pilot, result):
-            dialog._on_ftdi_button(
-                Button.Pressed(dialog.query_one("#ftdi-cancel", Button)))
-
-        result = self._run([row], [row], [cancel])
-        assert "done" not in result
-        assert result["interfaces"] == {}
-
-    def test_resolver_error_keeps_dialog_up(self):
-        row = _net(type='spi', chan='SPI0', net='spi1')
-        holder = {}
-
-        async def refuse(dialog, pilot, result):
-            # Offer a value the dialog never would, to reach the shared
-            # validation behind it.
-            select = dialog.query_one("#ftdi_channel", Select)
-            select.set_options([(c, c) for c in "ABCD"])
-            select.value = "D"
-            await pilot.pause()
-            dialog._on_ftdi_button(
-                Button.Pressed(dialog.query_one("#ftdi-confirm", Button)))
-            await pilot.pause()
-            holder["still_up"] = pilot.app.screen is dialog
-            holder["warn"] = _static_text(dialog.query_one("#ftdi_warn", Static))
-            dialog._on_ftdi_button(
-                Button.Pressed(dialog.query_one("#ftdi-cancel", Button)))
-
-        self._run([row], [row], [refuse])
-        assert holder["still_up"] is True
-        assert _cli_error('spi', 'FTDI_FT4232H', 'D') in holder["warn"]
+    def test_rename_keeps_the_channel_in_the_row_key(self):
+        a1, c1 = _row("1", "A", net="x"), _row("1", "C", net="x")
+        assert a1.key() != c1.key()
+        c1.net = "y"
+        c1.rekey()
+        assert c1.key() != _row("1", "A", net="y").key()
 
 
 # --------------------------------------------------------------------------- #
@@ -371,15 +272,12 @@ _KEYS = ("name", "role", "address", "instrument", "pin", "params")
 
 class TestAddBatchParity:
     def _tui_records(self):
+        rows = {(n.type, str(n.chan), n.interface): n
+                for n in _autogen([_scan()]).nets if not n.saved}
         records = []
-        saved: list = []
         for name, role, pin, letter in _TABLE:
-            row = _net(type=role, chan=pin, net=f"{role}{pin}")
-            params, error = tui._resolve_ftdi_channel(row, letter, saved)
-            assert error is None, error
-            got = _save([row], {row.key(): params["interface"]}, {row.key(): name})
-            records.extend(got)
-            saved.append(_saved(name, pin, params["interface"], type=role))
+            row = rows[(role, pin, letter)]
+            records.extend(_save([row], {row.key(): name}))
         return records
 
     def _batch_records(self, tmp_path):
